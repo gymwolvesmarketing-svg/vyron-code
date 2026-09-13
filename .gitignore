@@ -1,0 +1,29 @@
+# Environment / secrets
+.env
+.env.*
+!.env.local.example
+.env.local
+.env.local.backup.*
+
+# Framework/build artifacts
+node_modules/
+.next/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Local metadata / databases / backups
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*.sqlite-journal
+data/*.sqlite-wal
+data/backups/
+
+# Logs and temporary local files
+logs/
+*.log
+tmp/
+temp/
+scratch/

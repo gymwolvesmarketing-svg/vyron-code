@@ -1,0 +1,32 @@
+{
+  "name": "vyron-code",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Project-aware AI coding workspace. Read-only v0.1 per VYRON_CODE_V01_ACCEPTANCE_CRITERIA.md.",
+  "scripts": {
+    "dev": "next dev -H 127.0.0.1 -p 3055",
+    "build": "next build",
+    "start": "next start -H 127.0.0.1 -p 3055",
+    "preflight": "node scripts/preflight.mjs",
+    "start:local": "node scripts/preflight.mjs && next start -H 127.0.0.1 -p 3055",
+    "backup-db": "node scripts/backup-db.mjs",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.6.0",
+    "next": "16.3.4",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "eslint": "^9.14.0",
+    "eslint-config-next": "16.3.4",
+    "typescript": "^5.6.3",
+    "vitest": "^5.0.0"
+  }
+}
