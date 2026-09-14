@@ -170,6 +170,10 @@ export const api = {
     fetch("/api/hermes/interrupt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId }) }).then(
       (r) => json<{ status: string }>(r)
     ),
+  respondToRequest: (payload: { session_id: string; kind: "approval" | "clarify"; request_id: string; choice?: string; answers?: string[] }) =>
+    fetch("/api/hermes/respond", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }).then((r) =>
+      json<{ status: string }>(r)
+    ),
 
   multimodelPreview: (projectId: string, topic: string) =>
     fetch("/api/multimodel/preview", {

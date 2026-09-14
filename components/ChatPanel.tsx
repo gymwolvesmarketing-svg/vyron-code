@@ -3,6 +3,14 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/apiClient";
 import { SessionList } from "./SessionList";
 import type { RawTimelineEvent } from "./TaskTimeline";
+import {
+  parsePendingRequestEvent,
+  buildRespondPayload,
+  canSubmitPendingResponse,
+  resolvePendingRequestOutcome,
+  nowMs,
+  type PendingRequest,
+} from "@/lib/pendingRequest";
 
 type Phase =
   | "idle"
@@ -11,6 +19,7 @@ type Phase =
   | "submitting"
   | "waiting_for_provider"
   | "streaming"
+  | "awaiting_response"
   | "interrupted"
   | "completed"
   | "error";
@@ -30,6 +39,7 @@ const PHASE_LABEL: Record<Phase, string> = {
   submitting: "Sending…",
   waiting_for_provider: "Waiting for model…",
   streaming: "Streaming…",
+  awaiting_response: "Waiting for your response…",
   interrupted: "Interrupted",
   completed: "Done",
   error: "Error",
@@ -53,6 +63,10 @@ export function ChatPanel({
   const [waitingSince, setWaitingSince] = useState<number | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [sessionListRefresh, setSessionListRefresh] = useState(0);
+  const [pendingRequest, setPendingRequest] = useState<PendingRequest | null>(null);
+  const [respondingRequestId, setRespondingRequestId] = useState<string | null>(null);
+  const [clarifyAnswerText, setClarifyAnswerText] = useState("");
+  const [respondError, setRespondError] = useState<string | null>(null);
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const activeReplyIdRef = useRef<string | null>(null);
@@ -88,6 +102,16 @@ export function ChatPanel({
     onTimelineEvent?.({ type: evt.type, payload: evt.payload, ts: Date.now() });
     const p = evt.payload || {};
 
+    const pending = parsePendingRequestEvent(evt);
+    if (pending) {
+      setPendingRequest(pending);
+      setRespondError(null);
+      setClarifyAnswerText("");
+      setPhase("awaiting_response");
+      setWaitingSince(null);
+      return;
+    }
+
     switch (evt.type) {
       case "message.delta": {
         const chunk = (p.text ?? p.delta ?? p.content) as string | undefined;
@@ -114,6 +138,9 @@ export function ChatPanel({
         activeReplyIdRef.current = null;
         setPhase("completed");
         setWaitingSince(null);
+        setPendingRequest(null);
+        setRespondingRequestId(null);
+        setRespondError(null);
         setSessionListRefresh((n) => n + 1);
         return;
       }
@@ -121,6 +148,9 @@ export function ChatPanel({
         activeReplyIdRef.current = null;
         setPhase("error");
         setWaitingSince(null);
+        setPendingRequest(null);
+        setRespondingRequestId(null);
+        setRespondError(null);
         appendMessage({ id: `${Date.now()}-err`, kind: "error", text: String(p.message ?? p.error ?? "The model turn failed.") });
         setSessionListRefresh((n) => n + 1);
         return;
@@ -138,6 +168,10 @@ export function ChatPanel({
     setErrorMessage(null);
     setMessages([]);
     activeReplyIdRef.current = null;
+    setPendingRequest(null);
+    setRespondingRequestId(null);
+    setRespondError(null);
+    setClarifyAnswerText("");
     try {
       const { session_id } = await api.createHermesSession(projectId);
       setLocalSessionId(session_id);
@@ -158,8 +192,36 @@ export function ChatPanel({
     setMessages([{ id: "resume-note", kind: "system", text: "Resumed conversation — only new activity appears below." }]);
     activeReplyIdRef.current = null;
     setErrorMessage(null);
+    setPendingRequest(null);
+    setRespondingRequestId(null);
+    setRespondError(null);
+    setClarifyAnswerText("");
     openEventSource(id);
     setPhase("active");
+  }
+
+  async function respondToPendingRequest(response: { choice?: string; answerText?: string }) {
+    if (!pendingRequest || !localSessionId) return;
+    if (!canSubmitPendingResponse(pendingRequest.requestId, respondingRequestId)) return;
+    setRespondingRequestId(pendingRequest.requestId);
+    setRespondError(null);
+    const payload = buildRespondPayload(localSessionId, pendingRequest, response);
+    try {
+      await api.respondToRequest(payload);
+      const now = nowMs();
+      const outcome = resolvePendingRequestOutcome(pendingRequest.kind, { ok: true });
+      appendMessage({ id: `${now}-resp`, kind: "system", text: outcome.text });
+      setPendingRequest(null);
+      setClarifyAnswerText("");
+      setPhase("waiting_for_provider");
+      setWaitingSince(now);
+      setElapsedSec(0);
+      setRespondingRequestId(null);
+    } catch (e: any) {
+      const outcome = resolvePendingRequestOutcome(pendingRequest.kind, { ok: false, error: e.message || "unknown error" });
+      setRespondError(outcome.text);
+      setRespondingRequestId(null);
+    }
   }
 
   async function send() {
@@ -254,6 +316,51 @@ export function ChatPanel({
             </div>
           ))}
         </div>
+
+        {pendingRequest && (
+          <div
+            role="alert"
+            style={{ padding: 8, borderTop: "1px solid var(--panel-border)", background: "var(--panel-bg-raised, rgba(255,255,255,0.03))" }}
+          >
+            <div className="badge">{pendingRequest.kind === "approval" ? "Approval requested" : "Clarification requested"}</div>
+            <div style={{ marginTop: 4, whiteSpace: "pre-wrap", fontSize: 12 }}>{pendingRequest.message}</div>
+
+            {pendingRequest.kind === "approval" ? (
+              <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                {pendingRequest.choices.map((choice) => (
+                  <button
+                    key={choice}
+                    onClick={() => respondToPendingRequest({ choice })}
+                    disabled={respondingRequestId === pendingRequest.requestId}
+                    aria-label={`Respond ${choice} to the approval request`}
+                  >
+                    {respondingRequestId === pendingRequest.requestId ? "Sending…" : choice}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                <input
+                  style={{ flex: 1 }}
+                  value={clarifyAnswerText}
+                  disabled={respondingRequestId === pendingRequest.requestId}
+                  placeholder="Your answer…"
+                  onChange={(e) => setClarifyAnswerText(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && respondToPendingRequest({ answerText: clarifyAnswerText })}
+                  aria-label="Clarification answer"
+                />
+                <button
+                  onClick={() => respondToPendingRequest({ answerText: clarifyAnswerText })}
+                  disabled={respondingRequestId === pendingRequest.requestId || !clarifyAnswerText.trim()}
+                >
+                  {respondingRequestId === pendingRequest.requestId ? "Sending…" : "Submit"}
+                </button>
+              </div>
+            )}
+
+            {respondError && <div style={{ color: "var(--danger)", fontSize: 11, marginTop: 4 }}>{respondError}</div>}
+          </div>
+        )}
 
         <div style={{ display: "flex", gap: 6, padding: 8, borderTop: "1px solid var(--panel-border)" }}>
           <input
