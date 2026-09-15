@@ -31,16 +31,23 @@
  * This file is not executed by this authorization's own static-validation steps. Electron app
  * launch, BrowserWindow creation at runtime, and native process behavior all require their
  * own separate, explicit runtime authorization/user-owned foreground launch.
+ *
+ * Extended by VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION to
+ * register the four Hermes authorization IPC handlers, delegating entirely to
+ * electron/hermesAuthorization.ts. This file still has no Hermes network/health/session/
+ * prompt/event handler of any kind — this phase adds only an authorization *state* boundary,
+ * nothing that connects to Hermes.
  */
 import { app, BrowserWindow, ipcMain, powerMonitor } from "electron";
 import path from "node:path";
 import { HARDENED_WEB_PREFERENCES, isNavigationAllowed, isNewWindowAllowed } from "./security-policy";
-import { WORKSPACE_IPC_CHANNELS } from "./shared-ipc-contract";
+import { HERMES_IPC_CHANNELS, WORKSPACE_IPC_CHANNELS } from "./shared-ipc-contract";
 import { pickDirectory, getCurrent, clearCurrent } from "./workspace-grant";
 import { listEntries } from "./workspaceExplorer";
 import { readTextFile } from "./workspaceFileViewer";
 import { searchText } from "./workspaceSearch";
 import { getGitSummary } from "./workspaceGit";
+import { getAvailability, getAuthorizationState, beginAuthorization, clearAuthorization as clearHermesAuthorization } from "./hermesAuthorization";
 
 /**
  * Explicit, disabled-by-default opt-in for the lifecycle diagnostics below —
@@ -160,6 +167,22 @@ function registerWorkspaceIpcHandlers(window: BrowserWindow): void {
 }
 
 /**
+ * Registers the four Hermes authorization IPC handlers — VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION.
+ * Each is a thin delegate to electron/hermesAuthorization.ts, which owns the credential and
+ * every validation rule; this file never inspects, logs, or forwards the request payload
+ * itself — `beginAuthorization`'s raw `unknown` argument is passed straight through
+ * unexamined, exactly as `hermesAuthorization.ts`'s own `validateAuthorizationRequest`
+ * expects, so no second, weaker, or divergent validation exists here. No Hermes network,
+ * health-check, session, prompt, or event handler is registered anywhere in this file.
+ */
+function registerHermesIpcHandlers(): void {
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_AVAILABILITY, () => getAvailability());
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_AUTHORIZATION_STATE, () => getAuthorizationState());
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_BEGIN_AUTHORIZATION, (_event, request: unknown) => beginAuthorization(request));
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_AUTHORIZATION, () => clearHermesAuthorization());
+}
+
+/**
  * `powerMonitor` events — VYRON_CODE_V02_A00_RUNTIME_EXIT_TRACE_COMPLETION_AND_STABILITY_FIX_AUTHORIZATION,
  * second pass. None of these had been instrumented before this pass. The observed exit timing
  * varied between live runs (~150s, then ~210s+) rather than landing on one fixed duration,
@@ -251,6 +274,7 @@ app.on("child-process-gone", (_event, details) => logLifecycle("child-process-go
 app.whenReady().then(() => {
   mainWindow = createMainWindow();
   registerWorkspaceIpcHandlers(mainWindow);
+  registerHermesIpcHandlers();
   registerPowerMonitorDiagnostics();
   startLifecycleHeartbeat();
   // Same listener-attachment confirmation as createMainWindow()'s own, but for every `app`-

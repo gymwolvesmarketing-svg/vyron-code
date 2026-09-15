@@ -127,6 +127,64 @@ export interface GitSummaryResult {
 }
 
 /**
+ * Hermes authorization boundary types — VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION.
+ * These types carry no Hermes endpoint, host, port, session, protocol, or transport
+ * information of any kind — only authorization state and, in `HermesAuthorizationRequest`
+ * alone, the single credential value the user explicitly submits. See
+ * electron/hermesAuthorization.ts for the main-process-only service that owns the credential
+ * itself (never exported by any type or function here).
+ */
+
+/** Static, build-time-only capability state — never the result of a network probe or a
+ * credential-store/environment inspection. See getAvailability()'s own doc comment. */
+export type HermesAvailabilityState = "available" | "unavailable" | "not_configured";
+
+export interface HermesAvailability {
+  readonly state: HermesAvailabilityState;
+}
+
+/** The current ambient authorization state — never includes the credential, its length, or
+ * any derived value. */
+export type HermesAuthorizationAmbientState = "not_authorized" | "authorized_memory_only";
+
+export interface HermesAuthorizationState {
+  readonly state: HermesAuthorizationAmbientState;
+}
+
+/**
+ * The one and only shape `beginAuthorization` accepts — exactly one field, `credential`, a
+ * string. electron/hermesAuthorization.ts's `validateAuthorizationRequest` rejects any request
+ * with a different shape (extra fields, wrong type, empty/whitespace-only, or oversized) before
+ * retaining anything. This type intentionally has no endpoint/host/port/session/path field —
+ * none is ever accepted from the renderer for this or any future Hermes IPC method in this
+ * phase (T-14).
+ */
+export interface HermesAuthorizationRequest {
+  readonly credential: string;
+}
+
+/** The safe outcome of a `beginAuthorization` or `clearAuthorization` call — never the
+ * credential, never a raw error, never a length/hash/fingerprint derived from the credential. */
+export type HermesAuthorizationOutcomeState = "authorized_memory_only" | "revoked" | "not_authorized" | "safe_failure" | "unavailable";
+
+export interface HermesAuthorizationResult {
+  readonly state: HermesAuthorizationOutcomeState;
+}
+
+/**
+ * D-08B's full Hermes authorization bridge — exactly four methods, none of which can create a
+ * network connection, a session, or any Hermes protocol activity. `beginAuthorization` is the
+ * sole one-way credential-submission boundary; `getAvailability`/`getAuthorizationState` are
+ * parameter-free reads; `clearAuthorization` is the sole revocation action.
+ */
+export interface DesktopHermesApi {
+  getAvailability(): Promise<HermesAvailability>;
+  getAuthorizationState(): Promise<HermesAuthorizationState>;
+  beginAuthorization(request: HermesAuthorizationRequest): Promise<HermesAuthorizationResult>;
+  clearAuthorization(): Promise<HermesAuthorizationResult>;
+}
+
+/**
  * Milestone A's full workspace bridge. Each method is explicit and purpose-specific — no
  * generic channel-invoking capability. `listEntries`/`readTextFile` take a caller-supplied
  * relative path; `searchText` takes a caller-supplied query string; every one of these is
@@ -151,6 +209,7 @@ export interface DesktopApi {
   readonly capabilities: DesktopRuntimeState["capabilities"];
   readonly security: DesktopSecurityState;
   readonly workspace: DesktopWorkspaceApi;
+  readonly hermes: DesktopHermesApi;
 }
 
 /**
@@ -171,6 +230,23 @@ export const WORKSPACE_IPC_CHANNELS = {
 } as const;
 
 export type WorkspaceIpcChannel = (typeof WORKSPACE_IPC_CHANNELS)[keyof typeof WORKSPACE_IPC_CHANNELS];
+
+/**
+ * Implemented Hermes authorization IPC channels — VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION.
+ * Wired to real `ipcMain.handle` handlers in electron/main.ts, delegating to
+ * electron/hermesAuthorization.ts, and exposed through the preload bridge as the `hermes.*`
+ * methods above. A distinct channel-name family from `WORKSPACE_IPC_CHANNELS` — kept separate
+ * because they own an entirely independent piece of process-memory state (see
+ * electron/hermesAuthorization.ts's own "independent-lifetime policy" note).
+ */
+export const HERMES_IPC_CHANNELS = {
+  HERMES_GET_AVAILABILITY: "hermes:getAvailability",
+  HERMES_GET_AUTHORIZATION_STATE: "hermes:getAuthorizationState",
+  HERMES_BEGIN_AUTHORIZATION: "hermes:beginAuthorization",
+  HERMES_CLEAR_AUTHORIZATION: "hermes:clearAuthorization",
+} as const;
+
+export type HermesIpcChannel = (typeof HERMES_IPC_CHANNELS)[keyof typeof HERMES_IPC_CHANNELS];
 
 /**
  * Future, still-unimplemented IPC channel name placeholder — declared so a later phase

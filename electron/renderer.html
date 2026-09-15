@@ -26,6 +26,31 @@
   </header>
 
   <main>
+    <section id="hermes-panel">
+      <!--
+        Hermes authorization panel — VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION.
+        No network request is possible from this page (connect-src 'none' above). This panel
+        only lets the user submit a credential to the main process, where it is held in memory
+        for this app session only — never saved, never displayed again after submission, and
+        never used here to open a Hermes connection, session, or any other capability.
+      -->
+      <h2>Hermes</h2>
+      <p id="hermes-status">Hermes: Not authorized</p>
+      <p class="muted" id="hermes-explanation">Hermes is disabled until you explicitly authorize it for this app session.</p>
+      <p class="muted">Your credential is held only in this running desktop app and is not saved.</p>
+      <div class="hermes-actions">
+        <button id="hermes-authorize-btn" type="button">Authorize Hermes for this session</button>
+        <button id="hermes-clear-btn" type="button" hidden>Clear Hermes authorization</button>
+      </div>
+      <form id="hermes-authorization-form" class="hermes-form" hidden>
+        <label for="hermes-credential-input" class="visually-hidden">Hermes authorization credential</label>
+        <input id="hermes-credential-input" type="password" autocomplete="off" maxlength="4096" />
+        <button id="hermes-submit-btn" type="submit">Authorize</button>
+        <button id="hermes-cancel-btn" type="button">Cancel</button>
+      </form>
+      <p id="hermes-error" class="muted" hidden></p>
+    </section>
+
     <section>
       <h2>Workspace</h2>
       <p id="workspace-status">No workspace is selected.</p>

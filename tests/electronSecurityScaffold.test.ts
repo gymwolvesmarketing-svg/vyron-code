@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { HARDENED_WEB_PREFERENCES, ALLOWED_NAVIGATION_ORIGINS, isNavigationAllowed, isNewWindowAllowed } from "../electron/security-policy";
-import { FUTURE_IPC_CHANNELS, WORKSPACE_IPC_CHANNELS } from "../electron/shared-ipc-contract";
+import { FUTURE_IPC_CHANNELS, WORKSPACE_IPC_CHANNELS, HERMES_IPC_CHANNELS } from "../electron/shared-ipc-contract";
 
 // Strips block (/** ... */, /* ... */) and line (// ...) comments before pattern-matching
 // source text, so structural checks below reflect actual code — not this codebase's own doc
@@ -95,6 +95,21 @@ describe("WORKSPACE_IPC_CHANNELS — implemented channels (D-03 + Milestone A)",
         "workspace:search",
       ].sort()
     );
+  });
+});
+
+describe("HERMES_IPC_CHANNELS — implemented channels (D-08B)", () => {
+  it("exposes exactly the four implemented Hermes authorization channels, no more", () => {
+    expect(Object.values(HERMES_IPC_CHANNELS).sort()).toEqual(
+      ["hermes:beginAuthorization", "hermes:clearAuthorization", "hermes:getAuthorizationState", "hermes:getAvailability"].sort()
+    );
+  });
+
+  it("shares no channel name with WORKSPACE_IPC_CHANNELS — a distinct, independent namespace", () => {
+    const workspaceChannels = new Set(Object.values(WORKSPACE_IPC_CHANNELS));
+    for (const channel of Object.values(HERMES_IPC_CHANNELS)) {
+      expect(workspaceChannels.has(channel as never)).toBe(false);
+    }
   });
 });
 
@@ -228,6 +243,52 @@ describe("preload.ts — exposed window.vyronDesktop API", () => {
       expect(api).not.toHaveProperty(forbiddenKey);
     }
   });
+
+  it("exposes exactly the four Hermes authorization methods, no more (D-08B)", () => {
+    const hermes = exposedApi().hermes as Record<string, unknown>;
+    expect(Object.keys(hermes).sort()).toEqual(["beginAuthorization", "clearAuthorization", "getAuthorizationState", "getAvailability"]);
+    for (const method of Object.values(hermes)) {
+      expect(typeof method).toBe("function");
+    }
+  });
+
+  it("has no generic invoke/send/on method and no raw ipcRenderer reference on the hermes namespace either", () => {
+    const hermes = exposedApi().hermes as Record<string, unknown>;
+    for (const forbiddenKey of ["invoke", "send", "on", "ipcRenderer", "sendSync", "postMessage"]) {
+      expect(hermes).not.toHaveProperty(forbiddenKey);
+    }
+  });
+
+  it("the three parameter-free Hermes methods invoke exactly their own fixed channel, with no arguments forwarded", () => {
+    const hermes = exposedApi().hermes as Record<string, (...args: unknown[]) => unknown>;
+    ipcRendererInvoke.mockClear();
+    hermes.getAvailability?.();
+    hermes.getAuthorizationState?.();
+    hermes.clearAuthorization?.();
+    expect(ipcRendererInvoke).toHaveBeenCalledTimes(3);
+    const calledChannels = ipcRendererInvoke.mock.calls.map((call) => call[0]).sort();
+    expect(calledChannels).toEqual(["hermes:clearAuthorization", "hermes:getAuthorizationState", "hermes:getAvailability"].sort());
+    for (const call of ipcRendererInvoke.mock.calls) {
+      expect(call).toHaveLength(1);
+    }
+  });
+
+  it("beginAuthorization forwards exactly the channel plus the caller's own request object, verbatim, and nothing else", () => {
+    const hermes = exposedApi().hermes as Record<string, (...args: unknown[]) => unknown>;
+    ipcRendererInvoke.mockClear();
+    const request = { credential: "placeholder-test-credential-value" };
+    hermes.beginAuthorization?.(request);
+    expect(ipcRendererInvoke).toHaveBeenCalledTimes(1);
+    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(1, "hermes:beginAuthorization", request);
+    expect(ipcRendererInvoke.mock.calls[0]).toHaveLength(2);
+  });
+
+  it("its local Hermes channel-name duplicates match shared-ipc-contract.ts's canonical HERMES_IPC_CHANNELS exactly", () => {
+    const hermes = exposedApi().hermes as Record<string, (...args: unknown[]) => unknown>;
+    ipcRendererInvoke.mockClear();
+    hermes.getAvailability?.();
+    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(1, HERMES_IPC_CHANNELS.HERMES_GET_AVAILABILITY);
+  });
 });
 
 describe("electron/preload.ts — no runtime relative local import (D-03 bridge-injection fix)", () => {
@@ -313,9 +374,10 @@ describe("Electron scaffold source — no shell/child_process execution capabili
     }
   });
 
-  it("confirms exactly the eleven expected scaffold .ts files exist, no more", () => {
+  it("confirms exactly the twelve expected scaffold .ts files exist, no more", () => {
     expect(sourceFiles.sort()).toEqual(
       [
+        "hermesAuthorization.ts",
         "main.ts",
         "preload.ts",
         "renderer.ts",
@@ -367,6 +429,65 @@ describe("Electron scaffold source — no shell/child_process execution capabili
   });
 });
 
+describe("electron/hermesAuthorization.ts — no persistence/network/logging/import capability (D-08B)", () => {
+  const filePath = path.join(__dirname, "..", "electron", "hermesAuthorization.ts");
+  const rawSource = fs.readFileSync(filePath, "utf8");
+  const code = stripComments(rawSource);
+
+  it("imports nothing from 'electron' or any node:* built-in — types-only import from shared-ipc-contract.ts is the sole import", () => {
+    const importLines = code.match(/^\s*import\b.*$/gm) ?? [];
+    expect(importLines.length).toBe(1);
+    expect(importLines[0]).toMatch(/from ["']\.\/shared-ipc-contract["']/);
+    expect(importLines[0]).toMatch(/^\s*import type\b/);
+  });
+
+  it("has no console/network/persistence/safeStorage/environment/filesystem access of any kind", () => {
+    for (const forbidden of [
+      /console\./,
+      /WebSocket/,
+      /\bfetch\s*\(/,
+      /XMLHttpRequest/,
+      /safeStorage/i,
+      /keytar/i,
+      /[Cc]redential[- ]?[Mm]anager/,
+      /keychain/i,
+      /process\.env/,
+      /require\(/,
+      /localStorage/,
+      /sessionStorage/,
+      /indexedDB/i,
+      /from ["']node:fs["']|from ["']fs["']/,
+      /from ["']node:http["']|from ["']node:https["']|from ["']node:net["']|from ["']node:dgram["']/,
+    ]) {
+      // Comment-stripped: this module's own header prose explains, by name, every persistence/
+      // network mechanism it deliberately does NOT use — a naive raw-source scan would
+      // self-trigger on that explanatory sentence (same rationale as stripComments() itself).
+      expect(code, `unexpectedly matched: ${forbidden}`).not.toMatch(forbidden);
+    }
+  });
+
+  it("exports exactly the four intended functions — no credential getter, serializer, or global accessor", () => {
+    const exportedFns = [...code.matchAll(/export\s+(?:async\s+)?function\s+(\w+)/g)].map((m) => m[1]);
+    expect(exportedFns.sort()).toEqual(["beginAuthorization", "clearAuthorization", "getAuthorizationState", "getAvailability"].sort());
+  });
+
+  it("enforces an explicit bounded maximum credential length before retaining any value", () => {
+    expect(code).toMatch(/MAX_CREDENTIAL_LENGTH/);
+    expect(code).toMatch(/credential\.length > MAX_CREDENTIAL_LENGTH/);
+  });
+
+  it("rejects empty and whitespace-only credentials before retaining any value", () => {
+    expect(code).toMatch(/credential\.length === 0/);
+    expect(code).toMatch(/credential\.trim\(\)\.length === 0/);
+  });
+
+  it("uses a monotonic generation counter for the T-17 stale-authorization race guard", () => {
+    expect(code).toMatch(/let generation = 0;/);
+    expect(code).toMatch(/generation\+\+/);
+    expect(code).toMatch(/generation !== generationAtStart/);
+  });
+});
+
 describe("electron/main.ts — local-only content load", () => {
   // Comment-stripped: main.ts's own doc comments explain, in prose, that it "never" loads a
   // remote/localhost/data: URL — a naive substring check would self-trigger on that sentence.
@@ -383,6 +504,37 @@ describe("electron/main.ts — local-only content load", () => {
     expect(source).not.toContain("localhost");
     expect(source).not.toContain("127.0.0.1");
     expect(source).not.toMatch(/data:/);
+  });
+});
+
+describe("electron/main.ts — Hermes authorization IPC handler registration (D-08B)", () => {
+  const source = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", "main.ts"), "utf8"));
+
+  it("registers exactly the four Hermes IPC handlers, delegating to electron/hermesAuthorization.ts", () => {
+    expect(source).toMatch(/from ["']\.\/hermesAuthorization["']/);
+    for (const channel of [
+      "HERMES_IPC_CHANNELS.HERMES_GET_AVAILABILITY",
+      "HERMES_IPC_CHANNELS.HERMES_GET_AUTHORIZATION_STATE",
+      "HERMES_IPC_CHANNELS.HERMES_BEGIN_AUTHORIZATION",
+      "HERMES_IPC_CHANNELS.HERMES_CLEAR_AUTHORIZATION",
+    ]) {
+      expect(source).toContain(channel);
+    }
+  });
+
+  it("passes beginAuthorization's raw request straight through, unexamined — no second/weaker validation here", () => {
+    expect(source).toMatch(/beginAuthorization\(request\)/);
+  });
+
+  it("never logs a Hermes authorization request payload via logLifecycle or console", () => {
+    expect(source).not.toMatch(/logLifecycle\([^)]*credential/i);
+    expect(source).not.toMatch(/console\.[a-z]+\([^)]*credential/i);
+  });
+
+  it("registers no Hermes network/health/session/prompt/event IPC channel of any kind", () => {
+    for (const forbidden of [/hermes:health/i, /hermes:session/i, /hermes:prompt/i, /hermes:respond/i, /hermes:interrupt/i, /hermes:event/i]) {
+      expect(source).not.toMatch(forbidden);
+    }
   });
 });
 
@@ -494,6 +646,62 @@ describe("electron/renderer.ts — Milestone A workspace bridge wiring", () => {
   });
 });
 
+describe("electron/renderer.ts — Hermes authorization panel wiring (D-08B)", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.ts"), "utf8");
+  const stripped = stripComments(source);
+  const hermesSourceStart = stripped.indexOf("HermesViewState");
+  const hermesSource = hermesSourceStart >= 0 ? stripped.slice(hermesSourceStart) : "";
+
+  it("declares the Hermes authorization types/interfaces locally, mirroring shared-ipc-contract.ts", () => {
+    expect(stripped).toMatch(/interface DesktopHermesApi/);
+    expect(stripped).toMatch(/interface HermesAuthorizationResult/);
+  });
+
+  it("calls every Hermes bridge method — getAvailability, getAuthorizationState, beginAuthorization, clearAuthorization", () => {
+    for (const method of ["getAvailability", "getAuthorizationState", "beginAuthorization", "clearAuthorization"]) {
+      expect(stripped).toMatch(new RegExp(`api\\.hermes\\.${method}\\(`));
+    }
+  });
+
+  it("the authorization form's submit handler calls preventDefault before invoking beginAuthorization", () => {
+    expect(stripped).toMatch(/handleBeginHermesAuthorization[\s\S]{0,300}preventDefault/);
+  });
+
+  it("clears the credential input in a finally block after every beginAuthorization attempt, success or failure", () => {
+    expect(stripped).toMatch(/finally\s*\{\s*els\.credentialInput\.value = "";\s*\}/);
+  });
+
+  it("uses a monotonic request generation to discard a stale beginAuthorization response after a later clear/submit (T-17)", () => {
+    expect(hermesSource).toMatch(/let hermesRequestGeneration = 0;/);
+    expect(hermesSource).toMatch(/requestId !== hermesRequestGeneration/);
+    const clearFnBody = /async function handleClearHermesAuthorization\(\): Promise<void> \{[\s\S]*?\n\}/.exec(hermesSource)?.[0] ?? "";
+    expect(clearFnBody).toMatch(/hermesRequestGeneration\+\+/);
+  });
+
+  it("never logs anything from the Hermes authorization flow", () => {
+    expect(hermesSourceStart).toBeGreaterThan(-1);
+    expect(hermesSource).not.toMatch(/console\./);
+  });
+
+  it("never renders a credential value, length, or derived fingerprint in the Hermes panel", () => {
+    for (const forbidden of [/credential\.length/, /credentialInput\.value\)/, /\.slice\(0,\s*\d/]) {
+      expect(hermesSource).not.toMatch(forbidden);
+    }
+  });
+
+  it("only ever sets safe, fixed literal status text in the Hermes panel — never a value derived from an IPC response's own content", () => {
+    expect(hermesSource).toMatch(/"Hermes: Not authorized"/);
+    expect(hermesSource).toMatch(/"Hermes: Authorized for this app session only"/);
+    expect(hermesSource).not.toMatch(/statusEl\.textContent = result\./);
+    expect(hermesSource).not.toMatch(/statusEl\.textContent = \$\{/);
+  });
+
+  it("resets the credential input value on every non-submitting render path", () => {
+    const occurrences = hermesSource.match(/credentialInput\.value = "";/g) ?? [];
+    expect(occurrences.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
 describe("electron/renderer.html — static, non-interactive local content", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
   const lowerHtml = html.toLowerCase();
@@ -504,23 +712,28 @@ describe("electron/renderer.html — static, non-interactive local content", () 
     expect(html).toMatch(/connect-src 'none'/);
   });
 
-  it("contains no textarea or select, and exactly one <input> — the Search query box, never a path input", () => {
+  it("contains no textarea or select, and exactly two <input> elements — the Search query box and the Hermes credential box, never a path input", () => {
     for (const tag of ["<textarea", "<select"]) {
       expect(lowerHtml).not.toContain(tag);
     }
     const inputs = [...html.matchAll(/<input\b[^>]*>/g)];
-    expect(inputs).toHaveLength(1);
-    const inputTag = inputs[0]?.[0] ?? "";
-    expect(inputTag).toContain('id="search-input"');
-    expect(inputTag).toContain('type="text"');
+    expect(inputs).toHaveLength(2);
+    const inputTags = inputs.map((m) => m[0]);
+    const searchInputTag = inputTags.find((tag) => tag.includes('id="search-input"')) ?? "";
+    expect(searchInputTag).toContain('type="text"');
+    const credentialInputTag = inputTags.find((tag) => tag.includes('id="hermes-credential-input"')) ?? "";
+    expect(credentialInputTag).toContain('type="password"');
     // Never a filesystem-picker input type, and never named/labelled as a path field — the
-    // workspace root can only ever come from the native "Open folder…" picker.
-    expect(inputTag.toLowerCase()).not.toMatch(/type="(file|directory)"/);
-    expect(inputTag.toLowerCase()).not.toContain('name="path"');
-    expect(inputTag.toLowerCase()).not.toContain('id="path"');
+    // workspace root can only ever come from the native "Open folder…" picker, and the Hermes
+    // credential input is never a path field either.
+    for (const inputTag of inputTags) {
+      expect(inputTag.toLowerCase()).not.toMatch(/type="(file|directory)"/);
+      expect(inputTag.toLowerCase()).not.toContain('name="path"');
+      expect(inputTag.toLowerCase()).not.toContain('id="path"');
+    }
   });
 
-  it("contains exactly the five Milestone A workspace-panel buttons plus the two D-03 workspace-grant buttons, no more", () => {
+  it("contains exactly the five Milestone A workspace-panel buttons, the two D-03 workspace-grant buttons, and the four D-08B Hermes buttons, no more", () => {
     const buttonIds = [...html.matchAll(/<button id="([^"]+)"/g)].map((m) => m[1]);
     expect(buttonIds.sort()).toEqual(
       [
@@ -530,6 +743,10 @@ describe("electron/renderer.html — static, non-interactive local content", () 
         "nav-search-btn",
         "pick-directory-btn",
         "search-btn",
+        "hermes-authorize-btn",
+        "hermes-clear-btn",
+        "hermes-submit-btn",
+        "hermes-cancel-btn",
       ].sort()
     );
   });
@@ -596,5 +813,60 @@ describe("electron/renderer.html — static, non-interactive local content", () 
     expect(html).not.toMatch(/<script>[\s\S]*?<\/script>/); // no inline <script> block
     expect(html).not.toMatch(/href="https?:\/\//);
     expect(html).not.toMatch(/src="https?:\/\//);
+  });
+});
+
+describe("electron/renderer.html — Hermes authorization panel (D-08B)", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
+  const lowerHtml = html.toLowerCase();
+
+  it("contains the full Hermes panel structure", () => {
+    for (const id of [
+      "hermes-panel",
+      "hermes-status",
+      "hermes-explanation",
+      "hermes-authorize-btn",
+      "hermes-clear-btn",
+      "hermes-authorization-form",
+      "hermes-credential-input",
+      "hermes-submit-btn",
+      "hermes-cancel-btn",
+      "hermes-error",
+    ]) {
+      expect(html).toContain(`id="${id}"`);
+    }
+  });
+
+  it("the credential input is type=password, not prefilled, and autocomplete is off", () => {
+    const match = html.match(/<input id="hermes-credential-input"[^>]*>/);
+    expect(match).not.toBeNull();
+    const tag = match?.[0] ?? "";
+    expect(tag).toContain('type="password"');
+    expect(tag).toContain('autocomplete="off"');
+    expect(tag).not.toMatch(/\bvalue="/);
+  });
+
+  it("the Hermes clear button and authorization form both start hidden", () => {
+    expect(html).toMatch(/<button id="hermes-clear-btn"[^>]*\bhidden\b/);
+    expect(html).toMatch(/<form id="hermes-authorization-form"[^>]*\bhidden\b/);
+  });
+
+  it("the Hermes authorize button is not hidden by default", () => {
+    expect(html).not.toMatch(/<button id="hermes-authorize-btn"[^>]*\bhidden\b/);
+  });
+
+  it("states plainly that Hermes is not authorized by default, and that the credential is never saved", () => {
+    expect(lowerHtml).toMatch(/hermes: not authorized/);
+    expect(lowerHtml).toMatch(/is held only in this running desktop app and is not saved/);
+  });
+
+  it("never renders a token/credential length, prefix, suffix, fingerprint, or reveal/copy control anywhere in the static markup", () => {
+    for (const forbidden of [/token length/i, /credential length/i, /fingerprint/i, /token prefix/i, /token suffix/i, /reveal/i, /show password/i, /copy token/i]) {
+      expect(html).not.toMatch(forbidden);
+    }
+  });
+
+  it("the Hermes error message paragraph starts hidden and empty", () => {
+    expect(html).toMatch(/<p id="hermes-error" class="muted" hidden>\s*<\/p>/);
   });
 });

@@ -90,10 +90,28 @@ p {
   font-size: 13px;
 }
 
-.workspace-actions {
+.workspace-actions,
+.hermes-actions {
   display: flex;
   gap: 8px;
   margin: 10px 0;
+}
+
+.hermes-form {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.hermes-form input[type="password"] {
+  flex: 1 1 auto;
+  font-family: inherit;
+  font-size: 13px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 6px 10px;
 }
 
 button {

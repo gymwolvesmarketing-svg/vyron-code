@@ -98,6 +98,39 @@ interface DesktopWorkspaceApi {
   getGitSummary(): Promise<GitSummaryResult>;
 }
 
+// VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION — duplicated
+// locally for the same reason every other type here is (see file-header comment). Carries no
+// endpoint/host/port/session/protocol field anywhere; the credential itself is never part of
+// any of these types' own shape except as the one write-only field of the request below.
+type HermesAvailabilityState = "available" | "unavailable" | "not_configured";
+
+interface HermesAvailability {
+  readonly state: HermesAvailabilityState;
+}
+
+type HermesAuthorizationAmbientState = "not_authorized" | "authorized_memory_only";
+
+interface HermesAuthorizationState {
+  readonly state: HermesAuthorizationAmbientState;
+}
+
+interface HermesAuthorizationRequest {
+  readonly credential: string;
+}
+
+type HermesAuthorizationOutcomeState = "authorized_memory_only" | "revoked" | "not_authorized" | "safe_failure" | "unavailable";
+
+interface HermesAuthorizationResult {
+  readonly state: HermesAuthorizationOutcomeState;
+}
+
+interface DesktopHermesApi {
+  getAvailability(): Promise<HermesAvailability>;
+  getAuthorizationState(): Promise<HermesAuthorizationState>;
+  beginAuthorization(request: HermesAuthorizationRequest): Promise<HermesAuthorizationResult>;
+  clearAuthorization(): Promise<HermesAuthorizationResult>;
+}
+
 interface DesktopApi {
   readonly platform: "desktop";
   readonly capabilities: {
@@ -117,6 +150,7 @@ interface DesktopApi {
     readonly sandbox: true;
   };
   readonly workspace: DesktopWorkspaceApi;
+  readonly hermes: DesktopHermesApi;
 }
 
 // Duplicated from shared-ipc-contract.ts's WORKSPACE_IPC_CHANNELS — see the file-header note
@@ -128,6 +162,12 @@ const WORKSPACE_LIST_CHANNEL = "workspace:list";
 const WORKSPACE_READ_TEXT_CHANNEL = "workspace:readText";
 const WORKSPACE_SEARCH_CHANNEL = "workspace:search";
 const WORKSPACE_GIT_SUMMARY_CHANNEL = "workspace:gitSummary";
+
+// Duplicated from shared-ipc-contract.ts's HERMES_IPC_CHANNELS — same reason as above.
+const HERMES_GET_AVAILABILITY_CHANNEL = "hermes:getAvailability";
+const HERMES_GET_AUTHORIZATION_STATE_CHANNEL = "hermes:getAuthorizationState";
+const HERMES_BEGIN_AUTHORIZATION_CHANNEL = "hermes:beginAuthorization";
+const HERMES_CLEAR_AUTHORIZATION_CHANNEL = "hermes:clearAuthorization";
 
 const vyronDesktop: DesktopApi = {
   platform: "desktop",
@@ -155,6 +195,16 @@ const vyronDesktop: DesktopApi = {
     readTextFile: (relativePath: string) => ipcRenderer.invoke(WORKSPACE_READ_TEXT_CHANNEL, relativePath),
     searchText: (query: string) => ipcRenderer.invoke(WORKSPACE_SEARCH_CHANNEL, query),
     getGitSummary: () => ipcRenderer.invoke(WORKSPACE_GIT_SUMMARY_CHANNEL),
+  },
+  // Each method forwards at most one caller-supplied plain object (the credential-submission
+  // request) and nothing else — same one-argument-only discipline as the workspace methods
+  // above. `beginAuthorization`'s request is forwarded verbatim, unexamined; this file never
+  // reads, logs, or otherwise touches the credential value itself.
+  hermes: {
+    getAvailability: () => ipcRenderer.invoke(HERMES_GET_AVAILABILITY_CHANNEL),
+    getAuthorizationState: () => ipcRenderer.invoke(HERMES_GET_AUTHORIZATION_STATE_CHANNEL),
+    beginAuthorization: (request: HermesAuthorizationRequest) => ipcRenderer.invoke(HERMES_BEGIN_AUTHORIZATION_CHANNEL, request),
+    clearAuthorization: () => ipcRenderer.invoke(HERMES_CLEAR_AUTHORIZATION_CHANNEL),
   },
 };
 

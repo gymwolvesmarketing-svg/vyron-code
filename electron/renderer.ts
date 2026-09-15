@@ -95,6 +95,38 @@ interface DesktopWorkspaceApi {
   getGitSummary(): Promise<GitSummaryResult>;
 }
 
+// VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION — mirrors
+// shared-ipc-contract.ts's real, canonical declarations, per this file's own module-format
+// constraint (see file-header comment). Carries no endpoint/host/port/session field anywhere.
+type HermesAvailabilityState = "available" | "unavailable" | "not_configured";
+
+interface HermesAvailability {
+  readonly state: HermesAvailabilityState;
+}
+
+type HermesAuthorizationAmbientState = "not_authorized" | "authorized_memory_only";
+
+interface HermesAuthorizationState {
+  readonly state: HermesAuthorizationAmbientState;
+}
+
+interface HermesAuthorizationRequest {
+  readonly credential: string;
+}
+
+type HermesAuthorizationOutcomeState = "authorized_memory_only" | "revoked" | "not_authorized" | "safe_failure" | "unavailable";
+
+interface HermesAuthorizationResult {
+  readonly state: HermesAuthorizationOutcomeState;
+}
+
+interface DesktopHermesApi {
+  getAvailability(): Promise<HermesAvailability>;
+  getAuthorizationState(): Promise<HermesAuthorizationState>;
+  beginAuthorization(request: HermesAuthorizationRequest): Promise<HermesAuthorizationResult>;
+  clearAuthorization(): Promise<HermesAuthorizationResult>;
+}
+
 interface DesktopApi {
   readonly platform: "desktop";
   readonly capabilities: {
@@ -114,6 +146,7 @@ interface DesktopApi {
     readonly sandbox: true;
   };
   readonly workspace: DesktopWorkspaceApi;
+  readonly hermes: DesktopHermesApi;
 }
 
 interface Window {
@@ -654,6 +687,210 @@ function renderGitSummary(result: GitSummaryResult): void {
 }
 
 // ---------------------------------------------------------------------------------------
+// Hermes authorization panel — VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION.
+// Entirely independent of the workspace grant above: clearing one never touches the other
+// (see electron/hermesAuthorization.ts's own "independent-lifetime policy" note). No Hermes
+// network/health/session/prompt/event call exists anywhere in this file — only the four
+// window.vyronDesktop.hermes.* authorization-state methods, each triggered only by an
+// explicit user action (opening the panel, submitting the form, or clicking Clear).
+// ---------------------------------------------------------------------------------------
+type HermesViewState = "not_authorized" | "panel_open" | "submitting" | "authorized" | "revoking" | "unavailable" | "safe_failure";
+
+/** Monotonic request generation — T-17 stale-authorization race protection, renderer side.
+ * `handleClearHermesAuthorization` increments this immediately (before its own IPC call even
+ * resolves), so a `beginAuthorization` call already awaiting a response detects the change
+ * once it resolves and discards its own result instead of rendering a now-stale "authorized"
+ * state after the user has already revoked. */
+let hermesRequestGeneration = 0;
+
+interface HermesPanelElements {
+  readonly statusEl: HTMLElement;
+  readonly explanationEl: HTMLElement;
+  readonly authorizeBtn: HTMLButtonElement;
+  readonly clearBtn: HTMLButtonElement;
+  readonly form: HTMLFormElement;
+  readonly credentialInput: HTMLInputElement;
+  readonly submitBtn: HTMLButtonElement;
+  readonly cancelBtn: HTMLButtonElement;
+  readonly errorEl: HTMLElement;
+}
+
+function getHermesElements(): HermesPanelElements | null {
+  const statusEl = document.getElementById("hermes-status");
+  const explanationEl = document.getElementById("hermes-explanation");
+  const authorizeBtn = document.getElementById("hermes-authorize-btn");
+  const clearBtn = document.getElementById("hermes-clear-btn");
+  const form = document.getElementById("hermes-authorization-form");
+  const credentialInput = document.getElementById("hermes-credential-input");
+  const submitBtn = document.getElementById("hermes-submit-btn");
+  const cancelBtn = document.getElementById("hermes-cancel-btn");
+  const errorEl = document.getElementById("hermes-error");
+  if (
+    !(statusEl instanceof HTMLElement) ||
+    !(explanationEl instanceof HTMLElement) ||
+    !(authorizeBtn instanceof HTMLButtonElement) ||
+    !(clearBtn instanceof HTMLButtonElement) ||
+    !(form instanceof HTMLFormElement) ||
+    !(credentialInput instanceof HTMLInputElement) ||
+    !(submitBtn instanceof HTMLButtonElement) ||
+    !(cancelBtn instanceof HTMLButtonElement) ||
+    !(errorEl instanceof HTMLElement)
+  ) {
+    return null;
+  }
+  return { statusEl, explanationEl, authorizeBtn, clearBtn, form, credentialInput, submitBtn, cancelBtn, errorEl };
+}
+
+/**
+ * Renders one of the required D-08B UI states using only fixed, safe, hand-written string
+ * literals — never a value derived from the credential, an IPC response's raw content, or an
+ * error message/stack. `credentialInput.value` is reset to `""` on every render that is not
+ * mid-submission, so the credential never lingers in the DOM/renderer state longer than the
+ * one in-flight IPC call that needs it.
+ */
+function renderHermesPanel(view: HermesViewState): void {
+  const els = getHermesElements();
+  if (!els) return;
+  const { statusEl, explanationEl, authorizeBtn, clearBtn, form, credentialInput, submitBtn, errorEl } = els;
+
+  errorEl.hidden = true;
+  errorEl.textContent = "";
+  clearBtn.textContent = "Clear Hermes authorization";
+  submitBtn.textContent = "Authorize";
+
+  if (view === "not_authorized" || view === "unavailable") {
+    statusEl.textContent = "Hermes: Not authorized";
+    explanationEl.textContent =
+      view === "unavailable"
+        ? "Authorization is unavailable in this build."
+        : "Hermes is disabled until you explicitly authorize it for this app session.";
+    authorizeBtn.hidden = view === "unavailable";
+    authorizeBtn.disabled = false;
+    clearBtn.hidden = true;
+    form.hidden = true;
+    credentialInput.value = "";
+    credentialInput.disabled = false;
+    submitBtn.disabled = false;
+    return;
+  }
+
+  if (view === "panel_open" || view === "submitting" || view === "safe_failure") {
+    statusEl.textContent = "Hermes: Not authorized";
+    explanationEl.textContent = "Hermes is disabled until you explicitly authorize it for this app session.";
+    authorizeBtn.hidden = true;
+    clearBtn.hidden = true;
+    form.hidden = false;
+    const submitting = view === "submitting";
+    credentialInput.disabled = submitting;
+    submitBtn.disabled = submitting;
+    submitBtn.textContent = submitting ? "Authorizing…" : "Authorize";
+    if (view === "safe_failure") {
+      credentialInput.value = "";
+      errorEl.hidden = false;
+      errorEl.textContent = "Authorization could not be stored for this app session. Please try again.";
+    }
+    return;
+  }
+
+  // view === "authorized" || view === "revoking"
+  statusEl.textContent = "Hermes: Authorized for this app session only";
+  explanationEl.textContent = "Your credential is held only in this running desktop app and is not saved.";
+  authorizeBtn.hidden = true;
+  clearBtn.hidden = false;
+  form.hidden = true;
+  credentialInput.value = "";
+  const revoking = view === "revoking";
+  clearBtn.disabled = revoking;
+  clearBtn.textContent = revoking ? "Revoking…" : "Clear Hermes authorization";
+}
+
+function handleOpenHermesPanel(): void {
+  renderHermesPanel("panel_open");
+}
+
+function handleCancelHermesAuthorization(): void {
+  renderHermesPanel("not_authorized");
+}
+
+async function handleBeginHermesAuthorization(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  const api = window.vyronDesktop;
+  const els = getHermesElements();
+  if (!els) return;
+  if (!api) {
+    renderHermesPanel("unavailable");
+    return;
+  }
+
+  const credential = els.credentialInput.value;
+  const requestId = ++hermesRequestGeneration;
+  renderHermesPanel("submitting");
+  try {
+    const result = await api.hermes.beginAuthorization({ credential });
+    // Superseded by a later clear or another submit while this call was in flight — never
+    // render a result that is no longer current.
+    if (requestId !== hermesRequestGeneration) return;
+    if (result.state === "authorized_memory_only") {
+      renderHermesPanel("authorized");
+    } else if (result.state === "revoked" || result.state === "not_authorized") {
+      renderHermesPanel("not_authorized");
+    } else if (result.state === "unavailable") {
+      renderHermesPanel("unavailable");
+    } else {
+      renderHermesPanel("safe_failure");
+    }
+  } catch {
+    if (requestId !== hermesRequestGeneration) return;
+    renderHermesPanel("safe_failure");
+  } finally {
+    els.credentialInput.value = "";
+  }
+}
+
+async function handleClearHermesAuthorization(): Promise<void> {
+  const api = window.vyronDesktop;
+  if (!api) {
+    renderHermesPanel("unavailable");
+    return;
+  }
+  // Increment first, synchronously, before the IPC call even starts — supersedes any
+  // beginAuthorization call already in flight immediately, not only after this call resolves.
+  hermesRequestGeneration++;
+  renderHermesPanel("revoking");
+  try {
+    await api.hermes.clearAuthorization();
+  } catch {
+    // Clear must always leave the UI in a safe, non-authorized state, even if the IPC call
+    // itself rejected — never leave the user looking at a stale "authorized" panel.
+  }
+  renderHermesPanel("not_authorized");
+}
+
+async function initHermesState(api: DesktopApi): Promise<void> {
+  try {
+    const availability = await api.hermes.getAvailability();
+    if (availability.state !== "available") {
+      renderHermesPanel("unavailable");
+      return;
+    }
+    const state = await api.hermes.getAuthorizationState();
+    renderHermesPanel(state.state === "authorized_memory_only" ? "authorized" : "not_authorized");
+  } catch {
+    renderHermesPanel("unavailable");
+  }
+}
+
+function wireHermesControls(): void {
+  document.getElementById("hermes-authorize-btn")?.addEventListener("click", handleOpenHermesPanel);
+  document.getElementById("hermes-cancel-btn")?.addEventListener("click", handleCancelHermesAuthorization);
+  document.getElementById("hermes-clear-btn")?.addEventListener("click", () => void handleClearHermesAuthorization());
+  const form = document.getElementById("hermes-authorization-form");
+  if (form instanceof HTMLFormElement) {
+    form.addEventListener("submit", (event) => void handleBeginHermesAuthorization(event));
+  }
+}
+
+// ---------------------------------------------------------------------------------------
 // Wiring and static content
 // ---------------------------------------------------------------------------------------
 function wireWorkspaceControls(): void {
@@ -699,6 +936,7 @@ function renderPlatform(api: DesktopApi): void {
 
 function main(): void {
   wireWorkspaceControls();
+  wireHermesControls();
   const api = window.vyronDesktop;
   if (!api) {
     // Preload bridge unavailable. Electron guarantees preload finishes before this script
@@ -706,11 +944,13 @@ function main(): void {
     // visibly instead of silently leaving the default "No workspace is selected." text, which
     // would misleadingly imply the bridge works and nothing has been picked yet.
     renderStatusMessage("Desktop bridge unavailable. Restart Vyron Code Desktop.");
+    renderHermesPanel("unavailable");
     return;
   }
   renderCapabilities(api);
   renderPlatform(api);
   void initWorkspaceState(api);
+  void initHermesState(api);
 }
 
 main();
