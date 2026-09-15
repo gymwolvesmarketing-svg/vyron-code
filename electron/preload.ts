@@ -145,6 +145,32 @@ interface HermesConnectionResult {
   readonly state: HermesConnectionAmbientState;
 }
 
+// VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION — duplicated locally for
+// the same reason every other type here is. Carries no resolved URL/host/port/protocol field
+// anywhere; `HermesEndpointConfigurationRequest` carries only the raw, caller-supplied string.
+type HermesEndpointAmbientState = "not_configured" | "configured_memory_only";
+
+interface HermesEndpointState {
+  readonly state: HermesEndpointAmbientState;
+}
+
+interface HermesEndpointConfigurationRequest {
+  readonly endpoint: string;
+}
+
+type HermesEndpointConfigurationOutcomeState =
+  | "configured_memory_only"
+  | "cleared"
+  | "not_configured"
+  | "policy_rejected"
+  | "invalid_configuration"
+  | "unavailable"
+  | "safe_failure";
+
+interface HermesEndpointConfigurationResult {
+  readonly state: HermesEndpointConfigurationOutcomeState;
+}
+
 interface DesktopHermesApi {
   getAvailability(): Promise<HermesAvailability>;
   getAuthorizationState(): Promise<HermesAuthorizationState>;
@@ -153,6 +179,9 @@ interface DesktopHermesApi {
   getConnectionState(): Promise<HermesConnectionState>;
   connect(): Promise<HermesConnectionResult>;
   disconnect(): Promise<HermesConnectionResult>;
+  getEndpointConfigurationState(): Promise<HermesEndpointState>;
+  configureEndpoint(request: HermesEndpointConfigurationRequest): Promise<HermesEndpointConfigurationResult>;
+  clearEndpointConfiguration(): Promise<HermesEndpointConfigurationResult>;
 }
 
 interface DesktopApi {
@@ -195,6 +224,9 @@ const HERMES_CLEAR_AUTHORIZATION_CHANNEL = "hermes:clearAuthorization";
 const HERMES_GET_CONNECTION_STATE_CHANNEL = "hermes:getConnectionState";
 const HERMES_CONNECT_CHANNEL = "hermes:connect";
 const HERMES_DISCONNECT_CHANNEL = "hermes:disconnect";
+const HERMES_GET_ENDPOINT_CONFIGURATION_STATE_CHANNEL = "hermes:getEndpointConfigurationState";
+const HERMES_CONFIGURE_ENDPOINT_CHANNEL = "hermes:configureEndpoint";
+const HERMES_CLEAR_ENDPOINT_CONFIGURATION_CHANNEL = "hermes:clearEndpointConfiguration";
 
 const vyronDesktop: DesktopApi = {
   platform: "desktop",
@@ -237,6 +269,12 @@ const vyronDesktop: DesktopApi = {
     getConnectionState: () => ipcRenderer.invoke(HERMES_GET_CONNECTION_STATE_CHANNEL),
     connect: () => ipcRenderer.invoke(HERMES_CONNECT_CHANNEL),
     disconnect: () => ipcRenderer.invoke(HERMES_DISCONNECT_CHANNEL),
+    // D-08E — configureEndpoint forwards exactly the caller's own single-field request
+    // ({endpoint: string}) verbatim, unexamined; this file never reads, logs, or otherwise
+    // touches the endpoint value itself. clearEndpointConfiguration takes no argument.
+    getEndpointConfigurationState: () => ipcRenderer.invoke(HERMES_GET_ENDPOINT_CONFIGURATION_STATE_CHANNEL),
+    configureEndpoint: (request: HermesEndpointConfigurationRequest) => ipcRenderer.invoke(HERMES_CONFIGURE_ENDPOINT_CHANNEL, request),
+    clearEndpointConfiguration: () => ipcRenderer.invoke(HERMES_CLEAR_ENDPOINT_CONFIGURATION_CHANNEL),
   },
 };
 

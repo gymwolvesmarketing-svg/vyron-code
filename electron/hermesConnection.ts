@@ -55,10 +55,21 @@
  * connect()-local assumption. Even in the hypothetical branch where a trusted endpoint were
  * ever returned, this task still does not authorize opening a real socket — see the explicit
  * comment at that branch below.
+ *
+ * Extended again by VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION —
+ * exactly the "one-line change" electron/hermesEndpointSetup.ts's own header (and this
+ * repository's own VYRON_CODE_V02_D08D_FUTURE_IMPLEMENTATION_PLAN.md) anticipated:
+ * `connect()` now prefers `hermesEndpointSetup.ts`'s `getConfiguredEndpoint()` — the user's
+ * own memory-only, explicitly-submitted endpoint, if any — and falls back to
+ * `resolveTrustedEndpoint()` (still always `unavailable`) only when nothing has been
+ * configured. This still never opens a real socket: even a genuinely `"trusted"` configured
+ * endpoint still only ever results in the safe `"unavailable"` outcome below — see the
+ * explicit comment at that branch.
  */
 import type { HermesConnectionResult, HermesConnectionState } from "./shared-ipc-contract";
 import { getAuthorizationState } from "./hermesAuthorization";
 import { resolveTrustedEndpoint } from "./hermesEndpoint";
+import { getConfiguredEndpoint } from "./hermesEndpointSetup";
 
 // Module-scope, process-memory-only. Starts "ready_to_connect" the instant authorization
 // becomes valid (getConnectionState always re-derives the "not_authorized" case fresh from
@@ -111,21 +122,25 @@ export async function connect(): Promise<HermesConnectionResult> {
       return { state: "disconnected" };
     }
 
-    const endpoint = resolveTrustedEndpoint();
+    // Prefer the user's own explicitly-configured endpoint (D-08E), falling back to the
+    // no-source resolver (D-08C) only when nothing has been configured.
+    const endpoint = getConfiguredEndpoint() ?? resolveTrustedEndpoint();
     if (endpoint.kind !== "trusted") {
-      // Always true in this build — see this module's header and hermesEndpoint.ts's own
-      // header for why. No endpoint/host/port/reason detail from `endpoint` is ever forwarded
+      // No endpoint has been configured (or, defensively, one somehow failed validation) — see
+      // this module's header and hermesEndpoint.ts's own header for why this remains the
+      // common case. No endpoint/host/port/reason detail from `endpoint` is ever forwarded
       // into the renderer-visible result below; only the fixed, safe `"unavailable"` literal.
       ambientState = "unavailable";
       return { state: "unavailable" };
     }
 
-    // A real trusted endpoint would be used here to open an actual connection — NOT
-    // implemented by this task (VYRON_CODE_V02_D08C_CHECKPOINT_AND_TRUSTED_HERMES_ENDPOINT_BOUNDARY_AUTHORIZATION
-    // explicitly forbids WebSocket/net/http construction). Until a future, separately
-    // authorized task adds that, this branch is unreachable in practice but is written this
-    // way — rather than deleted — so the endpoint boundary is genuinely consulted, not merely
-    // decorative.
+    // A real, user-configured trusted endpoint would be used here to open an actual
+    // connection — NOT implemented by this task
+    // (VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION explicitly forbids
+    // WebSocket/TCP/HTTP/DNS construction of any kind). Until a future, separately authorized
+    // task adds that, this branch still only ever results in the same safe `"unavailable"`
+    // outcome — written this way, rather than deleted, so the endpoint boundary is genuinely
+    // consulted, not merely decorative.
     ambientState = "unavailable";
     return { state: "unavailable" };
   } finally {

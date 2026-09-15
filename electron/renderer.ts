@@ -139,6 +139,30 @@ interface HermesConnectionResult {
   readonly state: HermesConnectionAmbientState;
 }
 
+// VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION.
+type HermesEndpointAmbientState = "not_configured" | "configured_memory_only";
+
+interface HermesEndpointState {
+  readonly state: HermesEndpointAmbientState;
+}
+
+interface HermesEndpointConfigurationRequest {
+  readonly endpoint: string;
+}
+
+type HermesEndpointConfigurationOutcomeState =
+  | "configured_memory_only"
+  | "cleared"
+  | "not_configured"
+  | "policy_rejected"
+  | "invalid_configuration"
+  | "unavailable"
+  | "safe_failure";
+
+interface HermesEndpointConfigurationResult {
+  readonly state: HermesEndpointConfigurationOutcomeState;
+}
+
 interface DesktopHermesApi {
   getAvailability(): Promise<HermesAvailability>;
   getAuthorizationState(): Promise<HermesAuthorizationState>;
@@ -147,6 +171,9 @@ interface DesktopHermesApi {
   getConnectionState(): Promise<HermesConnectionState>;
   connect(): Promise<HermesConnectionResult>;
   disconnect(): Promise<HermesConnectionResult>;
+  getEndpointConfigurationState(): Promise<HermesEndpointState>;
+  configureEndpoint(request: HermesEndpointConfigurationRequest): Promise<HermesEndpointConfigurationResult>;
+  clearEndpointConfiguration(): Promise<HermesEndpointConfigurationResult>;
 }
 
 interface DesktopApi {
@@ -911,6 +938,240 @@ async function handleClearHermesAuthorization(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------------------
+// D-08E endpoint setup panel — VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION.
+// Entirely independent of D-08B authorization: a user may configure an endpoint before,
+// after, or without ever authorizing, and vice versa (see electron/hermesEndpointSetup.ts's
+// own "independent-lifetime policy" note). configureEndpoint()/clearEndpointConfiguration()
+// never take an endpoint's individual host/port/protocol as separate fields — only the one
+// raw URL string the user typed, forwarded verbatim to the main process, which alone decides
+// whether it is safe. This panel never renders that string, or any part of it, back — only
+// the fixed, safe state enum.
+// ---------------------------------------------------------------------------------------
+type HermesEndpointViewState =
+  | "not_configured"
+  | "setup_open"
+  | "configuring"
+  | "configured"
+  | "clearing"
+  | "policy_rejected"
+  | "invalid_configuration"
+  | "unavailable"
+  | "safe_failure";
+
+/** Monotonic request generation — the same T-17-style guard the authorization and connection
+ * panels above use, applied independently to the endpoint setup panel. */
+let hermesEndpointRequestGeneration = 0;
+
+interface HermesEndpointElements {
+  readonly statusEl: HTMLElement;
+  readonly setupBtn: HTMLButtonElement;
+  readonly clearBtn: HTMLButtonElement;
+  readonly form: HTMLFormElement;
+  readonly endpointInput: HTMLInputElement;
+  readonly riskCheckbox: HTMLInputElement;
+  readonly submitBtn: HTMLButtonElement;
+  readonly cancelBtn: HTMLButtonElement;
+  readonly errorEl: HTMLElement;
+}
+
+function getHermesEndpointElements(): HermesEndpointElements | null {
+  const statusEl = document.getElementById("hermes-endpoint-status");
+  const setupBtn = document.getElementById("hermes-endpoint-setup-btn");
+  const clearBtn = document.getElementById("hermes-endpoint-clear-btn");
+  const form = document.getElementById("hermes-endpoint-form");
+  const endpointInput = document.getElementById("hermes-endpoint-input");
+  const riskCheckbox = document.getElementById("hermes-endpoint-risk-checkbox");
+  const submitBtn = document.getElementById("hermes-endpoint-submit-btn");
+  const cancelBtn = document.getElementById("hermes-endpoint-cancel-btn");
+  const errorEl = document.getElementById("hermes-endpoint-error");
+  if (
+    !(statusEl instanceof HTMLElement) ||
+    !(setupBtn instanceof HTMLButtonElement) ||
+    !(clearBtn instanceof HTMLButtonElement) ||
+    !(form instanceof HTMLFormElement) ||
+    !(endpointInput instanceof HTMLInputElement) ||
+    !(riskCheckbox instanceof HTMLInputElement) ||
+    !(submitBtn instanceof HTMLButtonElement) ||
+    !(cancelBtn instanceof HTMLButtonElement) ||
+    !(errorEl instanceof HTMLElement)
+  ) {
+    return null;
+  }
+  return { statusEl, setupBtn, clearBtn, form, endpointInput, riskCheckbox, submitBtn, cancelBtn, errorEl };
+}
+
+/** Superficial, non-sensitive, client-side-only format gate — never the real validation
+ * (that happens exclusively in the main process via the unchanged `validateEndpointCandidate`
+ * policy engine). Exists only to keep the submit action disabled for an obviously-incomplete
+ * entry; passing this check guarantees nothing about whether the main process will accept it. */
+function looksLikeSuperficiallyValidEndpoint(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.length > 0 && /^wss?:\/\//i.test(trimmed);
+}
+
+function updateHermesEndpointSubmitEnabled(): void {
+  const els = getHermesEndpointElements();
+  if (!els) return;
+  els.submitBtn.disabled = !(looksLikeSuperficiallyValidEndpoint(els.endpointInput.value) && els.riskCheckbox.checked);
+}
+
+/**
+ * Renders one of the required D-08E endpoint-setup states using only fixed, safe,
+ * hand-written string literals — never the submitted URL or any component of it.
+ */
+function renderHermesEndpointPanel(view: HermesEndpointViewState): void {
+  const els = getHermesEndpointElements();
+  if (!els) return;
+  const { statusEl, setupBtn, clearBtn, form, endpointInput, riskCheckbox, submitBtn, errorEl } = els;
+
+  errorEl.hidden = true;
+  errorEl.textContent = "";
+  clearBtn.textContent = "Clear local Hermes connection setup";
+
+  if (view === "not_configured" || view === "unavailable") {
+    statusEl.textContent = "No local companion endpoint configured";
+    setupBtn.hidden = view === "unavailable";
+    setupBtn.disabled = false;
+    clearBtn.hidden = true;
+    form.hidden = true;
+    endpointInput.value = "";
+    riskCheckbox.checked = false;
+    return;
+  }
+
+  if (view === "setup_open" || view === "configuring" || view === "policy_rejected" || view === "invalid_configuration" || view === "safe_failure") {
+    statusEl.textContent = "No local companion endpoint configured";
+    setupBtn.hidden = true;
+    clearBtn.hidden = true;
+    form.hidden = false;
+    const configuring = view === "configuring";
+    endpointInput.disabled = configuring;
+    riskCheckbox.disabled = configuring;
+    submitBtn.textContent = configuring ? "Configuring…" : "Configure";
+    if (configuring) {
+      submitBtn.disabled = true;
+    } else {
+      updateHermesEndpointSubmitEnabled();
+    }
+    if (view === "policy_rejected" || view === "invalid_configuration" || view === "safe_failure") {
+      endpointInput.value = "";
+      riskCheckbox.checked = false;
+      errorEl.hidden = false;
+      errorEl.textContent =
+        view === "safe_failure"
+          ? "Endpoint could not be configured for this app session. Please try again."
+          : "That endpoint can't be used. Configure only a local Hermes companion service you trust.";
+    }
+    return;
+  }
+
+  // view === "configured" || view === "clearing"
+  statusEl.textContent = "Local companion endpoint configured for this app session only";
+  setupBtn.hidden = true;
+  clearBtn.hidden = false;
+  form.hidden = true;
+  endpointInput.value = "";
+  riskCheckbox.checked = false;
+  const clearing = view === "clearing";
+  clearBtn.disabled = clearing;
+  clearBtn.textContent = clearing ? "Clearing…" : "Clear local Hermes connection setup";
+}
+
+function handleOpenHermesEndpointSetup(): void {
+  renderHermesEndpointPanel("setup_open");
+}
+
+function handleCancelHermesEndpointSetup(): void {
+  renderHermesEndpointPanel("not_configured");
+}
+
+async function handleConfigureHermesEndpoint(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  const api = window.vyronDesktop;
+  const els = getHermesEndpointElements();
+  if (!els) return;
+  if (!api) {
+    renderHermesEndpointPanel("unavailable");
+    return;
+  }
+  if (!looksLikeSuperficiallyValidEndpoint(els.endpointInput.value) || !els.riskCheckbox.checked) return;
+
+  const endpoint = els.endpointInput.value;
+  const requestId = ++hermesEndpointRequestGeneration;
+  renderHermesEndpointPanel("configuring");
+  try {
+    const result = await api.hermes.configureEndpoint({ endpoint });
+    if (requestId !== hermesEndpointRequestGeneration) return;
+    if (result.state === "configured_memory_only") {
+      renderHermesEndpointPanel("configured");
+    } else if (result.state === "policy_rejected") {
+      renderHermesEndpointPanel("policy_rejected");
+    } else if (result.state === "invalid_configuration") {
+      renderHermesEndpointPanel("invalid_configuration");
+    } else if (result.state === "cleared" || result.state === "not_configured") {
+      renderHermesEndpointPanel("not_configured");
+    } else if (result.state === "unavailable") {
+      renderHermesEndpointPanel("unavailable");
+    } else {
+      renderHermesEndpointPanel("safe_failure");
+    }
+  } catch {
+    if (requestId !== hermesEndpointRequestGeneration) return;
+    renderHermesEndpointPanel("safe_failure");
+  } finally {
+    els.endpointInput.value = "";
+  }
+}
+
+async function handleClearHermesEndpointConfiguration(): Promise<void> {
+  const api = window.vyronDesktop;
+  if (!api) {
+    renderHermesEndpointPanel("unavailable");
+    return;
+  }
+  // Supersedes any in-flight configureEndpoint() immediately, before the IPC call even starts.
+  hermesEndpointRequestGeneration++;
+  renderHermesEndpointPanel("clearing");
+  try {
+    await api.hermes.clearEndpointConfiguration();
+  } catch {
+    // Clear must always leave the UI in a safe, not-configured-looking state, even if the IPC
+    // call itself rejected.
+  }
+  // Also resets D-08C connection state hygiene, mirroring handleClearHermesAuthorization's own
+  // best-effort disconnect() call — getConnectionState() would already report correctly
+  // without this once the endpoint is gone, but this keeps hermesConnection.ts's own internal
+  // state tidy rather than stale.
+  try {
+    await api.hermes.disconnect();
+  } catch {
+    // Best-effort only.
+  }
+  renderHermesEndpointPanel("not_configured");
+}
+
+async function initHermesEndpointState(api: DesktopApi): Promise<void> {
+  try {
+    const state = await api.hermes.getEndpointConfigurationState();
+    renderHermesEndpointPanel(state.state === "configured_memory_only" ? "configured" : "not_configured");
+  } catch {
+    renderHermesEndpointPanel("unavailable");
+  }
+}
+
+function wireHermesEndpointControls(): void {
+  document.getElementById("hermes-endpoint-setup-btn")?.addEventListener("click", handleOpenHermesEndpointSetup);
+  document.getElementById("hermes-endpoint-cancel-btn")?.addEventListener("click", handleCancelHermesEndpointSetup);
+  document.getElementById("hermes-endpoint-clear-btn")?.addEventListener("click", () => void handleClearHermesEndpointConfiguration());
+  document.getElementById("hermes-endpoint-input")?.addEventListener("input", updateHermesEndpointSubmitEnabled);
+  document.getElementById("hermes-endpoint-risk-checkbox")?.addEventListener("change", updateHermesEndpointSubmitEnabled);
+  const form = document.getElementById("hermes-endpoint-form");
+  if (form instanceof HTMLFormElement) {
+    form.addEventListener("submit", (event) => void handleConfigureHermesEndpoint(event));
+  }
+}
+
+// ---------------------------------------------------------------------------------------
 // D-08C connection sub-panel — VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION.
 // Visible only while the outer Hermes panel is in its "authorized" view (see
 // renderHermesPanel above). connect()/disconnect() never take an endpoint/host/port/socket
@@ -1141,6 +1402,7 @@ function renderPlatform(api: DesktopApi): void {
 function main(): void {
   wireWorkspaceControls();
   wireHermesControls();
+  wireHermesEndpointControls();
   const api = window.vyronDesktop;
   if (!api) {
     // Preload bridge unavailable. Electron guarantees preload finishes before this script
@@ -1149,12 +1411,14 @@ function main(): void {
     // would misleadingly imply the bridge works and nothing has been picked yet.
     renderStatusMessage("Desktop bridge unavailable. Restart Vyron Code Desktop.");
     renderHermesPanel("unavailable");
+    renderHermesEndpointPanel("unavailable");
     return;
   }
   renderCapabilities(api);
   renderPlatform(api);
   void initWorkspaceState(api);
   void initHermesState(api);
+  void initHermesEndpointState(api);
 }
 
 main();

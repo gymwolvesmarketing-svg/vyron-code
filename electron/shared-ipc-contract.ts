@@ -206,10 +206,47 @@ export interface HermesConnectionResult {
 }
 
 /**
- * D-08B + D-08C's full Hermes bridge — exactly seven methods. `connect`/`disconnect` take no
- * arguments at all (no endpoint, URL, host, port, token, prompt, session ID, workspace data,
- * or options object of any kind) — the fixed/trusted endpoint, if any existed, would be
- * selected entirely inside electron/hermesConnection.ts, never supplied by the renderer.
+ * D-08E endpoint configuration state — VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION.
+ * The user-configured endpoint (Option B from the D-08D decision record) lives only in
+ * Electron main-process memory, validated through the existing, unchanged
+ * `validateEndpointCandidate` policy engine. Never carries a resolved URL/host/port/protocol
+ * value to the renderer — only this safe state enum.
+ */
+export type HermesEndpointAmbientState = "not_configured" | "configured_memory_only";
+
+export interface HermesEndpointState {
+  readonly state: HermesEndpointAmbientState;
+}
+
+/**
+ * The one and only shape `configureEndpoint` accepts — exactly one field, `endpoint`, a
+ * string. No token, header, proxy, certificate, session, prompt, or workspace field is ever
+ * accepted here, mirroring `HermesAuthorizationRequest`'s own single-field discipline exactly.
+ */
+export interface HermesEndpointConfigurationRequest {
+  readonly endpoint: string;
+}
+
+/** The safe outcome of a `configureEndpoint` or `clearEndpointConfiguration` call — never the
+ * raw endpoint, never a URL component, never an input echo. */
+export type HermesEndpointConfigurationOutcomeState =
+  | "configured_memory_only"
+  | "cleared"
+  | "not_configured"
+  | "policy_rejected"
+  | "invalid_configuration"
+  | "unavailable"
+  | "safe_failure";
+
+export interface HermesEndpointConfigurationResult {
+  readonly state: HermesEndpointConfigurationOutcomeState;
+}
+
+/**
+ * D-08B + D-08C + D-08E's full Hermes bridge — exactly ten methods. `connect`/`disconnect`/
+ * `clearEndpointConfiguration` take no arguments at all; `configureEndpoint` takes exactly one
+ * `endpoint` string field. No endpoint/host/port/token/prompt/session ID/workspace data or
+ * options object of any kind is ever accepted from or returned to the renderer.
  */
 export interface DesktopHermesApi {
   getAvailability(): Promise<HermesAvailability>;
@@ -219,6 +256,9 @@ export interface DesktopHermesApi {
   getConnectionState(): Promise<HermesConnectionState>;
   connect(): Promise<HermesConnectionResult>;
   disconnect(): Promise<HermesConnectionResult>;
+  getEndpointConfigurationState(): Promise<HermesEndpointState>;
+  configureEndpoint(request: HermesEndpointConfigurationRequest): Promise<HermesEndpointConfigurationResult>;
+  clearEndpointConfiguration(): Promise<HermesEndpointConfigurationResult>;
 }
 
 /**
@@ -284,6 +324,9 @@ export const HERMES_IPC_CHANNELS = {
   HERMES_GET_CONNECTION_STATE: "hermes:getConnectionState",
   HERMES_CONNECT: "hermes:connect",
   HERMES_DISCONNECT: "hermes:disconnect",
+  HERMES_GET_ENDPOINT_CONFIGURATION_STATE: "hermes:getEndpointConfigurationState",
+  HERMES_CONFIGURE_ENDPOINT: "hermes:configureEndpoint",
+  HERMES_CLEAR_ENDPOINT_CONFIGURATION: "hermes:clearEndpointConfiguration",
 } as const;
 
 export type HermesIpcChannel = (typeof HERMES_IPC_CHANNELS)[keyof typeof HERMES_IPC_CHANNELS];

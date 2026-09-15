@@ -1,12 +1,18 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { getConnectionState, connect, disconnect } from "../electron/hermesConnection";
 import { beginAuthorization, clearAuthorization } from "../electron/hermesAuthorization";
+import { configureEndpoint, clearEndpointConfiguration } from "../electron/hermesEndpointSetup";
 
 // A controlled, obviously-fake placeholder — never a real Hermes token. This file never
 // opens a real network connection, real WebSocket, or real TCP probe; every "connection" here
 // is electron/hermesConnection.ts's own disclosed, always-safe "unavailable" outcome (see its
 // module header for the trusted-endpoint-policy blocker this reflects).
 const PLACEHOLDER_CREDENTIAL = "placeholder-test-credential-value-not-real";
+
+// A controlled, obviously-fake sample endpoint — never a real Hermes deployment target, never
+// read from .env.local/process.env. VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION
+// explicitly forbids any real network/DNS/TCP/WebSocket activity; none occurs here.
+const FAKE_LOOPBACK_ENDPOINT = "ws://127.0.0.1:19130/api/ws";
 
 async function authorize(): Promise<void> {
   const result = await beginAuthorization({ credential: PLACEHOLDER_CREDENTIAL });
@@ -15,6 +21,7 @@ async function authorize(): Promise<void> {
 
 beforeEach(() => {
   clearAuthorization();
+  clearEndpointConfiguration();
 });
 
 describe("getConnectionState — safe ambient state, gated on D-08B authorization", () => {
@@ -136,5 +143,42 @@ describe("Fresh module lifecycle begins not_authorized (app-restart equivalence)
   it("a freshly cleared authorization state means connection state is also not_authorized", () => {
     clearAuthorization();
     expect(getConnectionState()).toEqual({ state: "not_authorized" });
+  });
+});
+
+describe("D-08E integration — connect() still cannot reach connected even with a configured endpoint", () => {
+  it("connect() still resolves to unavailable when authorized AND a fake endpoint is configured — no real socket is ever opened", async () => {
+    await authorize();
+    const configureResult = await configureEndpoint({ endpoint: FAKE_LOOPBACK_ENDPOINT });
+    expect(configureResult).toEqual({ state: "configured_memory_only" });
+
+    const result = await connect();
+    expect(result).toEqual({ state: "unavailable" });
+    expect(getConnectionState()).toEqual({ state: "unavailable" });
+  });
+
+  it("connect() never returns an endpoint/host/port/socket field even with a configured endpoint", async () => {
+    await authorize();
+    await configureEndpoint({ endpoint: FAKE_LOOPBACK_ENDPOINT });
+    const result = await connect();
+    expect(Object.keys(result)).toEqual(["state"]);
+  });
+
+  it("clearing the endpoint configuration after connect() still leaves connection state safe (unavailable/ready_to_connect)", async () => {
+    await authorize();
+    await configureEndpoint({ endpoint: FAKE_LOOPBACK_ENDPOINT });
+    await connect();
+    expect(getConnectionState().state).toBe("unavailable");
+    clearEndpointConfiguration();
+    // getConnectionState() re-derives from the authorization module only; hermesConnection's
+    // own ambientState is a separate concern reset via disconnect() — confirms no stale
+    // "connected"-looking state leaks through clearing the endpoint alone.
+    expect(["unavailable", "ready_to_connect"]).toContain(getConnectionState().state);
+  });
+
+  it("without any configured endpoint, connect() behaves exactly as before D-08E (unchanged fallback)", async () => {
+    await authorize();
+    const result = await connect();
+    expect(result).toEqual({ state: "unavailable" });
   });
 });

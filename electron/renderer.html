@@ -51,11 +51,45 @@
       <p id="hermes-error" class="muted" hidden></p>
 
       <!--
-        D-08C connection sub-panel — VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION.
-        Visible only once authorized. No endpoint/host/port editing control of any kind exists
-        here or anywhere in this build — the main process alone would select a fixed, trusted
-        endpoint if one existed; it does not yet (see electron/hermesConnection.ts). No session,
-        chat, prompt, context, or provider/model control exists here either.
+        D-08E endpoint setup panel — VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION.
+        Independent of authorization above — a user may configure this before, after, or
+        without ever authorizing. The endpoint is held only in main-process memory for this app
+        session, never saved, and never used here to open a real Hermes connection (see
+        electron/hermesEndpointSetup.ts and electron/hermesConnection.ts). The one input field
+        accepts only a full endpoint URL; the main process alone decides whether it is safe
+        (loopback-only) — this page never validates or interprets it beyond a superficial,
+        non-sensitive format check that gates the Configure button.
+      -->
+      <div id="hermes-endpoint-section">
+        <p id="hermes-endpoint-status">No local companion endpoint configured</p>
+        <p class="muted" id="hermes-endpoint-explanation">Configure the local Hermes companion endpoint only if you operate or trust that local service.</p>
+        <p class="muted">The endpoint is used only for this running desktop app and is not saved.</p>
+        <p class="muted" id="hermes-endpoint-risk-notice">The current Hermes protocol does not provide desktop-side server identity verification. Configure only a local companion service you trust.</p>
+        <div class="hermes-actions">
+          <button id="hermes-endpoint-setup-btn" type="button">Configure local Hermes connection</button>
+          <button id="hermes-endpoint-clear-btn" type="button" hidden>Clear local Hermes connection setup</button>
+        </div>
+        <form id="hermes-endpoint-form" class="hermes-form" hidden>
+          <label for="hermes-endpoint-input" class="visually-hidden">Hermes endpoint URL</label>
+          <input id="hermes-endpoint-input" type="text" autocomplete="off" maxlength="2048" placeholder="ws://&lt;host&gt;/&lt;path&gt;" />
+          <label class="hermes-risk-label">
+            <input id="hermes-endpoint-risk-checkbox" type="checkbox" />
+            I trust this local Hermes companion service
+          </label>
+          <button id="hermes-endpoint-submit-btn" type="submit" disabled>Configure</button>
+          <button id="hermes-endpoint-cancel-btn" type="button">Cancel</button>
+        </form>
+        <p id="hermes-endpoint-error" class="muted" hidden></p>
+      </div>
+
+      <!--
+        D-08C connection sub-panel — VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION,
+        extended by VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION.
+        Visible only once authorized. No endpoint/host/port editing control exists here — the
+        one place an endpoint can ever be entered is the dedicated D-08E panel above, which
+        only ever submits it to the main process; this section itself never accepts, displays,
+        or edits any endpoint value. No session, chat, prompt, context, or provider/model
+        control exists here either.
       -->
       <div id="hermes-connection-section" hidden>
         <p id="hermes-connection-status">Hermes connection has not been attempted.</p>

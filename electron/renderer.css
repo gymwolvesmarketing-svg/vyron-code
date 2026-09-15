@@ -99,12 +99,16 @@ p {
 
 .hermes-form {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   margin: 10px 0;
 }
 
-.hermes-form input[type="password"] {
+.hermes-form input[type="password"],
+.hermes-form input[type="text"] {
   flex: 1 1 auto;
+  min-width: 200px;
   font-family: inherit;
   font-size: 13px;
   background: var(--panel);
@@ -112,6 +116,15 @@ p {
   border: 1px solid var(--panel-border);
   border-radius: 4px;
   padding: 6px 10px;
+}
+
+.hermes-risk-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  flex: 1 1 100%;
 }
 
 button {

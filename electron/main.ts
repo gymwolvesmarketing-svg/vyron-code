@@ -49,6 +49,11 @@ import { searchText } from "./workspaceSearch";
 import { getGitSummary } from "./workspaceGit";
 import { getAvailability, getAuthorizationState, beginAuthorization, clearAuthorization as clearHermesAuthorization } from "./hermesAuthorization";
 import { getConnectionState, connect as connectHermes, disconnect as disconnectHermes } from "./hermesConnection";
+import {
+  getEndpointConfigurationState,
+  configureEndpoint,
+  clearEndpointConfiguration,
+} from "./hermesEndpointSetup";
 
 /**
  * Explicit, disabled-by-default opt-in for the lifecycle diagnostics below —
@@ -187,6 +192,12 @@ function registerHermesIpcHandlers(): void {
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_CONNECTION_STATE, () => getConnectionState());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CONNECT, () => connectHermes());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_DISCONNECT, () => disconnectHermes());
+  // D-08E — configureEndpoint's raw request is passed straight through unexamined, exactly as
+  // electron/hermesEndpointSetup.ts's own isValidRequestShape expects; no second, weaker, or
+  // divergent validation exists here. clearEndpointConfiguration takes no arguments.
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_ENDPOINT_CONFIGURATION_STATE, () => getEndpointConfigurationState());
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CONFIGURE_ENDPOINT, (_event, request: unknown) => configureEndpoint(request));
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_ENDPOINT_CONFIGURATION, () => clearEndpointConfiguration());
 }
 
 /**

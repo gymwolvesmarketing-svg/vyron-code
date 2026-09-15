@@ -98,8 +98,8 @@ describe("WORKSPACE_IPC_CHANNELS — implemented channels (D-03 + Milestone A)",
   });
 });
 
-describe("HERMES_IPC_CHANNELS — implemented channels (D-08B + D-08C)", () => {
-  it("exposes exactly the seven implemented Hermes channels, no more", () => {
+describe("HERMES_IPC_CHANNELS — implemented channels (D-08B + D-08C + D-08E)", () => {
+  it("exposes exactly the ten implemented Hermes channels, no more", () => {
     expect(Object.values(HERMES_IPC_CHANNELS).sort()).toEqual(
       [
         "hermes:beginAuthorization",
@@ -109,6 +109,9 @@ describe("HERMES_IPC_CHANNELS — implemented channels (D-08B + D-08C)", () => {
         "hermes:getConnectionState",
         "hermes:connect",
         "hermes:disconnect",
+        "hermes:getEndpointConfigurationState",
+        "hermes:configureEndpoint",
+        "hermes:clearEndpointConfiguration",
       ].sort()
     );
   });
@@ -252,7 +255,7 @@ describe("preload.ts — exposed window.vyronDesktop API", () => {
     }
   });
 
-  it("exposes exactly the seven Hermes methods, no more (D-08B + D-08C)", () => {
+  it("exposes exactly the ten Hermes methods, no more (D-08B + D-08C + D-08E)", () => {
     const hermes = exposedApi().hermes as Record<string, unknown>;
     expect(Object.keys(hermes).sort()).toEqual(
       [
@@ -263,6 +266,9 @@ describe("preload.ts — exposed window.vyronDesktop API", () => {
         "getConnectionState",
         "connect",
         "disconnect",
+        "getEndpointConfigurationState",
+        "configureEndpoint",
+        "clearEndpointConfiguration",
       ].sort()
     );
     for (const method of Object.values(hermes)) {
@@ -289,6 +295,29 @@ describe("preload.ts — exposed window.vyronDesktop API", () => {
     hermes.getConnectionState?.();
     expect(ipcRendererInvoke).toHaveBeenCalledTimes(1);
     expect(ipcRendererInvoke).toHaveBeenNthCalledWith(1, "hermes:getConnectionState");
+  });
+
+  it("getEndpointConfigurationState and clearEndpointConfiguration take no arguments at all (D-08E, T-14)", () => {
+    const hermes = exposedApi().hermes as Record<string, (...args: unknown[]) => unknown>;
+    ipcRendererInvoke.mockClear();
+    hermes.getEndpointConfigurationState?.();
+    hermes.clearEndpointConfiguration?.();
+    expect(ipcRendererInvoke).toHaveBeenCalledTimes(2);
+    for (const call of ipcRendererInvoke.mock.calls) {
+      expect(call).toHaveLength(1);
+    }
+    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(1, "hermes:getEndpointConfigurationState");
+    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(2, "hermes:clearEndpointConfiguration");
+  });
+
+  it("configureEndpoint forwards exactly the channel plus the caller's own single-field request object, verbatim, and nothing else", () => {
+    const hermes = exposedApi().hermes as Record<string, (...args: unknown[]) => unknown>;
+    ipcRendererInvoke.mockClear();
+    const request = { endpoint: "ws://127.0.0.1:19130/api/ws" };
+    hermes.configureEndpoint?.(request);
+    expect(ipcRendererInvoke).toHaveBeenCalledTimes(1);
+    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(1, "hermes:configureEndpoint", request);
+    expect(ipcRendererInvoke.mock.calls[0]).toHaveLength(2);
   });
 
   it("has no generic invoke/send/on method and no raw ipcRenderer reference on the hermes namespace either", () => {
@@ -413,12 +442,13 @@ describe("Electron scaffold source — no shell/child_process execution capabili
     }
   });
 
-  it("confirms exactly the fourteen expected scaffold .ts files exist, no more", () => {
+  it("confirms exactly the fifteen expected scaffold .ts files exist, no more", () => {
     expect(sourceFiles.sort()).toEqual(
       [
         "hermesAuthorization.ts",
         "hermesConnection.ts",
         "hermesEndpoint.ts",
+        "hermesEndpointSetup.ts",
         "main.ts",
         "preload.ts",
         "renderer.ts",
@@ -534,12 +564,13 @@ describe("electron/hermesConnection.ts — no real network/persistence/logging c
   const rawSource = fs.readFileSync(filePath, "utf8");
   const code = stripComments(rawSource);
 
-  it("imports only type-only from shared-ipc-contract.ts and value imports from hermesAuthorization.ts/hermesEndpoint.ts — nothing from 'electron', 'ws', or any node:* built-in", () => {
+  it("imports only type-only from shared-ipc-contract.ts and value imports from hermesAuthorization.ts/hermesEndpoint.ts/hermesEndpointSetup.ts — nothing from 'electron', 'ws', or any node:* built-in", () => {
     const importLines = code.match(/^\s*import\b.*$/gm) ?? [];
-    expect(importLines.length).toBe(3);
+    expect(importLines.length).toBe(4);
     expect(importLines.some((line) => line.includes('from "./shared-ipc-contract"') && /^\s*import type\b/.test(line))).toBe(true);
     expect(importLines.some((line) => line.includes('from "./hermesAuthorization"'))).toBe(true);
     expect(importLines.some((line) => line.includes('from "./hermesEndpoint"'))).toBe(true);
+    expect(importLines.some((line) => line.includes('from "./hermesEndpointSetup"'))).toBe(true);
     for (const line of importLines) {
       expect(line).not.toMatch(/from ["']electron["']/);
       expect(line).not.toMatch(/from ["']ws["']/);
@@ -667,16 +698,36 @@ describe("electron/hermesEndpoint.ts and its HermesTrustedEndpoint type — neve
   it("is never imported by preload.ts, renderer.ts, or shared-ipc-contract.ts", () => {
     for (const file of ["preload.ts", "renderer.ts", "shared-ipc-contract.ts"]) {
       const code = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", file), "utf8"));
-      expect(code, `${file} unexpectedly references hermesEndpoint`).not.toMatch(/hermesEndpoint/);
+      // Exact import-specifier match — NOT a bare substring check — since
+      // "electron/hermesEndpointSetup.ts" (a distinct, legitimately-mentioned D-08E module) is
+      // itself a superstring of "hermesEndpoint" and would otherwise self-trigger here.
+      expect(code, `${file} unexpectedly imports hermesEndpoint.ts`).not.toMatch(/from ["']\.\/hermesEndpoint["']/);
       expect(code, `${file} unexpectedly references HermesTrustedEndpoint`).not.toMatch(/HermesTrustedEndpoint/);
     }
   });
 
-  it("hermesConnection.ts is the only file that imports electron/hermesEndpoint.ts", () => {
+  it("hermesConnection.ts and hermesEndpointSetup.ts are the only files that import electron/hermesEndpoint.ts", () => {
     const electronDir = path.join(__dirname, "..", "electron");
     const files = fs.readdirSync(electronDir).filter((f) => f.endsWith(".ts") && f !== "hermesEndpoint.ts");
     const importers = files.filter((f) => stripComments(fs.readFileSync(path.join(electronDir, f), "utf8")).match(/from ["']\.\/hermesEndpoint["']/));
-    expect(importers).toEqual(["hermesConnection.ts"]);
+    expect(importers.sort()).toEqual(["hermesConnection.ts", "hermesEndpointSetup.ts"].sort());
+  });
+});
+
+describe("electron/hermesEndpointSetup.ts and its getConfiguredEndpoint accessor — never renderer-reachable", () => {
+  it("is never imported by preload.ts, renderer.ts, or shared-ipc-contract.ts", () => {
+    for (const file of ["preload.ts", "renderer.ts", "shared-ipc-contract.ts"]) {
+      const code = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", file), "utf8"));
+      expect(code, `${file} unexpectedly imports hermesEndpointSetup.ts`).not.toMatch(/from ["']\.\/hermesEndpointSetup["']/);
+      expect(code, `${file} unexpectedly references getConfiguredEndpoint`).not.toMatch(/getConfiguredEndpoint/);
+    }
+  });
+
+  it("hermesConnection.ts and main.ts are the only files that import electron/hermesEndpointSetup.ts", () => {
+    const electronDir = path.join(__dirname, "..", "electron");
+    const files = fs.readdirSync(electronDir).filter((f) => f.endsWith(".ts") && f !== "hermesEndpointSetup.ts");
+    const importers = files.filter((f) => stripComments(fs.readFileSync(path.join(electronDir, f), "utf8")).match(/from ["']\.\/hermesEndpointSetup["']/));
+    expect(importers.sort()).toEqual(["hermesConnection.ts", "main.ts"].sort());
   });
 });
 
@@ -699,12 +750,13 @@ describe("electron/main.ts — local-only content load", () => {
   });
 });
 
-describe("electron/main.ts — Hermes authorization + connectivity IPC handler registration (D-08B + D-08C)", () => {
+describe("electron/main.ts — Hermes authorization + connectivity + endpoint-setup IPC handler registration (D-08B + D-08C + D-08E)", () => {
   const source = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", "main.ts"), "utf8"));
 
-  it("registers exactly the seven Hermes IPC handlers, delegating to electron/hermesAuthorization.ts and electron/hermesConnection.ts", () => {
+  it("registers exactly the ten Hermes IPC handlers, delegating to electron/hermesAuthorization.ts, electron/hermesConnection.ts, and electron/hermesEndpointSetup.ts", () => {
     expect(source).toMatch(/from ["']\.\/hermesAuthorization["']/);
     expect(source).toMatch(/from ["']\.\/hermesConnection["']/);
+    expect(source).toMatch(/from ["']\.\/hermesEndpointSetup["']/);
     for (const channel of [
       "HERMES_IPC_CHANNELS.HERMES_GET_AVAILABILITY",
       "HERMES_IPC_CHANNELS.HERMES_GET_AUTHORIZATION_STATE",
@@ -713,6 +765,9 @@ describe("electron/main.ts — Hermes authorization + connectivity IPC handler r
       "HERMES_IPC_CHANNELS.HERMES_GET_CONNECTION_STATE",
       "HERMES_IPC_CHANNELS.HERMES_CONNECT",
       "HERMES_IPC_CHANNELS.HERMES_DISCONNECT",
+      "HERMES_IPC_CHANNELS.HERMES_GET_ENDPOINT_CONFIGURATION_STATE",
+      "HERMES_IPC_CHANNELS.HERMES_CONFIGURE_ENDPOINT",
+      "HERMES_IPC_CHANNELS.HERMES_CLEAR_ENDPOINT_CONFIGURATION",
     ]) {
       expect(source).toContain(channel);
     }
@@ -721,6 +776,20 @@ describe("electron/main.ts — Hermes authorization + connectivity IPC handler r
   it("the connect and disconnect IPC handlers take no renderer-supplied argument at all (T-14)", () => {
     expect(source).toMatch(/ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_CONNECT,\s*\(\)\s*=>/);
     expect(source).toMatch(/ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_DISCONNECT,\s*\(\)\s*=>/);
+  });
+
+  it("the clearEndpointConfiguration and getEndpointConfigurationState IPC handlers take no renderer-supplied argument at all", () => {
+    expect(source).toMatch(/ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_CLEAR_ENDPOINT_CONFIGURATION,\s*\(\)\s*=>/);
+    expect(source).toMatch(/ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_GET_ENDPOINT_CONFIGURATION_STATE,\s*\(\)\s*=>/);
+  });
+
+  it("passes configureEndpoint's raw request straight through, unexamined — no second/weaker validation here", () => {
+    expect(source).toMatch(/configureEndpoint\(request\)/);
+  });
+
+  it("never logs a Hermes endpoint configuration request payload via logLifecycle or console", () => {
+    expect(source).not.toMatch(/logLifecycle\([^)]*endpoint/i);
+    expect(source).not.toMatch(/console\.[a-z]+\([^)]*endpoint/i);
   });
 
   it("passes beginAuthorization's raw request straight through, unexamined — no second/weaker validation here", () => {
@@ -948,6 +1017,86 @@ describe("electron/renderer.ts — D-08C connection sub-panel wiring", () => {
   });
 });
 
+describe("electron/renderer.ts — D-08E endpoint setup panel wiring", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.ts"), "utf8");
+  const stripped = stripComments(source);
+  const endpointSourceStart = stripped.indexOf("HermesEndpointViewState");
+  const endpointSourceEnd = stripped.indexOf("HermesConnectionViewState");
+  const endpointSource = endpointSourceStart >= 0 && endpointSourceEnd > endpointSourceStart ? stripped.slice(endpointSourceStart, endpointSourceEnd) : "";
+
+  it("declares the endpoint setup panel type/interfaces locally", () => {
+    expect(stripped).toMatch(/type HermesEndpointViewState =/);
+    expect(stripped).toMatch(/interface HermesEndpointElements/);
+  });
+
+  it("calls exactly the three D-08E bridge methods — getEndpointConfigurationState, configureEndpoint, clearEndpointConfiguration", () => {
+    for (const method of ["getEndpointConfigurationState", "configureEndpoint", "clearEndpointConfiguration"]) {
+      expect(stripped).toMatch(new RegExp(`api\\.hermes\\.${method}\\(`));
+    }
+  });
+
+  it("configureEndpoint is called with exactly one object argument built from a single 'endpoint' field — no extra field", () => {
+    expect(stripped).toMatch(/api\.hermes\.configureEndpoint\(\{\s*endpoint\s*\}\)/);
+  });
+
+  it("clearEndpointConfiguration and getEndpointConfigurationState are called with no arguments", () => {
+    expect(stripped).toMatch(/api\.hermes\.clearEndpointConfiguration\(\)/);
+    expect(stripped).toMatch(/api\.hermes\.getEndpointConfigurationState\(\)/);
+  });
+
+  it("the setup form's submit handler calls preventDefault before invoking configureEndpoint", () => {
+    expect(stripped).toMatch(/handleConfigureHermesEndpoint[\s\S]{0,300}preventDefault/);
+  });
+
+  it("requires a superficial format check AND the risk-acknowledgement checkbox before enabling submit", () => {
+    expect(endpointSourceStart).toBeGreaterThan(-1);
+    expect(endpointSource).toMatch(/looksLikeSuperficiallyValidEndpoint/);
+    expect(endpointSource).toMatch(/riskCheckbox\.checked/);
+    expect(endpointSource).toMatch(/submitBtn\.disabled = !\(/);
+  });
+
+  it("clears the endpoint input in a finally block after every configureEndpoint attempt, success or failure", () => {
+    expect(stripped).toMatch(/finally\s*\{\s*els\.endpointInput\.value = "";\s*\}/);
+  });
+
+  it("uses its own independent monotonic request generation, separate from the authorization and connection panels'", () => {
+    expect(endpointSource).toMatch(/let hermesEndpointRequestGeneration = 0;/);
+    expect(endpointSource).toMatch(/requestId !== hermesEndpointRequestGeneration/);
+    const clearFnBody = /async function handleClearHermesEndpointConfiguration\(\): Promise<void> \{[\s\S]*?\n\}/.exec(stripped)?.[0] ?? "";
+    expect(clearFnBody).toMatch(/hermesEndpointRequestGeneration\+\+/);
+  });
+
+  it("clearing the endpoint configuration also calls disconnect() for D-08C hygiene", () => {
+    const clearFnBody = /async function handleClearHermesEndpointConfiguration\(\): Promise<void> \{[\s\S]*?\n\}/.exec(stripped)?.[0] ?? "";
+    expect(clearFnBody).toMatch(/api\.hermes\.disconnect\(\)/);
+  });
+
+  it("never renders the submitted endpoint value, or any host/port/socket/URL detail, in the setup panel", () => {
+    for (const forbidden of [
+      /statusEl\.textContent = result\./,
+      /statusEl\.textContent = \$\{/,
+      /statusEl\.textContent = endpoint/,
+      /errorEl\.textContent = endpoint/,
+      /\bhost\b/i,
+      /\bport\b/i,
+      /\bsocket\b/i,
+    ]) {
+      expect(endpointSource).not.toMatch(forbidden);
+    }
+  });
+
+  it("never logs anything from the endpoint setup flow", () => {
+    expect(endpointSource).not.toMatch(/console\./);
+  });
+
+  it("resets the endpoint input and risk checkbox on every non-configuring render path", () => {
+    const inputResets = endpointSource.match(/endpointInput\.value = "";/g) ?? [];
+    const checkboxResets = endpointSource.match(/riskCheckbox\.checked = false;/g) ?? [];
+    expect(inputResets.length).toBeGreaterThanOrEqual(3);
+    expect(checkboxResets.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
 describe("electron/renderer.html — static, non-interactive local content", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
   const lowerHtml = html.toLowerCase();
@@ -958,20 +1107,24 @@ describe("electron/renderer.html — static, non-interactive local content", () 
     expect(html).toMatch(/connect-src 'none'/);
   });
 
-  it("contains no textarea or select, and exactly two <input> elements — the Search query box and the Hermes credential box, never a path input", () => {
+  it("contains no textarea or select, and exactly four <input> elements — the Search query box, the Hermes credential box, the Hermes endpoint box, and the risk-acknowledgement checkbox, never a path input", () => {
     for (const tag of ["<textarea", "<select"]) {
       expect(lowerHtml).not.toContain(tag);
     }
     const inputs = [...html.matchAll(/<input\b[^>]*>/g)];
-    expect(inputs).toHaveLength(2);
+    expect(inputs).toHaveLength(4);
     const inputTags = inputs.map((m) => m[0]);
     const searchInputTag = inputTags.find((tag) => tag.includes('id="search-input"')) ?? "";
     expect(searchInputTag).toContain('type="text"');
     const credentialInputTag = inputTags.find((tag) => tag.includes('id="hermes-credential-input"')) ?? "";
     expect(credentialInputTag).toContain('type="password"');
+    const endpointInputTag = inputTags.find((tag) => tag.includes('id="hermes-endpoint-input"')) ?? "";
+    expect(endpointInputTag).toContain('type="text"');
+    const riskCheckboxTag = inputTags.find((tag) => tag.includes('id="hermes-endpoint-risk-checkbox"')) ?? "";
+    expect(riskCheckboxTag).toContain('type="checkbox"');
     // Never a filesystem-picker input type, and never named/labelled as a path field — the
-    // workspace root can only ever come from the native "Open folder…" picker, and the Hermes
-    // credential input is never a path field either.
+    // workspace root can only ever come from the native "Open folder…" picker, and neither the
+    // Hermes credential input nor the Hermes endpoint input is ever a path field.
     for (const inputTag of inputTags) {
       expect(inputTag.toLowerCase()).not.toMatch(/type="(file|directory)"/);
       expect(inputTag.toLowerCase()).not.toContain('name="path"');
@@ -979,7 +1132,7 @@ describe("electron/renderer.html — static, non-interactive local content", () 
     }
   });
 
-  it("contains exactly the five Milestone A workspace-panel buttons, the two D-03 workspace-grant buttons, the four D-08B Hermes buttons, and the two D-08C connection buttons, no more", () => {
+  it("contains exactly the five Milestone A workspace-panel buttons, the two D-03 workspace-grant buttons, the four D-08B Hermes buttons, the two D-08C connection buttons, and the four D-08E endpoint-setup buttons, no more", () => {
     const buttonIds = [...html.matchAll(/<button id="([^"]+)"/g)].map((m) => m[1]);
     expect(buttonIds.sort()).toEqual(
       [
@@ -995,6 +1148,10 @@ describe("electron/renderer.html — static, non-interactive local content", () 
         "hermes-cancel-btn",
         "hermes-connect-btn",
         "hermes-disconnect-btn",
+        "hermes-endpoint-setup-btn",
+        "hermes-endpoint-clear-btn",
+        "hermes-endpoint-submit-btn",
+        "hermes-endpoint-cancel-btn",
       ].sort()
     );
   });
@@ -1119,6 +1276,94 @@ describe("electron/renderer.html — Hermes authorization panel (D-08B)", () => 
   });
 });
 
+describe("electron/renderer.html — D-08E endpoint setup panel", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
+  const lowerHtml = html.toLowerCase();
+
+  it("contains the full endpoint setup panel structure", () => {
+    for (const id of [
+      "hermes-endpoint-section",
+      "hermes-endpoint-status",
+      "hermes-endpoint-explanation",
+      "hermes-endpoint-risk-notice",
+      "hermes-endpoint-setup-btn",
+      "hermes-endpoint-clear-btn",
+      "hermes-endpoint-form",
+      "hermes-endpoint-input",
+      "hermes-endpoint-risk-checkbox",
+      "hermes-endpoint-submit-btn",
+      "hermes-endpoint-cancel-btn",
+      "hermes-endpoint-error",
+    ]) {
+      expect(html).toContain(`id="${id}"`);
+    }
+  });
+
+  it("the endpoint input is a plain text field, never masked, never prefilled, with autocomplete off", () => {
+    const match = html.match(/<input id="hermes-endpoint-input"[^>]*>/);
+    expect(match).not.toBeNull();
+    const tag = match?.[0] ?? "";
+    expect(tag).toContain('type="text"');
+    expect(tag).toContain('autocomplete="off"');
+    expect(tag).not.toMatch(/\bvalue="/);
+  });
+
+  it("the risk-acknowledgement checkbox is not pre-checked", () => {
+    const match = html.match(/<input id="hermes-endpoint-risk-checkbox"[^>]*>/);
+    expect(match).not.toBeNull();
+    const tag = match?.[0] ?? "";
+    expect(tag).toContain('type="checkbox"');
+    expect(tag).not.toMatch(/\bchecked\b/);
+  });
+
+  it("the setup form starts hidden, and the submit button starts disabled", () => {
+    expect(html).toMatch(/<form id="hermes-endpoint-form"[^>]*\bhidden\b/);
+    expect(html).toMatch(/<button id="hermes-endpoint-submit-btn"[^>]*\bdisabled\b/);
+  });
+
+  it("the clear button starts hidden; the setup button is not hidden by default", () => {
+    expect(html).toMatch(/<button id="hermes-endpoint-clear-btn"[^>]*\bhidden\b/);
+    expect(html).not.toMatch(/<button id="hermes-endpoint-setup-btn"[^>]*\bhidden\b/);
+  });
+
+  it("states plainly that no endpoint is configured by default, that it is not saved, and discloses the server-identity limitation", () => {
+    expect(lowerHtml).toMatch(/no local companion endpoint configured/);
+    expect(lowerHtml).toMatch(/the endpoint is used only for this running desktop app and is not saved/);
+    expect(lowerHtml).toMatch(/does not provide desktop-side server identity verification/);
+  });
+
+  it("contains no host/port-split field, protocol selector, header field, proxy field, certificate control, TLS-disable control, endpoint-history UI, save-endpoint checkbox, auto-connect/auto-reconnect checkbox, test-connection button, or service-discovery/port-scan button", () => {
+    for (const forbidden of [
+      /id="hermes-endpoint-host/i,
+      /id="hermes-endpoint-port/i,
+      /protocol.{0,20}select/i,
+      /id="hermes-endpoint-header/i,
+      /id="hermes-endpoint-proxy/i,
+      /certificate/i,
+      /ignore.{0,10}tls/i,
+      /disable.{0,10}tls/i,
+      /endpoint.history/i,
+      /recently.used/i,
+      /save.endpoint/i,
+      /auto.connect/i,
+      /auto.reconnect/i,
+      /test.connection/i,
+      /discover.{0,10}(local )?service/i,
+      /scan.{0,10}ports?/i,
+    ]) {
+      expect(html).not.toMatch(forbidden);
+    }
+  });
+
+  it("contains no token input field within the endpoint setup form", () => {
+    const sectionMatch = html.match(/<div id="hermes-endpoint-section">[\s\S]*?<p id="hermes-endpoint-error"[^>]*><\/p>\s*<\/div>/);
+    expect(sectionMatch).not.toBeNull();
+    const sectionHtml = sectionMatch?.[0] ?? "";
+    expect(sectionHtml).not.toMatch(/type="password"/);
+    expect(sectionHtml).not.toMatch(/id="hermes-endpoint-token/i);
+  });
+});
+
 describe("electron/renderer.html — D-08C connection sub-panel", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
   const lowerHtml = html.toLowerCase();
@@ -1142,11 +1387,17 @@ describe("electron/renderer.html — D-08C connection sub-panel", () => {
     expect(lowerHtml).toMatch(/connection has not been attempted/);
   });
 
-  it("contains no endpoint/host/port/URL editing control, and no session/chat/prompt/context/provider/model UI", () => {
+  it("the connection sub-panel itself (not the page as a whole) contains no endpoint/host/port/URL editing control, and no session/chat/prompt/context/provider/model UI", () => {
+    // Scoped to exactly the <div id="hermes-connection-section">...</div> markup — D-08E
+    // legitimately adds its own, separate "id=hermes-endpoint-*" section elsewhere on this
+    // page (the only place an endpoint can ever be entered); this test's job is confirming the
+    // *connection* sub-panel specifically never grew its own, second endpoint-entry surface.
+    const sectionMatch = html.match(/<div id="hermes-connection-section"[\s\S]*?<p id="hermes-connection-error"[^>]*><\/p>\s*<\/div>/);
+    expect(sectionMatch).not.toBeNull();
+    const sectionHtml = sectionMatch?.[0] ?? "";
     for (const forbidden of [
       /id="hermes-host/i,
       /id="hermes-port/i,
-      /id="hermes-endpoint/i,
       /id="hermes-url/i,
       /id="hermes-session/i,
       /id="hermes-prompt/i,
@@ -1154,16 +1405,18 @@ describe("electron/renderer.html — D-08C connection sub-panel", () => {
       /id="hermes-context/i,
       /id="hermes-provider/i,
       /id="hermes-model/i,
+      /<input\b/i,
+      /<form\b/i,
     ]) {
-      expect(html).not.toMatch(forbidden);
+      expect(sectionHtml).not.toMatch(forbidden);
     }
   });
 
-  it("still contains no textarea/select and no additional <input> beyond the two already accounted for (search + credential) — no new endpoint/host/port input was introduced", () => {
-    for (const tag of ["<textarea", "<select"]) {
-      expect(lowerHtml).not.toContain(tag);
-    }
-    const inputs = [...html.matchAll(/<input\b[^>]*>/g)];
-    expect(inputs).toHaveLength(2);
+  it("the endpoint-setup section is a distinct, separate section from the connection sub-panel, not nested inside it", () => {
+    const endpointIndex = html.indexOf('<div id="hermes-endpoint-section"');
+    const connectionIndex = html.indexOf('<div id="hermes-connection-section"');
+    expect(endpointIndex).toBeGreaterThan(-1);
+    expect(connectionIndex).toBeGreaterThan(-1);
+    expect(endpointIndex).toBeLessThan(connectionIndex);
   });
 });
