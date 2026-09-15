@@ -98,10 +98,18 @@ describe("WORKSPACE_IPC_CHANNELS — implemented channels (D-03 + Milestone A)",
   });
 });
 
-describe("HERMES_IPC_CHANNELS — implemented channels (D-08B)", () => {
-  it("exposes exactly the four implemented Hermes authorization channels, no more", () => {
+describe("HERMES_IPC_CHANNELS — implemented channels (D-08B + D-08C)", () => {
+  it("exposes exactly the seven implemented Hermes channels, no more", () => {
     expect(Object.values(HERMES_IPC_CHANNELS).sort()).toEqual(
-      ["hermes:beginAuthorization", "hermes:clearAuthorization", "hermes:getAuthorizationState", "hermes:getAvailability"].sort()
+      [
+        "hermes:beginAuthorization",
+        "hermes:clearAuthorization",
+        "hermes:getAuthorizationState",
+        "hermes:getAvailability",
+        "hermes:getConnectionState",
+        "hermes:connect",
+        "hermes:disconnect",
+      ].sort()
     );
   });
 
@@ -244,12 +252,43 @@ describe("preload.ts — exposed window.vyronDesktop API", () => {
     }
   });
 
-  it("exposes exactly the four Hermes authorization methods, no more (D-08B)", () => {
+  it("exposes exactly the seven Hermes methods, no more (D-08B + D-08C)", () => {
     const hermes = exposedApi().hermes as Record<string, unknown>;
-    expect(Object.keys(hermes).sort()).toEqual(["beginAuthorization", "clearAuthorization", "getAuthorizationState", "getAvailability"]);
+    expect(Object.keys(hermes).sort()).toEqual(
+      [
+        "beginAuthorization",
+        "clearAuthorization",
+        "getAuthorizationState",
+        "getAvailability",
+        "getConnectionState",
+        "connect",
+        "disconnect",
+      ].sort()
+    );
     for (const method of Object.values(hermes)) {
       expect(typeof method).toBe("function");
     }
+  });
+
+  it("connect and disconnect take no arguments at all — no endpoint/host/port/options object can be forwarded (D-08C, T-14)", () => {
+    const hermes = exposedApi().hermes as Record<string, (...args: unknown[]) => unknown>;
+    ipcRendererInvoke.mockClear();
+    hermes.connect?.();
+    hermes.disconnect?.();
+    expect(ipcRendererInvoke).toHaveBeenCalledTimes(2);
+    for (const call of ipcRendererInvoke.mock.calls) {
+      expect(call).toHaveLength(1);
+    }
+    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(1, "hermes:connect");
+    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(2, "hermes:disconnect");
+  });
+
+  it("getConnectionState invokes exactly its own fixed channel, with no arguments", () => {
+    const hermes = exposedApi().hermes as Record<string, (...args: unknown[]) => unknown>;
+    ipcRendererInvoke.mockClear();
+    hermes.getConnectionState?.();
+    expect(ipcRendererInvoke).toHaveBeenCalledTimes(1);
+    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(1, "hermes:getConnectionState");
   });
 
   it("has no generic invoke/send/on method and no raw ipcRenderer reference on the hermes namespace either", () => {
@@ -374,10 +413,11 @@ describe("Electron scaffold source — no shell/child_process execution capabili
     }
   });
 
-  it("confirms exactly the twelve expected scaffold .ts files exist, no more", () => {
+  it("confirms exactly the thirteen expected scaffold .ts files exist, no more", () => {
     expect(sourceFiles.sort()).toEqual(
       [
         "hermesAuthorization.ts",
+        "hermesConnection.ts",
         "main.ts",
         "preload.ts",
         "renderer.ts",
@@ -488,6 +528,72 @@ describe("electron/hermesAuthorization.ts — no persistence/network/logging/imp
   });
 });
 
+describe("electron/hermesConnection.ts — no real network/persistence/logging capability, trusted-endpoint blocker documented (D-08C)", () => {
+  const filePath = path.join(__dirname, "..", "electron", "hermesConnection.ts");
+  const rawSource = fs.readFileSync(filePath, "utf8");
+  const code = stripComments(rawSource);
+
+  it("imports only type-only from shared-ipc-contract.ts and a value import from hermesAuthorization.ts — nothing from 'electron', 'ws', or any node:* built-in", () => {
+    const importLines = code.match(/^\s*import\b.*$/gm) ?? [];
+    expect(importLines.length).toBe(2);
+    expect(importLines.some((line) => line.includes('from "./shared-ipc-contract"') && /^\s*import type\b/.test(line))).toBe(true);
+    expect(importLines.some((line) => line.includes('from "./hermesAuthorization"'))).toBe(true);
+    for (const line of importLines) {
+      expect(line).not.toMatch(/from ["']electron["']/);
+      expect(line).not.toMatch(/from ["']ws["']/);
+      expect(line).not.toMatch(/from ["']node:/);
+    }
+  });
+
+  it("has no console/WebSocket/HTTP/TCP/persistence/safeStorage/environment access of any kind", () => {
+    for (const forbidden of [
+      /console\./,
+      /WebSocket/,
+      /\bfetch\s*\(/,
+      /XMLHttpRequest/,
+      /safeStorage/i,
+      /keytar/i,
+      /process\.env/,
+      /require\(/,
+      /localStorage/,
+      /sessionStorage/,
+      /from ["']node:fs["']|from ["']fs["']/,
+      /from ["']node:net["']|from ["']node:http["']|from ["']node:https["']|from ["']node:dgram["']/,
+    ]) {
+      // Comment-stripped: this module's own header prose names every mechanism it deliberately
+      // does not use, and explains the trusted-endpoint-policy blocker in detail — a raw-source
+      // scan would self-trigger on that explanatory text (same rationale as stripComments()).
+      expect(code, `unexpectedly matched: ${forbidden}`).not.toMatch(forbidden);
+    }
+  });
+
+  it("exports exactly the three intended functions, no more", () => {
+    const exportedFns = [...code.matchAll(/export\s+(?:async\s+)?function\s+(\w+)/g)].map((m) => m[1]);
+    expect(exportedFns.sort()).toEqual(["connect", "disconnect", "getConnectionState"].sort());
+  });
+
+  it("gates connect() and getConnectionState() on hermesAuthorization.ts's own getAuthorizationState, never a parallel authorization check", () => {
+    expect(code).toMatch(/getAuthorizationState\(\)\.state !== "authorized_memory_only"/);
+  });
+
+  it("connect() and disconnect() take no parameters at all", () => {
+    expect(code).toMatch(/export async function connect\(\): Promise<HermesConnectionResult> \{/);
+    expect(code).toMatch(/export function disconnect\(\): HermesConnectionResult \{/);
+  });
+
+  it("uses a monotonic generation counter for the T-17-style stale-connect race guard, and bounds connect() to one in-flight attempt", () => {
+    expect(code).toMatch(/let generation = 0;/);
+    expect(code).toMatch(/generation !== generationAtStart/);
+    expect(code).toMatch(/let connectInFlight = false;/);
+    expect(code).toMatch(/if \(connectInFlight\)/);
+  });
+
+  it("never claims to reach the connected state — connect() only ever sets ambientState to unavailable", () => {
+    expect(code).not.toMatch(/ambientState = "connected"/);
+    expect(code).toMatch(/ambientState = "unavailable"/);
+  });
+});
+
 describe("electron/main.ts — local-only content load", () => {
   // Comment-stripped: main.ts's own doc comments explain, in prose, that it "never" loads a
   // remote/localhost/data: URL — a naive substring check would self-trigger on that sentence.
@@ -507,19 +613,28 @@ describe("electron/main.ts — local-only content load", () => {
   });
 });
 
-describe("electron/main.ts — Hermes authorization IPC handler registration (D-08B)", () => {
+describe("electron/main.ts — Hermes authorization + connectivity IPC handler registration (D-08B + D-08C)", () => {
   const source = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", "main.ts"), "utf8"));
 
-  it("registers exactly the four Hermes IPC handlers, delegating to electron/hermesAuthorization.ts", () => {
+  it("registers exactly the seven Hermes IPC handlers, delegating to electron/hermesAuthorization.ts and electron/hermesConnection.ts", () => {
     expect(source).toMatch(/from ["']\.\/hermesAuthorization["']/);
+    expect(source).toMatch(/from ["']\.\/hermesConnection["']/);
     for (const channel of [
       "HERMES_IPC_CHANNELS.HERMES_GET_AVAILABILITY",
       "HERMES_IPC_CHANNELS.HERMES_GET_AUTHORIZATION_STATE",
       "HERMES_IPC_CHANNELS.HERMES_BEGIN_AUTHORIZATION",
       "HERMES_IPC_CHANNELS.HERMES_CLEAR_AUTHORIZATION",
+      "HERMES_IPC_CHANNELS.HERMES_GET_CONNECTION_STATE",
+      "HERMES_IPC_CHANNELS.HERMES_CONNECT",
+      "HERMES_IPC_CHANNELS.HERMES_DISCONNECT",
     ]) {
       expect(source).toContain(channel);
     }
+  });
+
+  it("the connect and disconnect IPC handlers take no renderer-supplied argument at all (T-14)", () => {
+    expect(source).toMatch(/ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_CONNECT,\s*\(\)\s*=>/);
+    expect(source).toMatch(/ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_DISCONNECT,\s*\(\)\s*=>/);
   });
 
   it("passes beginAuthorization's raw request straight through, unexamined — no second/weaker validation here", () => {
@@ -702,6 +817,51 @@ describe("electron/renderer.ts — Hermes authorization panel wiring (D-08B)", (
   });
 });
 
+describe("electron/renderer.ts — D-08C connection sub-panel wiring", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.ts"), "utf8");
+  const stripped = stripComments(source);
+  const connectionSourceStart = stripped.indexOf("HermesConnectionViewState");
+  const connectionSource = connectionSourceStart >= 0 ? stripped.slice(connectionSourceStart) : "";
+
+  it("declares the connection panel type/interfaces locally", () => {
+    expect(stripped).toMatch(/type HermesConnectionViewState =/);
+    expect(stripped).toMatch(/interface HermesConnectionElements/);
+  });
+
+  it("calls exactly the three D-08C bridge methods — getConnectionState, connect, disconnect", () => {
+    for (const method of ["getConnectionState", "connect", "disconnect"]) {
+      expect(stripped).toMatch(new RegExp(`api\\.hermes\\.${method}\\(`));
+    }
+  });
+
+  it("connect/disconnect are called with no arguments at all", () => {
+    expect(stripped).toMatch(/api\.hermes\.connect\(\)/);
+    expect(stripped).toMatch(/api\.hermes\.disconnect\(\)/);
+  });
+
+  it("uses its own independent monotonic request generation, separate from the authorization panel's", () => {
+    expect(connectionSourceStart).toBeGreaterThan(-1);
+    expect(connectionSource).toMatch(/let hermesConnectionRequestGeneration = 0;/);
+    expect(connectionSource).toMatch(/requestId !== hermesConnectionRequestGeneration/);
+  });
+
+  it("clearing authorization also invalidates any in-flight connect and calls disconnect", () => {
+    const clearFnBody = /async function handleClearHermesAuthorization\(\): Promise<void> \{[\s\S]*?\n\}/.exec(stripped)?.[0] ?? "";
+    expect(clearFnBody).toMatch(/hermesConnectionRequestGeneration\+\+/);
+    expect(clearFnBody).toMatch(/api\.hermes\.disconnect\(\)/);
+  });
+
+  it("never renders an endpoint, host, port, or socket detail in the connection panel", () => {
+    for (const forbidden of [/statusEl\.textContent = result\./, /statusEl\.textContent = \$\{/, /\bhost\b/i, /\bport\b/i, /\bsocket\b/i]) {
+      expect(connectionSource).not.toMatch(forbidden);
+    }
+  });
+
+  it("never logs anything from the connection flow", () => {
+    expect(connectionSource).not.toMatch(/console\./);
+  });
+});
+
 describe("electron/renderer.html — static, non-interactive local content", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
   const lowerHtml = html.toLowerCase();
@@ -733,7 +893,7 @@ describe("electron/renderer.html — static, non-interactive local content", () 
     }
   });
 
-  it("contains exactly the five Milestone A workspace-panel buttons, the two D-03 workspace-grant buttons, and the four D-08B Hermes buttons, no more", () => {
+  it("contains exactly the five Milestone A workspace-panel buttons, the two D-03 workspace-grant buttons, the four D-08B Hermes buttons, and the two D-08C connection buttons, no more", () => {
     const buttonIds = [...html.matchAll(/<button id="([^"]+)"/g)].map((m) => m[1]);
     expect(buttonIds.sort()).toEqual(
       [
@@ -747,6 +907,8 @@ describe("electron/renderer.html — static, non-interactive local content", () 
         "hermes-clear-btn",
         "hermes-submit-btn",
         "hermes-cancel-btn",
+        "hermes-connect-btn",
+        "hermes-disconnect-btn",
       ].sort()
     );
   });
@@ -868,5 +1030,54 @@ describe("electron/renderer.html — Hermes authorization panel (D-08B)", () => 
 
   it("the Hermes error message paragraph starts hidden and empty", () => {
     expect(html).toMatch(/<p id="hermes-error" class="muted" hidden>\s*<\/p>/);
+  });
+});
+
+describe("electron/renderer.html — D-08C connection sub-panel", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
+  const lowerHtml = html.toLowerCase();
+
+  it("contains the full connection sub-panel structure", () => {
+    for (const id of ["hermes-connection-section", "hermes-connection-status", "hermes-connect-btn", "hermes-disconnect-btn", "hermes-connection-error"]) {
+      expect(html).toContain(`id="${id}"`);
+    }
+  });
+
+  it("the connection section and disconnect button both start hidden", () => {
+    expect(html).toMatch(/<div id="hermes-connection-section"[^>]*\bhidden\b/);
+    expect(html).toMatch(/<button id="hermes-disconnect-btn"[^>]*\bhidden\b/);
+  });
+
+  it("the connect button is not hidden by default within its own markup", () => {
+    expect(html).not.toMatch(/<button id="hermes-connect-btn"[^>]*\bhidden\b/);
+  });
+
+  it("states plainly that no connection has been attempted by default", () => {
+    expect(lowerHtml).toMatch(/connection has not been attempted/);
+  });
+
+  it("contains no endpoint/host/port/URL editing control, and no session/chat/prompt/context/provider/model UI", () => {
+    for (const forbidden of [
+      /id="hermes-host/i,
+      /id="hermes-port/i,
+      /id="hermes-endpoint/i,
+      /id="hermes-url/i,
+      /id="hermes-session/i,
+      /id="hermes-prompt/i,
+      /id="hermes-chat/i,
+      /id="hermes-context/i,
+      /id="hermes-provider/i,
+      /id="hermes-model/i,
+    ]) {
+      expect(html).not.toMatch(forbidden);
+    }
+  });
+
+  it("still contains no textarea/select and no additional <input> beyond the two already accounted for (search + credential) — no new endpoint/host/port input was introduced", () => {
+    for (const tag of ["<textarea", "<select"]) {
+      expect(lowerHtml).not.toContain(tag);
+    }
+    const inputs = [...html.matchAll(/<input\b[^>]*>/g)];
+    expect(inputs).toHaveLength(2);
   });
 });

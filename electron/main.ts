@@ -48,6 +48,7 @@ import { readTextFile } from "./workspaceFileViewer";
 import { searchText } from "./workspaceSearch";
 import { getGitSummary } from "./workspaceGit";
 import { getAvailability, getAuthorizationState, beginAuthorization, clearAuthorization as clearHermesAuthorization } from "./hermesAuthorization";
+import { getConnectionState, connect as connectHermes, disconnect as disconnectHermes } from "./hermesConnection";
 
 /**
  * Explicit, disabled-by-default opt-in for the lifecycle diagnostics below —
@@ -180,6 +181,12 @@ function registerHermesIpcHandlers(): void {
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_AUTHORIZATION_STATE, () => getAuthorizationState());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_BEGIN_AUTHORIZATION, (_event, request: unknown) => beginAuthorization(request));
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_AUTHORIZATION, () => clearHermesAuthorization());
+  // D-08C — connect/disconnect take no arguments at all; see electron/hermesConnection.ts's
+  // own header for why connect() can never reach "connected" in this build (a disclosed,
+  // reported trusted-endpoint-policy blocker, not an oversight).
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_CONNECTION_STATE, () => getConnectionState());
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CONNECT, () => connectHermes());
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_DISCONNECT, () => disconnectHermes());
 }
 
 /**

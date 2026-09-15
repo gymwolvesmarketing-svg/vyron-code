@@ -177,11 +177,48 @@ export interface HermesAuthorizationResult {
  * sole one-way credential-submission boundary; `getAvailability`/`getAuthorizationState` are
  * parameter-free reads; `clearAuthorization` is the sole revocation action.
  */
+/**
+ * D-08C connectivity state — VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION.
+ * One shared enum for both the ambient `getConnectionState` read and the `connect`/
+ * `disconnect` action outcomes, exactly mirroring this authorization's own Section 6 required
+ * renderer-visible state list. Never carries an endpoint, host, port, protocol, socket,
+ * session ID, or raw error detail — see electron/hermesConnection.ts's own header comment for
+ * why `connect()` can never actually reach `"connected"` in this build (no trusted,
+ * compile-time-fixed endpoint configuration exists yet — a disclosed, reported blocker, not
+ * an oversight).
+ */
+export type HermesConnectionAmbientState =
+  | "not_authorized"
+  | "ready_to_connect"
+  | "connecting"
+  | "connected"
+  | "disconnecting"
+  | "disconnected"
+  | "unavailable"
+  | "safe_failure";
+
+export interface HermesConnectionState {
+  readonly state: HermesConnectionAmbientState;
+}
+
+export interface HermesConnectionResult {
+  readonly state: HermesConnectionAmbientState;
+}
+
+/**
+ * D-08B + D-08C's full Hermes bridge — exactly seven methods. `connect`/`disconnect` take no
+ * arguments at all (no endpoint, URL, host, port, token, prompt, session ID, workspace data,
+ * or options object of any kind) — the fixed/trusted endpoint, if any existed, would be
+ * selected entirely inside electron/hermesConnection.ts, never supplied by the renderer.
+ */
 export interface DesktopHermesApi {
   getAvailability(): Promise<HermesAvailability>;
   getAuthorizationState(): Promise<HermesAuthorizationState>;
   beginAuthorization(request: HermesAuthorizationRequest): Promise<HermesAuthorizationResult>;
   clearAuthorization(): Promise<HermesAuthorizationResult>;
+  getConnectionState(): Promise<HermesConnectionState>;
+  connect(): Promise<HermesConnectionResult>;
+  disconnect(): Promise<HermesConnectionResult>;
 }
 
 /**
@@ -244,6 +281,9 @@ export const HERMES_IPC_CHANNELS = {
   HERMES_GET_AUTHORIZATION_STATE: "hermes:getAuthorizationState",
   HERMES_BEGIN_AUTHORIZATION: "hermes:beginAuthorization",
   HERMES_CLEAR_AUTHORIZATION: "hermes:clearAuthorization",
+  HERMES_GET_CONNECTION_STATE: "hermes:getConnectionState",
+  HERMES_CONNECT: "hermes:connect",
+  HERMES_DISCONNECT: "hermes:disconnect",
 } as const;
 
 export type HermesIpcChannel = (typeof HERMES_IPC_CHANNELS)[keyof typeof HERMES_IPC_CHANNELS];

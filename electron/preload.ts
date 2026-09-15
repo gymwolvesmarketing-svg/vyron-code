@@ -124,11 +124,35 @@ interface HermesAuthorizationResult {
   readonly state: HermesAuthorizationOutcomeState;
 }
 
+// VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION (D-08C) —
+// duplicated locally for the same reason every other type here is. Carries no endpoint/host/
+// port/socket/session field anywhere.
+type HermesConnectionAmbientState =
+  | "not_authorized"
+  | "ready_to_connect"
+  | "connecting"
+  | "connected"
+  | "disconnecting"
+  | "disconnected"
+  | "unavailable"
+  | "safe_failure";
+
+interface HermesConnectionState {
+  readonly state: HermesConnectionAmbientState;
+}
+
+interface HermesConnectionResult {
+  readonly state: HermesConnectionAmbientState;
+}
+
 interface DesktopHermesApi {
   getAvailability(): Promise<HermesAvailability>;
   getAuthorizationState(): Promise<HermesAuthorizationState>;
   beginAuthorization(request: HermesAuthorizationRequest): Promise<HermesAuthorizationResult>;
   clearAuthorization(): Promise<HermesAuthorizationResult>;
+  getConnectionState(): Promise<HermesConnectionState>;
+  connect(): Promise<HermesConnectionResult>;
+  disconnect(): Promise<HermesConnectionResult>;
 }
 
 interface DesktopApi {
@@ -168,6 +192,9 @@ const HERMES_GET_AVAILABILITY_CHANNEL = "hermes:getAvailability";
 const HERMES_GET_AUTHORIZATION_STATE_CHANNEL = "hermes:getAuthorizationState";
 const HERMES_BEGIN_AUTHORIZATION_CHANNEL = "hermes:beginAuthorization";
 const HERMES_CLEAR_AUTHORIZATION_CHANNEL = "hermes:clearAuthorization";
+const HERMES_GET_CONNECTION_STATE_CHANNEL = "hermes:getConnectionState";
+const HERMES_CONNECT_CHANNEL = "hermes:connect";
+const HERMES_DISCONNECT_CHANNEL = "hermes:disconnect";
 
 const vyronDesktop: DesktopApi = {
   platform: "desktop",
@@ -205,6 +232,11 @@ const vyronDesktop: DesktopApi = {
     getAuthorizationState: () => ipcRenderer.invoke(HERMES_GET_AUTHORIZATION_STATE_CHANNEL),
     beginAuthorization: (request: HermesAuthorizationRequest) => ipcRenderer.invoke(HERMES_BEGIN_AUTHORIZATION_CHANNEL, request),
     clearAuthorization: () => ipcRenderer.invoke(HERMES_CLEAR_AUTHORIZATION_CHANNEL),
+    // D-08C — no argument of any kind; the fixed/trusted endpoint (if any) is selected
+    // entirely inside the main process, never supplied by the renderer.
+    getConnectionState: () => ipcRenderer.invoke(HERMES_GET_CONNECTION_STATE_CHANNEL),
+    connect: () => ipcRenderer.invoke(HERMES_CONNECT_CHANNEL),
+    disconnect: () => ipcRenderer.invoke(HERMES_DISCONNECT_CHANNEL),
   },
 };
 

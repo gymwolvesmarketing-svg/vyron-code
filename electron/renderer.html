@@ -49,6 +49,22 @@
         <button id="hermes-cancel-btn" type="button">Cancel</button>
       </form>
       <p id="hermes-error" class="muted" hidden></p>
+
+      <!--
+        D-08C connection sub-panel — VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION.
+        Visible only once authorized. No endpoint/host/port editing control of any kind exists
+        here or anywhere in this build — the main process alone would select a fixed, trusted
+        endpoint if one existed; it does not yet (see electron/hermesConnection.ts). No session,
+        chat, prompt, context, or provider/model control exists here either.
+      -->
+      <div id="hermes-connection-section" hidden>
+        <p id="hermes-connection-status">Hermes connection has not been attempted.</p>
+        <div class="hermes-actions">
+          <button id="hermes-connect-btn" type="button">Connect</button>
+          <button id="hermes-disconnect-btn" type="button" hidden>Disconnect</button>
+        </div>
+        <p id="hermes-connection-error" class="muted" hidden></p>
+      </div>
     </section>
 
     <section>

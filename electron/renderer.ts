@@ -120,11 +120,33 @@ interface HermesAuthorizationResult {
   readonly state: HermesAuthorizationOutcomeState;
 }
 
+// VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION (D-08C).
+type HermesConnectionAmbientState =
+  | "not_authorized"
+  | "ready_to_connect"
+  | "connecting"
+  | "connected"
+  | "disconnecting"
+  | "disconnected"
+  | "unavailable"
+  | "safe_failure";
+
+interface HermesConnectionState {
+  readonly state: HermesConnectionAmbientState;
+}
+
+interface HermesConnectionResult {
+  readonly state: HermesConnectionAmbientState;
+}
+
 interface DesktopHermesApi {
   getAvailability(): Promise<HermesAvailability>;
   getAuthorizationState(): Promise<HermesAuthorizationState>;
   beginAuthorization(request: HermesAuthorizationRequest): Promise<HermesAuthorizationResult>;
   clearAuthorization(): Promise<HermesAuthorizationResult>;
+  getConnectionState(): Promise<HermesConnectionState>;
+  connect(): Promise<HermesConnectionResult>;
+  disconnect(): Promise<HermesConnectionResult>;
 }
 
 interface DesktopApi {
@@ -802,6 +824,14 @@ function renderHermesPanel(view: HermesViewState): void {
   const revoking = view === "revoking";
   clearBtn.disabled = revoking;
   clearBtn.textContent = revoking ? "Revoking…" : "Clear Hermes authorization";
+
+  // D-08C connection sub-panel is only ever visible while authorized — hidden again on
+  // "revoking" (about to leave). Its own CONTENT is deliberately never set here: each caller
+  // of renderHermesPanel("authorized") (a fresh beginAuthorization success, or initHermesState
+  // restoring real state on startup) decides what the connection section should show next,
+  // rather than this function assuming "ready_to_connect" and possibly stomping a real value.
+  const connectionSection = document.getElementById("hermes-connection-section");
+  if (connectionSection) connectionSection.hidden = revoking;
 }
 
 function handleOpenHermesPanel(): void {
@@ -832,6 +862,9 @@ async function handleBeginHermesAuthorization(event: SubmitEvent): Promise<void>
     if (requestId !== hermesRequestGeneration) return;
     if (result.state === "authorized_memory_only") {
       renderHermesPanel("authorized");
+      // A freshly successful authorization is always connection-ready — D-08C's own ambient
+      // state starts "ready_to_connect" the moment authorization becomes valid.
+      renderHermesConnection("ready_to_connect");
     } else if (result.state === "revoked" || result.state === "not_authorized") {
       renderHermesPanel("not_authorized");
     } else if (result.state === "unavailable") {
@@ -856,6 +889,11 @@ async function handleClearHermesAuthorization(): Promise<void> {
   // Increment first, synchronously, before the IPC call even starts — supersedes any
   // beginAuthorization call already in flight immediately, not only after this call resolves.
   hermesRequestGeneration++;
+  // Also supersedes any in-flight connect() and resets the main process's own connection
+  // state — clearing authorization must always leave connectivity inactive too (D-08C's
+  // getConnectionState() would already report "not_authorized" once cleared regardless, but
+  // this keeps electron/hermesConnection.ts's own internal state hygienic rather than stale).
+  hermesConnectionRequestGeneration++;
   renderHermesPanel("revoking");
   try {
     await api.hermes.clearAuthorization();
@@ -863,7 +901,158 @@ async function handleClearHermesAuthorization(): Promise<void> {
     // Clear must always leave the UI in a safe, non-authorized state, even if the IPC call
     // itself rejected — never leave the user looking at a stale "authorized" panel.
   }
+  try {
+    await api.hermes.disconnect();
+  } catch {
+    // Best-effort only — clearAuthorization() above already makes getConnectionState()
+    // report "not_authorized" regardless of whether this call itself succeeds.
+  }
   renderHermesPanel("not_authorized");
+}
+
+// ---------------------------------------------------------------------------------------
+// D-08C connection sub-panel — VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION.
+// Visible only while the outer Hermes panel is in its "authorized" view (see
+// renderHermesPanel above). connect()/disconnect() never take an endpoint/host/port/socket
+// argument of any kind — see electron/hermesConnection.ts's own header for why connect()
+// always safely resolves to "unavailable" in this build (a disclosed trusted-endpoint-policy
+// blocker, not a bug).
+// ---------------------------------------------------------------------------------------
+type HermesConnectionViewState = "ready_to_connect" | "connecting" | "connected" | "disconnecting" | "disconnected" | "unavailable" | "safe_failure";
+
+/** Monotonic request generation — the same T-17-style guard the authorization panel above
+ * uses, applied independently to the connection sub-panel. */
+let hermesConnectionRequestGeneration = 0;
+
+interface HermesConnectionElements {
+  readonly statusEl: HTMLElement;
+  readonly connectBtn: HTMLButtonElement;
+  readonly disconnectBtn: HTMLButtonElement;
+  readonly errorEl: HTMLElement;
+}
+
+function getHermesConnectionElements(): HermesConnectionElements | null {
+  const statusEl = document.getElementById("hermes-connection-status");
+  const connectBtn = document.getElementById("hermes-connect-btn");
+  const disconnectBtn = document.getElementById("hermes-disconnect-btn");
+  const errorEl = document.getElementById("hermes-connection-error");
+  if (
+    !(statusEl instanceof HTMLElement) ||
+    !(connectBtn instanceof HTMLButtonElement) ||
+    !(disconnectBtn instanceof HTMLButtonElement) ||
+    !(errorEl instanceof HTMLElement)
+  ) {
+    return null;
+  }
+  return { statusEl, connectBtn, disconnectBtn, errorEl };
+}
+
+/**
+ * Renders one of the required D-08C connection states using only fixed, safe, hand-written
+ * string literals — never an endpoint, host, port, socket detail, or raw error. No state here
+ * ever mentions a network address, protocol, or session identifier.
+ */
+function renderHermesConnection(view: HermesConnectionViewState): void {
+  const els = getHermesConnectionElements();
+  if (!els) return;
+  const { statusEl, connectBtn, disconnectBtn, errorEl } = els;
+
+  errorEl.hidden = true;
+  errorEl.textContent = "";
+  connectBtn.disabled = false;
+  disconnectBtn.disabled = false;
+  disconnectBtn.textContent = "Disconnect";
+
+  switch (view) {
+    case "ready_to_connect":
+      statusEl.textContent = "Hermes connection has not been attempted.";
+      connectBtn.hidden = false;
+      disconnectBtn.hidden = true;
+      break;
+    case "connecting":
+      statusEl.textContent = "Connecting…";
+      connectBtn.hidden = true;
+      disconnectBtn.hidden = false;
+      break;
+    case "connected":
+      statusEl.textContent = "Connected.";
+      connectBtn.hidden = true;
+      disconnectBtn.hidden = false;
+      break;
+    case "disconnecting":
+      statusEl.textContent = "Disconnecting…";
+      connectBtn.hidden = true;
+      disconnectBtn.hidden = false;
+      disconnectBtn.disabled = true;
+      disconnectBtn.textContent = "Disconnecting…";
+      break;
+    case "disconnected":
+      statusEl.textContent = "Disconnected.";
+      connectBtn.hidden = false;
+      disconnectBtn.hidden = true;
+      break;
+    case "unavailable":
+      statusEl.textContent = "Hermes connectivity is unavailable in this build.";
+      connectBtn.hidden = false;
+      disconnectBtn.hidden = true;
+      break;
+    case "safe_failure":
+      statusEl.textContent = "Hermes connection has not been attempted.";
+      connectBtn.hidden = false;
+      disconnectBtn.hidden = true;
+      errorEl.hidden = false;
+      errorEl.textContent = "Connection could not be completed. Please try again.";
+      break;
+  }
+}
+
+async function handleConnectHermes(): Promise<void> {
+  const api = window.vyronDesktop;
+  if (!api) {
+    renderHermesConnection("unavailable");
+    return;
+  }
+  const requestId = ++hermesConnectionRequestGeneration;
+  renderHermesConnection("connecting");
+  try {
+    const result = await api.hermes.connect();
+    // Superseded by a later connect/disconnect while this call was in flight — never render
+    // a result that is no longer current.
+    if (requestId !== hermesConnectionRequestGeneration) return;
+    if (result.state === "connected") {
+      renderHermesConnection("connected");
+    } else if (result.state === "unavailable") {
+      renderHermesConnection("unavailable");
+    } else if (result.state === "disconnected") {
+      renderHermesConnection("disconnected");
+    } else if (result.state === "not_authorized") {
+      // Authorization must have been cleared elsewhere while this call was in flight.
+      renderHermesPanel("not_authorized");
+    } else {
+      renderHermesConnection("safe_failure");
+    }
+  } catch {
+    if (requestId !== hermesConnectionRequestGeneration) return;
+    renderHermesConnection("safe_failure");
+  }
+}
+
+async function handleDisconnectHermes(): Promise<void> {
+  const api = window.vyronDesktop;
+  if (!api) {
+    renderHermesConnection("unavailable");
+    return;
+  }
+  // Supersedes any in-flight connect() immediately, before the IPC call even starts.
+  hermesConnectionRequestGeneration++;
+  renderHermesConnection("disconnecting");
+  try {
+    await api.hermes.disconnect();
+  } catch {
+    // Disconnect must always leave the UI in a safe, disconnected-looking state, even if the
+    // IPC call itself rejected.
+  }
+  renderHermesConnection("disconnected");
 }
 
 async function initHermesState(api: DesktopApi): Promise<void> {
@@ -874,7 +1063,20 @@ async function initHermesState(api: DesktopApi): Promise<void> {
       return;
     }
     const state = await api.hermes.getAuthorizationState();
-    renderHermesPanel(state.state === "authorized_memory_only" ? "authorized" : "not_authorized");
+    if (state.state === "authorized_memory_only") {
+      renderHermesPanel("authorized");
+      // Restore the real connection state rather than assuming "ready_to_connect" — an app
+      // restart always begins with a fresh, never-connected state in this build (D-08C has
+      // no cross-restart persistence of any kind), but this still asks rather than assumes.
+      try {
+        const connectionState = await api.hermes.getConnectionState();
+        renderHermesConnection(connectionState.state === "not_authorized" ? "ready_to_connect" : connectionState.state);
+      } catch {
+        renderHermesConnection("ready_to_connect");
+      }
+    } else {
+      renderHermesPanel("not_authorized");
+    }
   } catch {
     renderHermesPanel("unavailable");
   }
@@ -888,6 +1090,8 @@ function wireHermesControls(): void {
   if (form instanceof HTMLFormElement) {
     form.addEventListener("submit", (event) => void handleBeginHermesAuthorization(event));
   }
+  document.getElementById("hermes-connect-btn")?.addEventListener("click", () => void handleConnectHermes());
+  document.getElementById("hermes-disconnect-btn")?.addEventListener("click", () => void handleDisconnectHermes());
 }
 
 // ---------------------------------------------------------------------------------------
