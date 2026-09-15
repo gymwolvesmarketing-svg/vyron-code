@@ -44,9 +44,21 @@
  * explicit precondition that a connection may only be attempted once D-08B authorization is
  * current) but hermesAuthorization.ts has no dependency back on this module, and
  * electron/workspace-grant.ts is untouched and unrelated to either.
+ *
+ * Extended by VYRON_CODE_V02_D08C_CHECKPOINT_AND_TRUSTED_HERMES_ENDPOINT_BOUNDARY_AUTHORIZATION
+ * to consume electron/hermesEndpoint.ts's `resolveTrustedEndpoint()` rather than hardcoding
+ * `"unavailable"` as this module's own arbitrary literal — `connect()` now genuinely asks the
+ * endpoint boundary whether a trusted endpoint exists before deciding what to do. The answer is
+ * still always "no" in this build (see hermesEndpoint.ts's own header for the full future-
+ * source-policy comparison), so the *observable* behavior is unchanged — but the reason is now
+ * structural (a real fail-closed resolution step ran and returned `unavailable`) rather than a
+ * connect()-local assumption. Even in the hypothetical branch where a trusted endpoint were
+ * ever returned, this task still does not authorize opening a real socket — see the explicit
+ * comment at that branch below.
  */
 import type { HermesConnectionResult, HermesConnectionState } from "./shared-ipc-contract";
 import { getAuthorizationState } from "./hermesAuthorization";
+import { resolveTrustedEndpoint } from "./hermesEndpoint";
 
 // Module-scope, process-memory-only. Starts "ready_to_connect" the instant authorization
 // becomes valid (getConnectionState always re-derives the "not_authorized" case fresh from
@@ -98,6 +110,22 @@ export async function connect(): Promise<HermesConnectionResult> {
     if (generation !== generationAtStart) {
       return { state: "disconnected" };
     }
+
+    const endpoint = resolveTrustedEndpoint();
+    if (endpoint.kind !== "trusted") {
+      // Always true in this build — see this module's header and hermesEndpoint.ts's own
+      // header for why. No endpoint/host/port/reason detail from `endpoint` is ever forwarded
+      // into the renderer-visible result below; only the fixed, safe `"unavailable"` literal.
+      ambientState = "unavailable";
+      return { state: "unavailable" };
+    }
+
+    // A real trusted endpoint would be used here to open an actual connection — NOT
+    // implemented by this task (VYRON_CODE_V02_D08C_CHECKPOINT_AND_TRUSTED_HERMES_ENDPOINT_BOUNDARY_AUTHORIZATION
+    // explicitly forbids WebSocket/net/http construction). Until a future, separately
+    // authorized task adds that, this branch is unreachable in practice but is written this
+    // way — rather than deleted — so the endpoint boundary is genuinely consulted, not merely
+    // decorative.
     ambientState = "unavailable";
     return { state: "unavailable" };
   } finally {

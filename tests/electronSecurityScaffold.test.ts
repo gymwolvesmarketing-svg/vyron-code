@@ -413,11 +413,12 @@ describe("Electron scaffold source — no shell/child_process execution capabili
     }
   });
 
-  it("confirms exactly the thirteen expected scaffold .ts files exist, no more", () => {
+  it("confirms exactly the fourteen expected scaffold .ts files exist, no more", () => {
     expect(sourceFiles.sort()).toEqual(
       [
         "hermesAuthorization.ts",
         "hermesConnection.ts",
+        "hermesEndpoint.ts",
         "main.ts",
         "preload.ts",
         "renderer.ts",
@@ -533,11 +534,12 @@ describe("electron/hermesConnection.ts — no real network/persistence/logging c
   const rawSource = fs.readFileSync(filePath, "utf8");
   const code = stripComments(rawSource);
 
-  it("imports only type-only from shared-ipc-contract.ts and a value import from hermesAuthorization.ts — nothing from 'electron', 'ws', or any node:* built-in", () => {
+  it("imports only type-only from shared-ipc-contract.ts and value imports from hermesAuthorization.ts/hermesEndpoint.ts — nothing from 'electron', 'ws', or any node:* built-in", () => {
     const importLines = code.match(/^\s*import\b.*$/gm) ?? [];
-    expect(importLines.length).toBe(2);
+    expect(importLines.length).toBe(3);
     expect(importLines.some((line) => line.includes('from "./shared-ipc-contract"') && /^\s*import type\b/.test(line))).toBe(true);
     expect(importLines.some((line) => line.includes('from "./hermesAuthorization"'))).toBe(true);
+    expect(importLines.some((line) => line.includes('from "./hermesEndpoint"'))).toBe(true);
     for (const line of importLines) {
       expect(line).not.toMatch(/from ["']electron["']/);
       expect(line).not.toMatch(/from ["']ws["']/);
@@ -591,6 +593,90 @@ describe("electron/hermesConnection.ts — no real network/persistence/logging c
   it("never claims to reach the connected state — connect() only ever sets ambientState to unavailable", () => {
     expect(code).not.toMatch(/ambientState = "connected"/);
     expect(code).toMatch(/ambientState = "unavailable"/);
+  });
+
+  it("consumes electron/hermesEndpoint.ts's resolveTrustedEndpoint rather than hardcoding its own unavailable literal", () => {
+    expect(code).toMatch(/from ["']\.\/hermesEndpoint["']/);
+    expect(code).toMatch(/resolveTrustedEndpoint\(\)/);
+    expect(code).toMatch(/endpoint\.kind !== "trusted"/);
+  });
+
+  it("never forwards any field of the resolved endpoint object into a renderer-visible result", () => {
+    // The only permitted renderer-visible literal from this branch is the fixed string
+    // "unavailable" — never `endpoint.reason`, `endpoint.url`, `endpoint.hostPolicy`, etc.
+    expect(code).not.toMatch(/state:\s*endpoint\./);
+    expect(code).not.toMatch(/\{\s*state:\s*endpoint\s*\}/);
+  });
+});
+
+describe("electron/hermesEndpoint.ts — fail-closed trusted-endpoint boundary, no I/O of any kind (D-08C Part B)", () => {
+  const filePath = path.join(__dirname, "..", "electron", "hermesEndpoint.ts");
+  const rawSource = fs.readFileSync(filePath, "utf8");
+  const code = stripComments(rawSource);
+
+  it("has no import statement at all — a pure, dependency-free module", () => {
+    const importLines = code.match(/^\s*import\b.*$/gm) ?? [];
+    expect(importLines).toHaveLength(0);
+  });
+
+  it("has no console/network/DNS/persistence/safeStorage/environment access of any kind", () => {
+    for (const forbidden of [
+      /console\./,
+      /WebSocket/,
+      /\bfetch\s*\(/,
+      /XMLHttpRequest/,
+      /safeStorage/i,
+      /keytar/i,
+      /process\.env/,
+      /require\(/,
+      /localStorage/,
+      /sessionStorage/,
+      /\bdns\./,
+      /from ["']node:/,
+    ]) {
+      // Comment-stripped: this module's own header prose names every mechanism it deliberately
+      // does not use, and compares six future endpoint-source options by name — a raw-source
+      // scan would self-trigger on that explanatory/comparison text.
+      expect(code, `unexpectedly matched: ${forbidden}`).not.toMatch(forbidden);
+    }
+  });
+
+  it("exports exactly resolveTrustedEndpoint and validateEndpointCandidate, no more", () => {
+    const exportedFns = [...code.matchAll(/export\s+function\s+(\w+)/g)].map((m) => m[1]);
+    expect(exportedFns.sort()).toEqual(["resolveTrustedEndpoint", "validateEndpointCandidate"].sort());
+  });
+
+  it("resolveTrustedEndpoint takes no arguments and delegates to validateEndpointCandidate with no real candidate", () => {
+    expect(code).toMatch(/export function resolveTrustedEndpoint\(\): HermesTrustedEndpoint \{/);
+    expect(code).toMatch(/return validateEndpointCandidate\(undefined\);/);
+  });
+
+  it("rejects unsupported schemes, URL userinfo, query strings, and fragments unconditionally", () => {
+    expect(code).toMatch(/parsed\.protocol !== "ws:" && parsed\.protocol !== "wss:"/);
+    expect(code).toMatch(/parsed\.username !== ""/);
+    expect(code).toMatch(/parsed\.search !== ""/);
+    expect(code).toMatch(/parsed\.hash !== ""/);
+  });
+
+  it("the production entry point never supplies a non-empty approved-hosts list — explicit-approved-host is fail-closed today", () => {
+    expect(code).toMatch(/approvedHosts: readonly string\[\] = \[\]/);
+  });
+});
+
+describe("electron/hermesEndpoint.ts and its HermesTrustedEndpoint type — never renderer-reachable", () => {
+  it("is never imported by preload.ts, renderer.ts, or shared-ipc-contract.ts", () => {
+    for (const file of ["preload.ts", "renderer.ts", "shared-ipc-contract.ts"]) {
+      const code = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", file), "utf8"));
+      expect(code, `${file} unexpectedly references hermesEndpoint`).not.toMatch(/hermesEndpoint/);
+      expect(code, `${file} unexpectedly references HermesTrustedEndpoint`).not.toMatch(/HermesTrustedEndpoint/);
+    }
+  });
+
+  it("hermesConnection.ts is the only file that imports electron/hermesEndpoint.ts", () => {
+    const electronDir = path.join(__dirname, "..", "electron");
+    const files = fs.readdirSync(electronDir).filter((f) => f.endsWith(".ts") && f !== "hermesEndpoint.ts");
+    const importers = files.filter((f) => stripComments(fs.readFileSync(path.join(electronDir, f), "utf8")).match(/from ["']\.\/hermesEndpoint["']/));
+    expect(importers).toEqual(["hermesConnection.ts"]);
   });
 });
 
