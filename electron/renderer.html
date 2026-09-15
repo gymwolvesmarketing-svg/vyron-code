@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';" />
+<title>Vyron Code Desktop</title>
+<link rel="stylesheet" href="renderer.css" />
+</head>
+<body>
+  <!--
+    Local renderer — VYRON_CODE_V02_D02D_MINIMAL_LOCAL_RENDERER_AUTHORIZATION, extended by
+    VYRON_CODE_V02_D03_NATIVE_FOLDER_PICKER_AND_WORKSPACE_GRANT_AUTHORIZATION and
+    VYRON_CODE_V02_MILESTONE_A_RUNTIME_STABILITY_AND_READONLY_WORKSPACE_AUTHORIZATION.
+    No file-write, save, terminal, Git-write, or multimodel control exists anywhere on this
+    page. Every IPC call made from here is one of the fixed
+    window.vyronDesktop.workspace.* methods, each triggered only by an explicit user action —
+    a button click, an Explorer row click, or a submitted Search query. The only text input on
+    this page is the Search query box; it can never select or type an absolute workspace path
+    — that remains possible only through the native "Open folder…" picker. No fetch/network
+    request (this page's own CSP forbids connect-src).
+  -->
+  <header>
+    <h1>Vyron Code Desktop</h1>
+    <span class="badge">local-only desktop scaffold</span>
+    <span class="badge">read-only architecture</span>
+  </header>
+
+  <main>
+    <section>
+      <h2>Workspace</h2>
+      <p id="workspace-status">No workspace is selected.</p>
+      <div class="workspace-actions">
+        <button id="pick-directory-btn" type="button">Open folder…</button>
+        <button id="clear-workspace-btn" type="button" hidden>Clear workspace</button>
+      </div>
+      <p class="muted">
+        Opening a folder only grants Vyron Code a read-only reference to it. Only the folder's
+        own name is shown here; its full path stays private to the app and is never displayed.
+      </p>
+    </section>
+
+    <section id="workspace-panel" hidden>
+      <h2>Workspace explorer</h2>
+      <nav class="workspace-nav" aria-label="Workspace views">
+        <button id="nav-explorer-btn" type="button" class="nav-tab" aria-pressed="true">Explorer</button>
+        <button id="nav-search-btn" type="button" class="nav-tab" aria-pressed="false">Search</button>
+        <button id="nav-git-btn" type="button" class="nav-tab" aria-pressed="false">Git Summary</button>
+      </nav>
+
+      <div id="view-explorer" class="workspace-view">
+        <div class="explorer-layout">
+          <div class="explorer-tree-pane">
+            <ul id="explorer-tree" aria-label="Workspace files"></ul>
+          </div>
+          <div class="file-viewer-pane">
+            <div id="file-viewer">
+              <p class="muted">Select a file to preview its contents.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="view-search" class="workspace-view" hidden>
+        <form id="search-form" class="search-form">
+          <label for="search-input" class="visually-hidden">Search text in workspace</label>
+          <input id="search-input" type="text" placeholder="Search text in this workspace…" maxlength="200" autocomplete="off" />
+          <button id="search-btn" type="submit">Search</button>
+        </form>
+        <p id="search-status" class="muted">Enter a query and press Search.</p>
+        <ul id="search-results" aria-label="Search results"></ul>
+      </div>
+
+      <div id="view-git" class="workspace-view" hidden>
+        <div id="git-summary">
+          <p class="muted">Open this tab to load the Git summary.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Capability boundary</h2>
+      <p>
+        This desktop scaffold has no file-write, terminal, Git-write, or multi-model-start
+        capability of any kind. Nothing on this page, or anywhere in this build, can execute a
+        command, write a file, mutate a Git repository, or start a multi-model session.
+      </p>
+      <p>
+        Hermes token/session integration is not configured in this build — no chat or Hermes
+        connection is available yet.
+      </p>
+      <ul id="capabilities" aria-label="Capability status"></ul>
+    </section>
+  </main>
+
+  <footer>
+    <span id="platform-label">Platform:</span> <span id="platform-value">—</span>
+  </footer>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
