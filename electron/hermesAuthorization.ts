@@ -26,6 +26,18 @@
  * Hermes authorization state, and clearing Hermes authorization never touches the workspace
  * grant — they are deliberately independent, separately revocable pieces of process-memory
  * state, each owned by its own module.
+ *
+ * Extended by VYRON_CODE_V02_D08E_CHECKPOINT_AND_D08F_EXPLICIT_HERMES_CONNECTIVITY_AUTHORIZATION
+ * with `getCurrentCredential()` — a main-process-INTERNAL accessor, mirroring
+ * electron/workspace-grant.ts's `getCurrentCanonicalRoot()` and
+ * electron/hermesEndpointSetup.ts's `getConfiguredEndpoint()` exactly. The one intended caller
+ * is electron/hermesConnection.ts, which needs the real credential to build the one documented
+ * `/api/ws?token=...` connection URL (see hermesConnection.ts's own header for the full
+ * evidence trail). This accessor is NEVER imported by electron/preload.ts and NEVER part of
+ * any IPC-returned value — every guarantee in this file's own header (never persisted, never
+ * logged, never returned to renderer) is unchanged by its existence, exactly as adding the
+ * analogous accessors to the workspace-grant and endpoint-setup modules changed none of their
+ * own guarantees either.
  */
 import type { HermesAuthorizationRequest, HermesAuthorizationResult, HermesAuthorizationState, HermesAvailability } from "./shared-ipc-contract";
 
@@ -122,4 +134,14 @@ export function clearAuthorization(): HermesAuthorizationResult {
   authorizedCredential = null;
   generation++;
   return { state: "revoked" };
+}
+
+/**
+ * Main-process-INTERNAL accessor for the raw credential — never exported to preload/renderer,
+ * never part of any `HermesAuthorizationState`/`HermesAuthorizationResult`. Returns `null`
+ * whenever `getAuthorizationState()` would report `not_authorized`, so callers never need a
+ * separate check.
+ */
+export function getCurrentCredential(): string | null {
+  return authorizedCredential;
 }

@@ -129,12 +129,14 @@ interface HermesAuthorizationResult {
 // port/socket/session field anywhere.
 type HermesConnectionAmbientState =
   | "not_authorized"
+  | "endpoint_not_configured"
   | "ready_to_connect"
   | "connecting"
   | "connected"
   | "disconnecting"
   | "disconnected"
   | "unavailable"
+  | "connection_timed_out"
   | "safe_failure";
 
 interface HermesConnectionState {

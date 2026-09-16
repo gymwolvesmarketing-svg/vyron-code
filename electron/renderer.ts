@@ -120,15 +120,18 @@ interface HermesAuthorizationResult {
   readonly state: HermesAuthorizationOutcomeState;
 }
 
-// VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION (D-08C).
+// VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION (D-08C),
+// extended by VYRON_CODE_V02_D08E_CHECKPOINT_AND_D08F_EXPLICIT_HERMES_CONNECTIVITY_AUTHORIZATION.
 type HermesConnectionAmbientState =
   | "not_authorized"
+  | "endpoint_not_configured"
   | "ready_to_connect"
   | "connecting"
   | "connected"
   | "disconnecting"
   | "disconnected"
   | "unavailable"
+  | "connection_timed_out"
   | "safe_failure";
 
 interface HermesConnectionState {
@@ -239,6 +242,7 @@ function resetWorkspaceViewState(): void {
   explorerState = new Map();
   explorerExpanded = new Set();
   selectedFileRelativePath = null;
+  resetTaskContextState();
 
   const tree = document.getElementById("explorer-tree");
   if (tree) tree.replaceChildren();
@@ -285,6 +289,7 @@ function renderWorkspaceState(result: WorkspaceGrantState): void {
 
   statusEl.replaceChildren();
   if (result.state === "granted" && result.displayName) {
+    currentWorkspaceDisplayName = result.displayName;
     const nameEl = document.createElement("strong");
     nameEl.textContent = result.displayName;
     const badge = document.createElement("span");
@@ -296,6 +301,7 @@ function renderWorkspaceState(result: WorkspaceGrantState): void {
     resetWorkspaceViewState();
     void loadDirectory(".");
   } else {
+    currentWorkspaceDisplayName = null;
     statusEl.textContent = WORKSPACE_STATUS_TEXT[result.state];
     clearBtn.hidden = true;
     if (panel) panel.hidden = true;
@@ -544,6 +550,7 @@ function renderFileViewerResult(result: ReadTextFileResult): void {
   viewer.replaceChildren();
 
   if (result.state !== "ok" || result.content === null) {
+    lastFileViewerPreview = null;
     const p = document.createElement("p");
     p.className = "muted";
     p.textContent = result.state === "ok" ? "This file has no content." : FILE_VIEWER_STATUS_TEXT[result.state];
@@ -551,16 +558,28 @@ function renderFileViewerResult(result: ReadTextFileResult): void {
     return;
   }
 
+  lastFileViewerPreview = {
+    relativePath: result.relativePath ?? "",
+    content: result.content,
+    lineCount: result.lineCount ?? 0,
+    truncated: result.truncated,
+  };
+
   const header = document.createElement("div");
   header.className = "file-viewer-header";
   const headerText = document.createElement("span");
   headerText.textContent = `${result.relativePath ?? ""} — ${result.lineCount ?? 0} line${result.lineCount === 1 ? "" : "s"}${result.truncated ? " (truncated)" : ""}`;
+  const addContextBtn = document.createElement("button");
+  addContextBtn.type = "button";
+  addContextBtn.className = "file-viewer-add-context";
+  addContextBtn.textContent = "Add to context";
+  addContextBtn.addEventListener("click", () => handleAddFilePreviewToTaskContext());
   const closeBtn = document.createElement("button");
   closeBtn.type = "button";
   closeBtn.className = "file-viewer-close";
   closeBtn.textContent = "Close preview";
   closeBtn.addEventListener("click", () => closeFilePreview());
-  header.append(headerText, closeBtn);
+  header.append(headerText, addContextBtn, closeBtn);
 
   const pre = document.createElement("pre");
   pre.textContent = result.content;
@@ -572,6 +591,7 @@ function renderFileViewerResult(result: ReadTextFileResult): void {
  * state — required so the user can dismiss a preview independently of picking another file. */
 function closeFilePreview(): void {
   selectedFileRelativePath = null;
+  lastFileViewerPreview = null;
   renderExplorerTree();
   renderFileViewerPlaceholder("Select a file to preview its contents.");
 }
@@ -641,7 +661,17 @@ function buildSearchResultRow(match: WorkspaceSearchMatch): HTMLLIElement {
 
   row.append(pathEl, lineEl);
   row.addEventListener("click", () => void openFile(match.relativePath, "search"));
-  li.append(row);
+
+  const addContextBtn = document.createElement("button");
+  addContextBtn.type = "button";
+  addContextBtn.className = "search-result-add-context";
+  addContextBtn.textContent = "Add to context";
+  addContextBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    handleAddSearchResultToTaskContext({ relativePath: match.relativePath, line: match.line, preview: match.preview });
+  });
+
+  li.append(row, addContextBtn);
   return li;
 }
 
@@ -677,6 +707,7 @@ function renderGitSummary(result: GitSummaryResult): void {
   container.replaceChildren();
 
   if (result.state === "not_a_repository") {
+    lastGitSummaryForContext = null;
     const p = document.createElement("p");
     p.className = "muted";
     p.textContent = "No Git repository detected in this workspace.";
@@ -684,12 +715,22 @@ function renderGitSummary(result: GitSummaryResult): void {
     return;
   }
   if (result.state !== "ok") {
+    lastGitSummaryForContext = null;
     const p = document.createElement("p");
     p.className = "muted";
     p.textContent = result.state === "no_workspace" ? "No workspace is selected." : "Git summary is unavailable for this workspace.";
     container.append(p);
     return;
   }
+
+  lastGitSummaryForContext = {
+    branch: result.branch,
+    detached: result.detached,
+    trackedChangesAvailable: result.trackedChangesAvailable,
+    modifiedCount: result.modifiedCount,
+    deletedCount: result.deletedCount,
+    untrackedCount: result.untrackedCount,
+  };
 
   const dl = document.createElement("dl");
   const suffix = result.truncated ? "+ (bounded scan)" : "";
@@ -733,6 +774,507 @@ function renderGitSummary(result: GitSummaryResult): void {
     note.textContent = "Staged-but-uncommitted and rename counts are not computed by this summary.";
     container.append(note);
   }
+
+  const addContextBtn = document.createElement("button");
+  addContextBtn.type = "button";
+  addContextBtn.className = "git-summary-add-context";
+  addContextBtn.textContent = "Add to context";
+  addContextBtn.addEventListener("click", () => handleAddGitSummaryToTaskContext());
+  container.append(addContextBtn);
+}
+
+// ---------------------------------------------------------------------------------------
+// Task composer — VYRON_CODE_V02_D09_TASK_FIRST_COMPOSER_AND_CONTEXT_REVIEW_AUTHORIZATION.
+// Entirely local, renderer-memory-only state: no IPC call exists anywhere in this section, no
+// network request (this page's own CSP already forbids connect-src entirely), no persistence
+// of any kind (no localStorage/sessionStorage/indexedDB/cookie/filesystem/registry use), and no
+// "send"/"submit"/"execute"/"start session" action of any kind — only draft composition,
+// explicit local context selection drawn from data already rendered on this page, and a
+// review-before-send preview. This section's types/constants/pure logic deliberately mirror
+// electron/taskComposer.ts's own real, exported, directly-unit-tested copies rule-for-rule —
+// they are NOT imported from there (this file's own header above explains why: any top-level
+// import/export here would break this file's classic-script load). tests/electronSecurityScaffold.test.ts
+// cross-checks the key constants/labels between the two files so they cannot silently drift.
+// Every context candidate builder below takes only data this page already has on screen (a
+// rendered file preview, a rendered search result row, the rendered Git summary, the granted
+// workspace's own display name, or the currently selected profile) — none of them read, list,
+// or search anything themselves.
+// ---------------------------------------------------------------------------------------
+type TaskProfile = "explain" | "review" | "plan" | "investigate" | "summarize_workspace" | "analyze_git_status";
+
+interface TaskProfileMeta {
+  readonly id: TaskProfile;
+  readonly label: string;
+  readonly draftPlaceholder: string;
+}
+
+const TASK_PROFILES: readonly TaskProfileMeta[] = [
+  { id: "explain", label: "Explain", draftPlaceholder: "Describe what you would like explained…" },
+  { id: "review", label: "Review", draftPlaceholder: "Describe what you would like reviewed…" },
+  { id: "plan", label: "Plan", draftPlaceholder: "Describe what you would like planned…" },
+  { id: "investigate", label: "Investigate", draftPlaceholder: "Describe what you would like investigated…" },
+  {
+    id: "summarize_workspace",
+    label: "Summarize workspace",
+    draftPlaceholder: "Describe the kind of workspace summary you want…",
+  },
+  {
+    id: "analyze_git_status",
+    label: "Analyze Git status",
+    draftPlaceholder: "Describe what you would like analyzed about Git status…",
+  },
+];
+
+function getTaskProfileMeta(profile: TaskProfile): TaskProfileMeta {
+  // TASK_PROFILES is a non-empty compile-time literal, so this fallback is always defined —
+  // the assertion exists only to satisfy `noUncheckedIndexedAccess`, not to bypass a real check.
+  return TASK_PROFILES.find((meta) => meta.id === profile) ?? TASK_PROFILES[0]!;
+}
+
+/** Independent, disclosed bound for this draft box specifically — far smaller than
+ * electron/workspaceFileViewer.ts's own 200,000-char raw file-preview bound. */
+const MAX_DRAFT_LENGTH = 4_000;
+/** C0 control characters and DEL, excluding tab/newline/carriage-return. */
+const TASK_CONTROL_CHARACTER_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
+
+type DraftInvalidReason = "empty" | "too_long" | "control_characters" | "whitespace_only";
+
+function validateDraftText(raw: string): { readonly valid: boolean; readonly reason: DraftInvalidReason | null } {
+  if (raw.length === 0) return { valid: false, reason: "empty" };
+  if (raw.length > MAX_DRAFT_LENGTH) return { valid: false, reason: "too_long" };
+  if (TASK_CONTROL_CHARACTER_PATTERN.test(raw)) return { valid: false, reason: "control_characters" };
+  if (raw.trim().length === 0) return { valid: false, reason: "whitespace_only" };
+  return { valid: true, reason: null };
+}
+
+/** The sole gate for opening the review surface. */
+function canOpenTaskReview(draftText: string): boolean {
+  return validateDraftText(draftText).valid;
+}
+
+const MAX_CONTEXT_ITEMS = 12;
+/** Bounds any single context item's own excerpt/detail text — independent of, and far smaller
+ * than, the underlying file-preview (200,000 chars) or search-result-preview (300 chars)
+ * limits those features use for their own on-screen display. */
+const MAX_SINGLE_EXCERPT_CHARS = 4_000;
+const MAX_TOTAL_CONTEXT_CHARS = 20_000;
+/** Defensive display-only clamp; the real path-safety boundary is enforced main-process-side
+ * (electron/workspaceExplorer.ts/workspaceFileViewer.ts/workspaceSearch.ts), not here. */
+const MAX_RELATIVE_PATH_LENGTH = 400;
+
+type TaskContextItemKind = "file_preview" | "search_result" | "git_summary" | "workspace_name" | "task_profile";
+
+interface TaskContextItem {
+  readonly id: string;
+  readonly kind: TaskContextItemKind;
+  readonly label: string;
+  readonly detail: string;
+  readonly relativePath: string | null;
+  readonly lineRange: string | null;
+  readonly charCount: number;
+  readonly truncated: boolean;
+}
+
+function isSafeTaskRelativePath(relativePath: string): boolean {
+  if (!relativePath || relativePath.length === 0) return false;
+  if (relativePath.startsWith("/") || relativePath.startsWith("\\")) return false;
+  if (/^[a-zA-Z]:[\\/]/.test(relativePath)) return false;
+  if (relativePath.split(/[\\/]/).some((segment) => segment === "..")) return false;
+  return true;
+}
+
+function clampTaskText(value: string, maxLength: number): { readonly text: string; readonly truncated: boolean } {
+  if (value.length <= maxLength) return { text: value, truncated: false };
+  return { text: value.slice(0, maxLength), truncated: true };
+}
+
+function buildFilePreviewContextItem(input: {
+  relativePath: string;
+  content: string;
+  lineCount: number;
+  truncated: boolean;
+}): TaskContextItem | null {
+  if (!isSafeTaskRelativePath(input.relativePath)) return null;
+  const path = clampTaskText(input.relativePath, MAX_RELATIVE_PATH_LENGTH).text;
+  const excerpt = clampTaskText(input.content, MAX_SINGLE_EXCERPT_CHARS);
+  return {
+    id: `file:${path}`,
+    kind: "file_preview",
+    label: path,
+    detail: excerpt.text,
+    relativePath: path,
+    lineRange: input.lineCount > 0 ? `1-${input.lineCount}` : null,
+    charCount: excerpt.text.length,
+    truncated: input.truncated || excerpt.truncated,
+  };
+}
+
+function buildSearchResultContextItem(input: { relativePath: string; line: number; preview: string }): TaskContextItem | null {
+  if (!isSafeTaskRelativePath(input.relativePath) || !Number.isInteger(input.line) || input.line <= 0) return null;
+  const path = clampTaskText(input.relativePath, MAX_RELATIVE_PATH_LENGTH).text;
+  const excerpt = clampTaskText(input.preview, MAX_SINGLE_EXCERPT_CHARS);
+  return {
+    id: `search:${path}:${input.line}`,
+    kind: "search_result",
+    label: `${path}:${input.line}`,
+    detail: excerpt.text,
+    relativePath: path,
+    lineRange: `line ${input.line}`,
+    charCount: excerpt.text.length,
+    truncated: excerpt.truncated,
+  };
+}
+
+function buildGitSummaryContextItem(input: {
+  branch: string | null;
+  detached: boolean;
+  trackedChangesAvailable: boolean;
+  modifiedCount: number | null;
+  deletedCount: number | null;
+  untrackedCount: number | null;
+}): TaskContextItem {
+  const branchLabel = input.detached ? "detached HEAD" : input.branch ?? "unknown";
+  const parts = [`branch ${branchLabel}`];
+  if (input.trackedChangesAvailable) {
+    parts.push(`${input.modifiedCount ?? 0} modified`, `${input.deletedCount ?? 0} deleted`);
+  }
+  parts.push(`${input.untrackedCount ?? 0} untracked`);
+  const excerpt = clampTaskText(parts.join(", "), MAX_SINGLE_EXCERPT_CHARS);
+  return {
+    id: "git_summary",
+    kind: "git_summary",
+    label: "Git summary",
+    detail: excerpt.text,
+    relativePath: null,
+    lineRange: null,
+    charCount: excerpt.text.length,
+    truncated: excerpt.truncated,
+  };
+}
+
+function buildWorkspaceNameContextItem(displayName: string): TaskContextItem | null {
+  const trimmed = displayName.trim();
+  if (trimmed.length === 0) return null;
+  const excerpt = clampTaskText(trimmed, MAX_SINGLE_EXCERPT_CHARS);
+  return {
+    id: "workspace_name",
+    kind: "workspace_name",
+    label: "Workspace name",
+    detail: excerpt.text,
+    relativePath: null,
+    lineRange: null,
+    charCount: excerpt.text.length,
+    truncated: excerpt.truncated,
+  };
+}
+
+function buildTaskProfileContextItem(profile: TaskProfile): TaskContextItem {
+  const meta = getTaskProfileMeta(profile);
+  const detail = `Task profile: ${meta.label}`;
+  return {
+    id: "task_profile",
+    kind: "task_profile",
+    label: "Task profile",
+    detail,
+    relativePath: null,
+    lineRange: null,
+    charCount: detail.length,
+    truncated: false,
+  };
+}
+
+type ContextAddOutcome = "added" | "merged_duplicate" | "rejected_item_limit" | "rejected_total_char_limit";
+
+function addTaskContextItem(
+  existing: readonly TaskContextItem[],
+  candidate: TaskContextItem,
+): { readonly items: readonly TaskContextItem[]; readonly outcome: ContextAddOutcome } {
+  const withoutDuplicate = existing.filter((item) => item.id !== candidate.id);
+  const isMerge = withoutDuplicate.length !== existing.length;
+  if (!isMerge && existing.length >= MAX_CONTEXT_ITEMS) {
+    return { items: existing, outcome: "rejected_item_limit" };
+  }
+  const projectedTotal = withoutDuplicate.reduce((sum, item) => sum + item.charCount, 0) + candidate.charCount;
+  if (projectedTotal > MAX_TOTAL_CONTEXT_CHARS) {
+    return { items: existing, outcome: "rejected_total_char_limit" };
+  }
+  return { items: [...withoutDuplicate, candidate], outcome: isMerge ? "merged_duplicate" : "added" };
+}
+
+// ---------------------------------------------------------------------------------------
+// Task composer — mutable renderer-memory state (never persisted, never sent over IPC). Does
+// not depend on window.vyronDesktop at all — the composer itself works even if the desktop
+// bridge is unavailable ("safe unavailable" state); only the quick-add-from-workspace buttons
+// have anything to add once a workspace/file/search/Git view has actually been used.
+// ---------------------------------------------------------------------------------------
+let taskSelectedProfile: TaskProfile = "explain";
+let taskDraftText = "";
+let taskDraftJustCleared = false;
+let taskContextItems: readonly TaskContextItem[] = [];
+let taskReviewOpen = false;
+let currentWorkspaceDisplayName: string | null = null;
+let lastFileViewerPreview: { relativePath: string; content: string; lineCount: number; truncated: boolean } | null = null;
+let lastGitSummaryForContext: {
+  branch: string | null;
+  detached: boolean;
+  trackedChangesAvailable: boolean;
+  modifiedCount: number | null;
+  deletedCount: number | null;
+  untrackedCount: number | null;
+} | null = null;
+
+/** Required by D-09: workspace clear/revoke must immediately clear selected context, the
+ * review state, and any local excerpt snapshot. The draft text and selected profile are
+ * intentionally left untouched — composing a task is independent of any particular workspace. */
+function resetTaskContextState(): void {
+  taskContextItems = [];
+  taskReviewOpen = false;
+  lastFileViewerPreview = null;
+  lastGitSummaryForContext = null;
+  renderTaskContext();
+  renderTaskReview();
+}
+
+function renderTaskProfiles(): void {
+  const container = document.getElementById("task-profiles");
+  if (!container) return;
+  container.replaceChildren();
+  for (const meta of TASK_PROFILES) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "task-profile-chip";
+    btn.textContent = meta.label;
+    btn.setAttribute("aria-pressed", String(meta.id === taskSelectedProfile));
+    btn.addEventListener("click", () => handleSelectTaskProfile(meta.id));
+    container.append(btn);
+  }
+}
+
+function handleSelectTaskProfile(profile: TaskProfile): void {
+  taskSelectedProfile = profile;
+  renderTaskProfiles();
+  const input = document.getElementById("task-draft-input");
+  if (input instanceof HTMLTextAreaElement) {
+    input.placeholder = getTaskProfileMeta(profile).draftPlaceholder;
+  }
+}
+
+function renderTaskDraftStatus(): void {
+  const statusEl = document.getElementById("task-draft-status");
+  const reviewBtn = document.getElementById("task-review-btn");
+  if (!statusEl || !(reviewBtn instanceof HTMLButtonElement)) return;
+
+  const validation = validateDraftText(taskDraftText);
+  reviewBtn.disabled = !validation.valid;
+
+  if (taskDraftJustCleared && taskDraftText.length === 0) {
+    statusEl.textContent = "Draft cleared. This is a local draft — nothing is sent.";
+    return;
+  }
+  if (taskDraftText.length === 0) {
+    statusEl.textContent = "This is a local draft. Nothing is sent.";
+    return;
+  }
+  switch (validation.reason) {
+    case "too_long":
+      statusEl.textContent = `Draft is too long (maximum ${MAX_DRAFT_LENGTH} characters).`;
+      return;
+    case "control_characters":
+      statusEl.textContent = "Draft contains unsupported characters.";
+      return;
+    case "whitespace_only":
+      statusEl.textContent = "Draft cannot be only whitespace.";
+      return;
+    default:
+      statusEl.textContent = "This is a local draft. Nothing is sent. Ready to review.";
+  }
+}
+
+function handleTaskDraftInput(event: Event): void {
+  const target = event.target;
+  if (!(target instanceof HTMLTextAreaElement)) return;
+  taskDraftText = target.value;
+  taskDraftJustCleared = false;
+  renderTaskDraftStatus();
+}
+
+function handleClearTaskDraft(): void {
+  taskDraftText = "";
+  taskDraftJustCleared = true;
+  const input = document.getElementById("task-draft-input");
+  if (input instanceof HTMLTextAreaElement) input.value = "";
+  renderTaskDraftStatus();
+}
+
+function renderTaskContextItemRow(item: TaskContextItem, onRemove: (id: string) => void): HTMLLIElement {
+  const li = document.createElement("li");
+  li.className = "task-context-item";
+
+  const meta = document.createElement("div");
+  meta.className = "task-context-item-meta";
+  const kindEl = document.createElement("span");
+  kindEl.className = "task-context-item-kind";
+  kindEl.textContent = item.kind.replace(/_/g, " ");
+  const labelEl = document.createElement("span");
+  labelEl.className = "task-context-item-label";
+  labelEl.textContent = item.lineRange ? `${item.label} (${item.lineRange})` : item.label;
+  meta.append(kindEl, labelEl);
+
+  const sizeEl = document.createElement("span");
+  sizeEl.className = "task-context-item-size muted";
+  sizeEl.textContent = `${item.charCount} chars${item.truncated ? ", truncated" : ""}`;
+
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "task-context-item-remove";
+  removeBtn.textContent = "Remove";
+  removeBtn.setAttribute("aria-label", `Remove ${item.label} from selected context`);
+  removeBtn.addEventListener("click", () => onRemove(item.id));
+
+  li.append(meta, sizeEl, removeBtn);
+  return li;
+}
+
+function renderTaskContext(): void {
+  const countEl = document.getElementById("task-context-count");
+  const clearBtn = document.getElementById("task-clear-context-btn");
+  const listEl = document.getElementById("task-context-list");
+  if (!countEl || !(clearBtn instanceof HTMLButtonElement) || !listEl) return;
+
+  countEl.textContent =
+    taskContextItems.length === 0
+      ? "No workspace context selected."
+      : `${taskContextItems.length} context item${taskContextItems.length === 1 ? "" : "s"} selected.`;
+  clearBtn.hidden = taskContextItems.length === 0;
+
+  listEl.replaceChildren();
+  for (const item of taskContextItems) {
+    listEl.append(renderTaskContextItemRow(item, handleRemoveTaskContextItem));
+  }
+}
+
+function handleAddTaskContextItem(candidate: TaskContextItem | null): void {
+  if (!candidate) return;
+  const result = addTaskContextItem(taskContextItems, candidate);
+  taskContextItems = result.items;
+  renderTaskContext();
+  renderTaskReview();
+}
+
+function handleRemoveTaskContextItem(id: string): void {
+  taskContextItems = taskContextItems.filter((item) => item.id !== id);
+  renderTaskContext();
+  renderTaskReview();
+}
+
+function handleClearAllTaskContext(): void {
+  taskContextItems = [];
+  renderTaskContext();
+  renderTaskReview();
+}
+
+function handleAddFilePreviewToTaskContext(): void {
+  if (!lastFileViewerPreview) return;
+  handleAddTaskContextItem(buildFilePreviewContextItem(lastFileViewerPreview));
+}
+
+function handleAddSearchResultToTaskContext(match: { relativePath: string; line: number; preview: string }): void {
+  handleAddTaskContextItem(buildSearchResultContextItem(match));
+}
+
+function handleAddGitSummaryToTaskContext(): void {
+  if (!lastGitSummaryForContext) return;
+  handleAddTaskContextItem(buildGitSummaryContextItem(lastGitSummaryForContext));
+}
+
+function handleAddWorkspaceNameToTaskContext(): void {
+  if (!currentWorkspaceDisplayName) return;
+  handleAddTaskContextItem(buildWorkspaceNameContextItem(currentWorkspaceDisplayName));
+}
+
+function handleAddTaskProfileToTaskContext(): void {
+  handleAddTaskContextItem(buildTaskProfileContextItem(taskSelectedProfile));
+}
+
+/** While review is open, the draft textarea is locked read-only — this is what guarantees the
+ * review's displayed draft text can never go stale relative to what `taskDraftText` holds
+ * (rather than needing every context-mutation call site to also re-render the review). */
+function setTaskDraftInputLocked(locked: boolean): void {
+  const input = document.getElementById("task-draft-input");
+  if (input instanceof HTMLTextAreaElement) input.disabled = locked;
+  const clearBtn = document.getElementById("task-clear-draft-btn");
+  if (clearBtn instanceof HTMLButtonElement) clearBtn.disabled = locked;
+}
+
+function handleOpenTaskReview(): void {
+  if (!canOpenTaskReview(taskDraftText)) return;
+  taskReviewOpen = true;
+  setTaskDraftInputLocked(true);
+  renderTaskDraftStatus();
+  renderTaskReview();
+}
+
+function handleCloseTaskReview(): void {
+  taskReviewOpen = false;
+  setTaskDraftInputLocked(false);
+  renderTaskDraftStatus();
+  renderTaskReview();
+}
+
+function renderTaskReview(): void {
+  const panel = document.getElementById("task-review");
+  if (!panel) return;
+  panel.hidden = !taskReviewOpen;
+  if (!taskReviewOpen) return;
+
+  const profileEl = document.getElementById("task-review-profile");
+  const draftEl = document.getElementById("task-review-draft");
+  const listEl = document.getElementById("task-review-context-list");
+  const destinationEl = document.getElementById("task-review-destination");
+  const networkEl = document.getElementById("task-review-network");
+  if (!profileEl || !draftEl || !listEl || !destinationEl || !networkEl) return;
+
+  profileEl.textContent = getTaskProfileMeta(taskSelectedProfile).label;
+  draftEl.textContent = taskDraftText;
+  destinationEl.textContent = "Not configured for sending.";
+  networkEl.textContent = "No request will be sent in this build.";
+
+  listEl.replaceChildren();
+  if (taskContextItems.length === 0) {
+    const li = document.createElement("li");
+    li.className = "muted";
+    li.textContent = "No workspace context selected.";
+    listEl.append(li);
+  } else {
+    for (const item of taskContextItems) {
+      listEl.append(renderTaskContextItemRow(item, handleRemoveTaskContextItem));
+    }
+  }
+}
+
+function wireTaskControls(): void {
+  document.getElementById("task-clear-draft-btn")?.addEventListener("click", () => handleClearTaskDraft());
+  document.getElementById("task-review-btn")?.addEventListener("click", () => handleOpenTaskReview());
+  document.getElementById("task-clear-context-btn")?.addEventListener("click", () => handleClearAllTaskContext());
+  document.getElementById("task-add-workspace-name-btn")?.addEventListener("click", () => handleAddWorkspaceNameToTaskContext());
+  document.getElementById("task-add-git-summary-btn")?.addEventListener("click", () => handleAddGitSummaryToTaskContext());
+  document.getElementById("task-add-profile-btn")?.addEventListener("click", () => handleAddTaskProfileToTaskContext());
+  document.getElementById("task-review-back-btn")?.addEventListener("click", () => handleCloseTaskReview());
+  document.getElementById("task-review-close-btn")?.addEventListener("click", () => handleCloseTaskReview());
+  document.getElementById("task-review-clear-context-btn")?.addEventListener("click", () => handleClearAllTaskContext());
+
+  const input = document.getElementById("task-draft-input");
+  if (input instanceof HTMLTextAreaElement) {
+    input.addEventListener("input", handleTaskDraftInput);
+    input.placeholder = getTaskProfileMeta(taskSelectedProfile).draftPlaceholder;
+  }
+}
+
+function initTaskState(): void {
+  renderTaskProfiles();
+  renderTaskDraftStatus();
+  renderTaskContext();
+  renderTaskReview();
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1172,14 +1714,25 @@ function wireHermesEndpointControls(): void {
 }
 
 // ---------------------------------------------------------------------------------------
-// D-08C connection sub-panel — VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION.
+// D-08C connection sub-panel — VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION,
+// extended by VYRON_CODE_V02_D08E_CHECKPOINT_AND_D08F_EXPLICIT_HERMES_CONNECTIVITY_AUTHORIZATION.
 // Visible only while the outer Hermes panel is in its "authorized" view (see
 // renderHermesPanel above). connect()/disconnect() never take an endpoint/host/port/socket
-// argument of any kind — see electron/hermesConnection.ts's own header for why connect()
-// always safely resolves to "unavailable" in this build (a disclosed trusted-endpoint-policy
-// blocker, not a bug).
+// argument of any kind — the main process alone resolves the already-configured endpoint and
+// owns the real WebSocket client; see electron/hermesConnection.ts's own header for the full
+// evidence trail behind exactly what "connected" now means and what it still never does
+// (no session/prompt/context/event capability of any kind).
 // ---------------------------------------------------------------------------------------
-type HermesConnectionViewState = "ready_to_connect" | "connecting" | "connected" | "disconnecting" | "disconnected" | "unavailable" | "safe_failure";
+type HermesConnectionViewState =
+  | "endpoint_not_configured"
+  | "ready_to_connect"
+  | "connecting"
+  | "connected"
+  | "disconnecting"
+  | "disconnected"
+  | "unavailable"
+  | "connection_timed_out"
+  | "safe_failure";
 
 /** Monotonic request generation — the same T-17-style guard the authorization panel above
  * uses, applied independently to the connection sub-panel. */
@@ -1225,6 +1778,12 @@ function renderHermesConnection(view: HermesConnectionViewState): void {
   disconnectBtn.textContent = "Disconnect";
 
   switch (view) {
+    case "endpoint_not_configured":
+      statusEl.textContent = "Configure a local Hermes endpoint before connecting.";
+      connectBtn.hidden = false;
+      connectBtn.disabled = true;
+      disconnectBtn.hidden = true;
+      break;
     case "ready_to_connect":
       statusEl.textContent = "Hermes connection has not been attempted.";
       connectBtn.hidden = false;
@@ -1257,6 +1816,13 @@ function renderHermesConnection(view: HermesConnectionViewState): void {
       connectBtn.hidden = false;
       disconnectBtn.hidden = true;
       break;
+    case "connection_timed_out":
+      statusEl.textContent = "Hermes connection has not been attempted.";
+      connectBtn.hidden = false;
+      disconnectBtn.hidden = true;
+      errorEl.hidden = false;
+      errorEl.textContent = "The connection attempt timed out. Please try again.";
+      break;
     case "safe_failure":
       statusEl.textContent = "Hermes connection has not been attempted.";
       connectBtn.hidden = false;
@@ -1284,6 +1850,10 @@ async function handleConnectHermes(): Promise<void> {
       renderHermesConnection("connected");
     } else if (result.state === "unavailable") {
       renderHermesConnection("unavailable");
+    } else if (result.state === "endpoint_not_configured") {
+      renderHermesConnection("endpoint_not_configured");
+    } else if (result.state === "connection_timed_out") {
+      renderHermesConnection("connection_timed_out");
     } else if (result.state === "disconnected") {
       renderHermesConnection("disconnected");
     } else if (result.state === "not_authorized") {
@@ -1403,6 +1973,8 @@ function main(): void {
   wireWorkspaceControls();
   wireHermesControls();
   wireHermesEndpointControls();
+  wireTaskControls();
+  initTaskState();
   const api = window.vyronDesktop;
   if (!api) {
     // Preload bridge unavailable. Electron guarantees preload finishes before this script

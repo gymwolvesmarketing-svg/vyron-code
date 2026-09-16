@@ -152,6 +152,74 @@
       </div>
     </section>
 
+    <section id="task-panel">
+      <!--
+        Task composer — VYRON_CODE_V02_D09_TASK_FIRST_COMPOSER_AND_CONTEXT_REVIEW_AUTHORIZATION.
+        A local-only task drafting and review surface. No control on this page can send,
+        submit, execute, start a session, or transfer context/files/search/Git data anywhere —
+        every "Add to context" button here only copies data already rendered elsewhere on this
+        same page into local renderer memory. Nothing here calls window.vyronDesktop; this
+        section works even if that bridge is unavailable. No fetch/network request is possible
+        from this page in any case (this page's own CSP forbids connect-src entirely).
+      -->
+      <h2>Task</h2>
+      <p class="muted">Nothing is sent automatically.</p>
+      <p class="muted">Review your task and selected context before any future send action becomes available.</p>
+
+      <div id="task-profiles" role="group" aria-label="Task profile"></div>
+
+      <div id="task-draft-composer">
+        <label for="task-draft-input" class="visually-hidden">Local task draft</label>
+        <textarea
+          id="task-draft-input"
+          maxlength="4000"
+          rows="4"
+          placeholder="Describe what you would like explained…"
+          autocomplete="off"
+        ></textarea>
+        <p id="task-draft-status" class="muted">This is a local draft. Nothing is sent.</p>
+        <div class="task-actions">
+          <button id="task-clear-draft-btn" type="button">Clear draft</button>
+          <button id="task-review-btn" type="button" disabled>Review task draft</button>
+        </div>
+      </div>
+
+      <div id="task-context-summary">
+        <p id="task-context-count" class="muted">No workspace context selected.</p>
+        <div class="task-actions">
+          <button id="task-add-workspace-name-btn" type="button">Add workspace name</button>
+          <button id="task-add-git-summary-btn" type="button">Add Git summary</button>
+          <button id="task-add-profile-btn" type="button">Add task profile</button>
+          <button id="task-clear-context-btn" type="button" hidden>Clear all context</button>
+        </div>
+        <ul id="task-context-list" aria-label="Selected context"></ul>
+      </div>
+
+      <div id="task-review" hidden>
+        <h3>Review task draft</h3>
+        <p class="muted">This is a local preview. Nothing is being sent.</p>
+        <dl>
+          <dt>Task profile</dt>
+          <dd id="task-review-profile"></dd>
+          <dt>Task draft</dt>
+          <dd id="task-review-draft"></dd>
+        </dl>
+        <p class="muted">Selected context</p>
+        <ul id="task-review-context-list" aria-label="Selected context"></ul>
+        <dl>
+          <dt>Destination</dt>
+          <dd id="task-review-destination">Not configured for sending.</dd>
+          <dt>Network</dt>
+          <dd id="task-review-network">No request will be sent in this build.</dd>
+        </dl>
+        <div class="task-actions">
+          <button id="task-review-back-btn" type="button">Back to draft</button>
+          <button id="task-review-clear-context-btn" type="button">Clear all context</button>
+          <button id="task-review-close-btn" type="button">Close review</button>
+        </div>
+      </div>
+    </section>
+
     <section>
       <h2>Capability boundary</h2>
       <p>

@@ -1,82 +1,115 @@
 /**
  * Main-process-only Hermes connectivity/health-state service —
- * VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION (Part B, D-08C).
+ * VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION (Part B, D-08C),
+ * extended by VYRON_CODE_V02_D08C_CHECKPOINT_AND_TRUSTED_HERMES_ENDPOINT_BOUNDARY_AUTHORIZATION
+ * and VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION (see git history for
+ * those phases' own trusted-endpoint-policy and endpoint-configuration evidence trails — no
+ * longer repeated here since both blockers are now resolved: a real, user-configured, memory-
+ * only endpoint can exist, and this module now genuinely connects to it).
  *
  * ════════════════════════════════════════════════════════════════════════════════════
- * TRUSTED-ENDPOINT-POLICY BLOCKER — READ BEFORE MODIFYING THIS FILE
+ * D-08F — THE REAL CONNECTION, AND EXACTLY WHAT EVIDENCE AUTHORIZES IT
  * ════════════════════════════════════════════════════════════════════════════════════
- * This authorization requires D-08C's Hermes endpoint/configuration to be either (a) a
- * main-process-owned, compile-time/project-local FIXED value, or (b), if no such value can be
- * safely defined, a static safe "unavailable" state with the blocker explicitly reported —
- * and explicitly forbids sourcing it from an environment variable in this stage.
+ * VYRON_CODE_V02_D08E_CHECKPOINT_AND_D08F_EXPLICIT_HERMES_CONNECTIVITY_AUTHORIZATION requires
+ * that no protocol behavior be invented — only what `lib/hermesClient.ts`'s own documented,
+ * already-implemented, already-reviewed protocol facts establish. Those facts (read again in
+ * full before writing this file):
  *
- * The ONLY existing source of Hermes's host/port anywhere in this repository is
- * `.env.local`'s `HERMES_HOST`/`HERMES_PORT`, read via `process.env` in `lib/hermesClient.ts`
- * and `app/api/hermes/health/route.ts` — an environment-variable source, not a compile-time
- * constant. This exact gap was already identified, before this authorization, as an "Open,
- * unresolved design gap ... blocking for D-08" in
- * VYRON_CODE_V02_DESKTOP_MIGRATION_ARCHITECTURE_AUDIT.md's own risk table (row 11), explicitly
- * deferred pending "its own separate, explicit product decision." This authorization's own
- * connection-policy section anticipates exactly this outcome: "if any of these conditions
- * cannot be safely met, do not implement live network connection. Instead implement only a
- * static safe unavailable state and report the blocker."
+ *   Endpoint     ws://<host>:<port>/api/ws?token=<HERMES_SESSION_TOKEN>  (token as URL query)
+ *   Origin       must equal http://<host>:<port>            (403 on mismatch)
+ *   Host header  must equal <host>:<port>
+ *   Peer         must be loopback                            (403 otherwise)
+ *   Library      `ws` (not the WHATWG `WebSocket`) — the only one able to set Origin/Host
  *
- * Consequently: this module NEVER imports `node:net`/`node:http`/`node:https`/`ws`, NEVER
- * opens a socket, NEVER performs a TCP probe or WebSocket handshake, and NEVER reads
- * `process.env` for a host/port/token. `connect()` always resolves to the safe `"unavailable"`
- * state after one explicit yield point — so the renderer's own transient "connecting" UI state
- * is exercised honestly, not faked, without a real network attempt existing behind it. This is
- * the deliberate, disclosed behavior this authorization itself requires when its trusted-
- * endpoint precondition cannot be met — not a bug, and not something to "fix" by adding an
- * environment-variable read, a hardcoded IP/port, or a renderer-editable setting, all of which
- * this authorization explicitly forbids.
+ * There is no documented "health"/"ping"/"version"/"capability" JSON-RPC method anywhere in
+ * this repository's own evidence — the only documented methods are session.create,
+ * session.activate, prompt.submit, approval.respond, clarify.respond, session.interrupt, none
+ * of which this task authorizes. Rather than invent a new one (explicitly forbidden), this
+ * module treats the WebSocket handshake ITSELF as the full, minimal "health/capability"
+ * signal: completing the upgrade (Origin/Host/loopback/token all validated server-side, per
+ * the facts above) already proves reachability, protocol-endpoint identity, and token
+ * acceptance, without this module ever sending or expecting a single JSON-RPC frame. No
+ * session.create, no prompt.submit, nothing else is ever transmitted — every inbound message
+ * is discarded, unparsed, the moment it would otherwise be handled (see `connect()`'s own
+ * `"message"` listener). The token is sent only because it is structurally part of the one
+ * documented connection URL — there is no way to open this endpoint at all without it; this is
+ * reuse of the existing, already-reviewed transport, not a new invention.
  *
- * Because no real connection is ever attempted, the "connection bounds" this authorization's
- * own policy section requires for a real implementation (explicit connect/handshake timeout,
- * maximum inbound protocol message size, maximum safe state-update frequency, process-exit
- * socket cleanup) have no applicable implementation here — there is no socket, no handshake,
- * and no inbound message stream to bound. They become relevant only once a separately
- * authorized trusted-endpoint policy exists and a real connection path is implemented on top
- * of it (see this task's own companion report for the exact blocker statement).
+ * The `CONNECT_TIMEOUT_MS` bound below is copied verbatim from `lib/hermesClient.ts`'s own
+ * existing, already-accepted constant — not a newly invented number.
  *
- * Independent-lifetime note: this module depends on electron/hermesAuthorization.ts (one-way
- * — it reads `getAuthorizationState()` to gate `connect()`, per this authorization's own
- * explicit precondition that a connection may only be attempted once D-08B authorization is
- * current) but hermesAuthorization.ts has no dependency back on this module, and
- * electron/workspace-grant.ts is untouched and unrelated to either.
+ * Server-identity residual risk (T-15): unchanged and still accepted, per
+ * VYRON_CODE_V02_D08D_TRUSTED_ENDPOINT_SOURCE_DECISION.md's own explicit decision — the
+ * protocol has no TLS/certificate/server-identity mechanism this module could check. A
+ * successful WebSocket open proves only that *something* accepted the Origin/Host/loopback/
+ * token handshake at that address — not that it is genuinely the user's own trusted Hermes
+ * instance. The renderer-facing UI (electron/renderer.html) already discloses this.
  *
- * Extended by VYRON_CODE_V02_D08C_CHECKPOINT_AND_TRUSTED_HERMES_ENDPOINT_BOUNDARY_AUTHORIZATION
- * to consume electron/hermesEndpoint.ts's `resolveTrustedEndpoint()` rather than hardcoding
- * `"unavailable"` as this module's own arbitrary literal — `connect()` now genuinely asks the
- * endpoint boundary whether a trusted endpoint exists before deciding what to do. The answer is
- * still always "no" in this build (see hermesEndpoint.ts's own header for the full future-
- * source-policy comparison), so the *observable* behavior is unchanged — but the reason is now
- * structural (a real fail-closed resolution step ran and returned `unavailable`) rather than a
- * connect()-local assumption. Even in the hypothetical branch where a trusted endpoint were
- * ever returned, this task still does not authorize opening a real socket — see the explicit
- * comment at that branch below.
- *
- * Extended again by VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION —
- * exactly the "one-line change" electron/hermesEndpointSetup.ts's own header (and this
- * repository's own VYRON_CODE_V02_D08D_FUTURE_IMPLEMENTATION_PLAN.md) anticipated:
- * `connect()` now prefers `hermesEndpointSetup.ts`'s `getConfiguredEndpoint()` — the user's
- * own memory-only, explicitly-submitted endpoint, if any — and falls back to
- * `resolveTrustedEndpoint()` (still always `unavailable`) only when nothing has been
- * configured. This still never opens a real socket: even a genuinely `"trusted"` configured
- * endpoint still only ever results in the safe `"unavailable"` outcome below — see the
- * explicit comment at that branch.
+ * Independent-lifetime notes carried forward unchanged: this module depends one-way on
+ * electron/hermesAuthorization.ts (now also via the new `getCurrentCredential()` accessor) and
+ * electron/hermesEndpointSetup.ts (via `getConfiguredEndpoint()`); neither has a dependency
+ * back on this module. electron/workspace-grant.ts remains untouched and unrelated.
  */
 import type { HermesConnectionResult, HermesConnectionState } from "./shared-ipc-contract";
-import { getAuthorizationState } from "./hermesAuthorization";
+import { getAuthorizationState, getCurrentCredential } from "./hermesAuthorization";
 import { resolveTrustedEndpoint } from "./hermesEndpoint";
 import { getConfiguredEndpoint } from "./hermesEndpointSetup";
+import WSDefaultExport from "ws";
 
-// Module-scope, process-memory-only. Starts "ready_to_connect" the instant authorization
-// becomes valid (getConnectionState always re-derives the "not_authorized" case fresh from
-// hermesAuthorization.ts rather than trusting this alone) and becomes "unavailable" only
-// after an explicit connect() attempt — see this module's own header for why it can never
-// become "connected" in this build.
-let ambientState: "ready_to_connect" | "unavailable" = "ready_to_connect";
+/**
+ * The exact, narrow `ws` client surface this module actually uses — defined locally rather
+ * than trusting an external/ambient declaration for the whole package (see `electron/ws.d.ts`'s
+ * own header for why: an ambient `ws.ClientOptions`/`WebSocket` shape declared there was found
+ * to collide with an unrelated declaration already present in this project's dependency tree
+ * under the web app's own `tsconfig.json`). One explicit cast at this single import boundary
+ * is the only place that trust is placed; everything below this line uses only these local
+ * types, which exactly match the real `ws` library's own real, documented, versioned behavior.
+ */
+interface HermesWebSocketOptions {
+  readonly origin?: string;
+  readonly headers?: Record<string, string>;
+  readonly handshakeTimeout?: number;
+  readonly maxPayload?: number;
+}
+
+interface HermesWebSocketClient {
+  readonly readyState: number;
+  terminate(): void;
+  on(event: "open" | "error" | "close" | "message" | "unexpected-response", listener: (...args: unknown[]) => void): this;
+}
+
+interface HermesWebSocketConstructor {
+  new (address: string, options?: HermesWebSocketOptions): HermesWebSocketClient;
+  readonly OPEN: number;
+}
+
+const WS = WSDefaultExport as HermesWebSocketConstructor;
+
+/** Copied verbatim from `lib/hermesClient.ts`'s own existing `CONNECT_TIMEOUT_MS` — reuse of
+ * an already-accepted bound, not a newly invented number. Covers both the TCP connect and the
+ * WebSocket opening handshake as one bounded window, matching that file's own single-timeout
+ * design exactly. */
+const CONNECT_TIMEOUT_MS = 20_000;
+
+/** A defensive upper bound on any single inbound WebSocket frame. Every inbound message is
+ * discarded unparsed regardless (see `connect()`'s own `"message"` handler) — this bound exists
+ * only so an oversized frame cannot even be buffered by the underlying `ws` client before that
+ * discard happens. */
+const MAX_INBOUND_MESSAGE_BYTES = 65_536;
+
+type ConnectionAmbientState =
+  | "ready_to_connect"
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "unavailable"
+  | "connection_timed_out"
+  | "safe_failure";
+
+// Module-scope, process-memory-only. `socket` is the one live client this module ever holds —
+// never more than one at a time (see `connectInFlight`/the open-socket check in `connect()`).
+let ambientState: ConnectionAmbientState = "ready_to_connect";
+let socket: HermesWebSocketClient | null = null;
 
 /** Bounds connect() to exactly one attempt in flight at a time — a second overlapping call
  * is rejected safely rather than allowed to race the first. */
@@ -85,79 +118,168 @@ let connectInFlight = false;
 /** Monotonic generation counter — the same T-17-style guard hermesAuthorization.ts's
  * beginAuthorization()/clearAuthorization() use. A connect() call already in flight when
  * disconnect() runs (or when a later connect() call starts) safely discards its own result
- * instead of committing a now-stale state. */
+ * and terminates the socket it was opening, instead of committing a now-stale state. */
 let generation = 0;
 
+/** Returns `not_authorized`/`endpoint_not_configured` if either precondition is currently
+ * unmet, or `null` if both are satisfied and the caller should consult `ambientState`. Never
+ * caches its own result — always re-derived fresh from the two owning modules. */
+function currentPreconditionState(): "not_authorized" | "endpoint_not_configured" | null {
+  if (getAuthorizationState().state !== "authorized_memory_only") return "not_authorized";
+  const endpoint = getConfiguredEndpoint() ?? resolveTrustedEndpoint();
+  if (endpoint.kind !== "trusted") return "endpoint_not_configured";
+  return null;
+}
+
 /** Returns only the current safe ambient connectivity state — never an endpoint, socket, or
- * raw detail. Always reports `not_authorized` if D-08B authorization is not currently valid,
- * regardless of any prior connection attempt's own leftover state. */
+ * raw detail. Always reports the unmet precondition first, regardless of any connection
+ * attempt's own leftover `ambientState`. */
 export function getConnectionState(): HermesConnectionState {
-  if (getAuthorizationState().state !== "authorized_memory_only") {
-    return { state: "not_authorized" };
-  }
+  const precondition = currentPreconditionState();
+  if (precondition) return { state: precondition };
   return { state: ambientState };
 }
 
 /**
- * The single explicit, user-initiated connection attempt this authorization allows. Never
- * automatic, never retried in a loop. Requires current D-08B authorization; rejects a second
- * concurrent call while one is already in flight. See this module's header for why it always
- * resolves to `"unavailable"` rather than ever opening a real connection.
+ * The single explicit, user-initiated connection attempt. Never automatic, never retried in a
+ * loop. Requires current D-08B authorization AND a current D-08E configured endpoint; rejects
+ * a second concurrent call while one is already in flight; safely returns the current state
+ * (never re-opens a second socket) if already connected. Opens exactly one main-process-owned
+ * `ws` client against the one documented Hermes endpoint URL, sends nothing beyond the
+ * WebSocket upgrade itself, and discards every inbound frame unparsed. See this module's own
+ * header for the full evidence trail behind this scope.
  */
 export async function connect(): Promise<HermesConnectionResult> {
-  if (getAuthorizationState().state !== "authorized_memory_only") {
-    return { state: "not_authorized" };
+  const precondition = currentPreconditionState();
+  if (precondition) return { state: precondition };
+
+  if (socket && socket.readyState === WS.OPEN) {
+    return { state: "connected" };
   }
   if (connectInFlight) {
     return { state: "safe_failure" };
   }
 
+  const endpoint = getConfiguredEndpoint() ?? resolveTrustedEndpoint();
+  if (endpoint.kind !== "trusted") {
+    // Re-checked defensively — currentPreconditionState() above already covers this, but a
+    // real network connection is never opened on the strength of a single check alone.
+    return { state: "endpoint_not_configured" };
+  }
+  const credential = getCurrentCredential();
+  if (credential === null) {
+    return { state: "not_authorized" };
+  }
+
   connectInFlight = true;
   const generationAtStart = ++generation;
-  try {
-    // Explicit yield point — see module header. Gives a concurrent disconnect() (or another
-    // connect() call) a real opportunity to supersede this one before it commits any state.
-    await Promise.resolve();
-    if (generation !== generationAtStart) {
-      return { state: "disconnected" };
+  ambientState = "connecting";
+
+  // The one documented connection URL — a query-parameter token is structurally required by
+  // the protocol itself (see module header); `endpoint.url` is already guaranteed to carry no
+  // pre-existing query string (rejected at configuration time), so this is always a clean add.
+  const connectUrl = new URL(endpoint.url.toString());
+  connectUrl.searchParams.set("token", credential);
+  const originScheme = endpoint.transport === "wss" ? "https" : "http";
+  const origin = `${originScheme}://${endpoint.url.hostname}:${endpoint.url.port}`;
+  const hostHeader = `${endpoint.url.hostname}:${endpoint.url.port}`;
+
+  return new Promise<HermesConnectionResult>((resolve) => {
+    let settled = false;
+    const client = new WS(connectUrl.toString(), {
+      origin,
+      headers: { Host: hostHeader },
+      handshakeTimeout: CONNECT_TIMEOUT_MS,
+      maxPayload: MAX_INBOUND_MESSAGE_BYTES,
+    });
+
+    function settle(result: HermesConnectionResult, nextAmbient: ConnectionAmbientState): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      connectInFlight = false;
+      if (generation !== generationAtStart) {
+        // Superseded by disconnect() (or a later connect()) while this attempt was in flight —
+        // never commit a result that is no longer current, and never leave the socket this
+        // call opened dangling.
+        try {
+          client.terminate();
+        } catch {
+          // already closing
+        }
+        resolve({ state: "disconnected" });
+        return;
+      }
+      ambientState = nextAmbient;
+      resolve(result);
     }
 
-    // Prefer the user's own explicitly-configured endpoint (D-08E), falling back to the
-    // no-source resolver (D-08C) only when nothing has been configured.
-    const endpoint = getConfiguredEndpoint() ?? resolveTrustedEndpoint();
-    if (endpoint.kind !== "trusted") {
-      // No endpoint has been configured (or, defensively, one somehow failed validation) — see
-      // this module's header and hermesEndpoint.ts's own header for why this remains the
-      // common case. No endpoint/host/port/reason detail from `endpoint` is ever forwarded
-      // into the renderer-visible result below; only the fixed, safe `"unavailable"` literal.
-      ambientState = "unavailable";
-      return { state: "unavailable" };
-    }
+    const timeoutTimer = setTimeout(() => {
+      settle({ state: "connection_timed_out" }, "unavailable");
+      try {
+        client.terminate();
+      } catch {
+        // already closing
+      }
+    }, CONNECT_TIMEOUT_MS);
 
-    // A real, user-configured trusted endpoint would be used here to open an actual
-    // connection — NOT implemented by this task
-    // (VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION explicitly forbids
-    // WebSocket/TCP/HTTP/DNS construction of any kind). Until a future, separately authorized
-    // task adds that, this branch still only ever results in the same safe `"unavailable"`
-    // outcome — written this way, rather than deleted, so the endpoint boundary is genuinely
-    // consulted, not merely decorative.
-    ambientState = "unavailable";
-    return { state: "unavailable" };
-  } finally {
-    connectInFlight = false;
-  }
+    client.on("open", () => {
+      socket = client;
+      settle({ state: "connected" }, "connected");
+    });
+
+    // Every failure path — a refused/errored socket, or a non-101 upgrade response (e.g. the
+    // documented 403 on Origin/Host/loopback mismatch, or an invalid token) — resolves to the
+    // same fixed, safe category. The real error/status is never inspected or forwarded.
+    client.on("error", () => {
+      settle({ state: "safe_failure" }, "unavailable");
+    });
+    client.on("unexpected-response", () => {
+      settle({ state: "safe_failure" }, "unavailable");
+    });
+
+    client.on("close", () => {
+      if (socket === client) socket = null;
+      if (!settled) {
+        settle({ state: "connection_timed_out" }, "unavailable");
+        return;
+      }
+      // A later close of an already-"connected" socket (server-initiated, or a network drop)
+      // — reflect it without resolving the already-settled promise again, and without
+      // clobbering a different ambient state (e.g. one this same close already set via
+      // disconnect()'s own generation bump).
+      if (generation === generationAtStart && ambientState === "connected") {
+        ambientState = "disconnected";
+      }
+    });
+
+    // Intentionally discarded, unparsed, unlogged — this connection never reads, interprets,
+    // or forwards a single JSON-RPC/event payload of any kind (see module header).
+    client.on("message", () => {
+      /* discarded */
+    });
+  });
 }
 
 /**
  * Explicit, immediate, idempotent — safe to call whether or not a connect() attempt is
- * currently in flight or has ever run. Bumps the generation counter so any in-flight
- * connect() is provably superseded, mirroring hermesAuthorization.ts's clearAuthorization().
+ * currently in flight or has ever run. Bumps the generation counter so any in-flight connect()
+ * is provably superseded, and forcibly terminates any live socket. Mirrors
+ * hermesAuthorization.ts's clearAuthorization() exactly.
  */
 export function disconnect(): HermesConnectionResult {
   generation++;
-  ambientState = "ready_to_connect";
-  if (getAuthorizationState().state !== "authorized_memory_only") {
-    return { state: "not_authorized" };
+  const current = socket;
+  socket = null;
+  if (current) {
+    try {
+      current.terminate();
+    } catch {
+      // already closed/closing
+    }
   }
+  ambientState = "ready_to_connect";
+  const precondition = currentPreconditionState();
+  if (precondition) return { state: precondition };
   return { state: "disconnected" };
 }

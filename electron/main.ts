@@ -185,10 +185,18 @@ function registerHermesIpcHandlers(): void {
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_AVAILABILITY, () => getAvailability());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_AUTHORIZATION_STATE, () => getAuthorizationState());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_BEGIN_AUTHORIZATION, (_event, request: unknown) => beginAuthorization(request));
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_AUTHORIZATION, () => clearHermesAuthorization());
-  // D-08C — connect/disconnect take no arguments at all; see electron/hermesConnection.ts's
-  // own header for why connect() can never reach "connected" in this build (a disclosed,
-  // reported trusted-endpoint-policy blocker, not an oversight).
+  // D-08F — clearing authorization also disconnects any live/in-flight Hermes connection at
+  // the IPC boundary itself, not merely as a renderer-side courtesy: this is an enforced
+  // guarantee, not something a caller could bypass by invoking this channel through any path
+  // other than the renderer's own convenience wrapper (which already does the same thing,
+  // redundantly and harmlessly — see electron/renderer.ts's own handleClearHermesAuthorization).
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_AUTHORIZATION, () => {
+    const result = clearHermesAuthorization();
+    disconnectHermes();
+    return result;
+  });
+  // D-08C/D-08F — connect/disconnect take no arguments at all; see electron/hermesConnection.ts's
+  // own header for exactly what "connected" means and the full evidence trail behind it.
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_CONNECTION_STATE, () => getConnectionState());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CONNECT, () => connectHermes());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_DISCONNECT, () => disconnectHermes());
@@ -197,7 +205,13 @@ function registerHermesIpcHandlers(): void {
   // divergent validation exists here. clearEndpointConfiguration takes no arguments.
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_ENDPOINT_CONFIGURATION_STATE, () => getEndpointConfigurationState());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CONFIGURE_ENDPOINT, (_event, request: unknown) => configureEndpoint(request));
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_ENDPOINT_CONFIGURATION, () => clearEndpointConfiguration());
+  // D-08F — clearing the endpoint configuration also disconnects any live/in-flight Hermes
+  // connection at the IPC boundary itself, for the same enforced-guarantee reason as above.
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_ENDPOINT_CONFIGURATION, () => {
+    const result = clearEndpointConfiguration();
+    disconnectHermes();
+    return result;
+  });
 }
 
 /**
@@ -301,7 +315,13 @@ app.whenReady().then(() => {
   logLifecycle("app-level listener registration confirmed", `app=${app.eventNames().length} powerMonitor=${powerMonitor.eventNames().length}`);
 });
 
-app.on("before-quit", () => logLifecycle("before-quit"));
+app.on("before-quit", () => {
+  logLifecycle("before-quit");
+  // D-08F — ensures any live Hermes WebSocket client is terminated before the process exits,
+  // rather than relying on the OS to tear down the socket as a side effect of process death.
+  // disconnectHermes() is already idempotent/safe to call even when nothing is connected.
+  disconnectHermes();
+});
 app.on("will-quit", () => logLifecycle("will-quit"));
 // `quit` fires AFTER the app has finished quitting, immediately before the process itself
 // ends — the terminal Electron-level event in the shutdown sequence, distinct from

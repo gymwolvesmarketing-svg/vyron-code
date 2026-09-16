@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { getAvailability, getAuthorizationState, beginAuthorization, clearAuthorization } from "../electron/hermesAuthorization";
+import { getAvailability, getAuthorizationState, beginAuthorization, clearAuthorization, getCurrentCredential } from "../electron/hermesAuthorization";
 
 // Every credential value used below is a controlled, obviously-fake placeholder — never a
 // real Hermes token, never read from an environment variable, config file, or the user's
@@ -180,5 +180,31 @@ describe("T-17 — stale in-flight authorization cannot restore authorized state
     expect(firstResult).toEqual({ state: "revoked" });
     expect(secondResult).toEqual({ state: "authorized_memory_only" });
     expect(getAuthorizationState()).toEqual({ state: "authorized_memory_only" });
+  });
+});
+
+describe("getCurrentCredential — main-process-internal accessor, never renderer-visible (D-08F)", () => {
+  it("returns null when not authorized", () => {
+    expect(getCurrentCredential()).toBeNull();
+  });
+
+  it("returns the exact credential after a successful authorization", async () => {
+    await beginAuthorization({ credential: PLACEHOLDER_CREDENTIAL });
+    expect(getCurrentCredential()).toBe(PLACEHOLDER_CREDENTIAL);
+  });
+
+  it("returns null again after clearAuthorization", async () => {
+    await beginAuthorization({ credential: PLACEHOLDER_CREDENTIAL });
+    expect(getCurrentCredential()).not.toBeNull();
+    clearAuthorization();
+    expect(getCurrentCredential()).toBeNull();
+  });
+
+  it("is null exactly when getAuthorizationState() reports not_authorized, and non-null exactly when it reports authorized_memory_only", async () => {
+    expect(getAuthorizationState().state).toBe("not_authorized");
+    expect(getCurrentCredential()).toBeNull();
+    await beginAuthorization({ credential: PLACEHOLDER_CREDENTIAL });
+    expect(getAuthorizationState().state).toBe("authorized_memory_only");
+    expect(getCurrentCredential()).not.toBeNull();
   });
 });

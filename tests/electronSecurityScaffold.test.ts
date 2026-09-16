@@ -442,7 +442,7 @@ describe("Electron scaffold source — no shell/child_process execution capabili
     }
   });
 
-  it("confirms exactly the fifteen expected scaffold .ts files exist, no more", () => {
+  it("confirms exactly the seventeen expected scaffold .ts files exist, no more", () => {
     expect(sourceFiles.sort()).toEqual(
       [
         "hermesAuthorization.ts",
@@ -454,12 +454,14 @@ describe("Electron scaffold source — no shell/child_process execution capabili
         "renderer.ts",
         "security-policy.ts",
         "shared-ipc-contract.ts",
+        "taskComposer.ts",
         "workspace-grant.ts",
         "workspaceAccess.ts",
         "workspaceExplorer.ts",
         "workspaceFileViewer.ts",
         "workspaceGit.ts",
         "workspaceSearch.ts",
+        "ws.d.ts",
       ].sort()
     );
   });
@@ -537,9 +539,11 @@ describe("electron/hermesAuthorization.ts — no persistence/network/logging/imp
     }
   });
 
-  it("exports exactly the four intended functions — no credential getter, serializer, or global accessor", () => {
+  it("exports exactly the five intended functions — the one credential accessor added by D-08F is main-process-internal only (verified separately below), no serializer or generic global accessor", () => {
     const exportedFns = [...code.matchAll(/export\s+(?:async\s+)?function\s+(\w+)/g)].map((m) => m[1]);
-    expect(exportedFns.sort()).toEqual(["beginAuthorization", "clearAuthorization", "getAuthorizationState", "getAvailability"].sort());
+    expect(exportedFns.sort()).toEqual(
+      ["beginAuthorization", "clearAuthorization", "getAuthorizationState", "getAvailability", "getCurrentCredential"].sort()
+    );
   });
 
   it("enforces an explicit bounded maximum credential length before retaining any value", () => {
@@ -559,29 +563,44 @@ describe("electron/hermesAuthorization.ts — no persistence/network/logging/imp
   });
 });
 
-describe("electron/hermesConnection.ts — no real network/persistence/logging capability, trusted-endpoint blocker documented (D-08C)", () => {
+describe("electron/hermesAuthorization.ts's getCurrentCredential — never renderer-reachable (D-08F)", () => {
+  it("is never imported by preload.ts, renderer.ts, or shared-ipc-contract.ts", () => {
+    for (const file of ["preload.ts", "renderer.ts", "shared-ipc-contract.ts"]) {
+      const code = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", file), "utf8"));
+      expect(code, `${file} unexpectedly references getCurrentCredential`).not.toMatch(/getCurrentCredential/);
+    }
+  });
+
+  it("is only ever imported by electron/hermesConnection.ts", () => {
+    const electronDir = path.join(__dirname, "..", "electron");
+    const files = fs.readdirSync(electronDir).filter((f) => f.endsWith(".ts") && f !== "hermesAuthorization.ts");
+    const importers = files.filter((f) => stripComments(fs.readFileSync(path.join(electronDir, f), "utf8")).match(/getCurrentCredential/));
+    expect(importers).toEqual(["hermesConnection.ts"]);
+  });
+});
+
+describe("electron/hermesConnection.ts — real, bounded, evidence-scoped Hermes connectivity (D-08C/D-08F)", () => {
   const filePath = path.join(__dirname, "..", "electron", "hermesConnection.ts");
   const rawSource = fs.readFileSync(filePath, "utf8");
   const code = stripComments(rawSource);
 
-  it("imports only type-only from shared-ipc-contract.ts and value imports from hermesAuthorization.ts/hermesEndpoint.ts/hermesEndpointSetup.ts — nothing from 'electron', 'ws', or any node:* built-in", () => {
+  it("imports type-only from shared-ipc-contract.ts, value imports from hermesAuthorization.ts/hermesEndpoint.ts/hermesEndpointSetup.ts, and the real 'ws' package — nothing from 'electron' or any node:* built-in", () => {
     const importLines = code.match(/^\s*import\b.*$/gm) ?? [];
-    expect(importLines.length).toBe(4);
+    expect(importLines.length).toBe(5);
     expect(importLines.some((line) => line.includes('from "./shared-ipc-contract"') && /^\s*import type\b/.test(line))).toBe(true);
-    expect(importLines.some((line) => line.includes('from "./hermesAuthorization"'))).toBe(true);
+    expect(importLines.some((line) => line.includes('from "./hermesAuthorization"') && line.includes("getCurrentCredential"))).toBe(true);
     expect(importLines.some((line) => line.includes('from "./hermesEndpoint"'))).toBe(true);
     expect(importLines.some((line) => line.includes('from "./hermesEndpointSetup"'))).toBe(true);
+    expect(importLines.some((line) => /from ["']ws["']/.test(line))).toBe(true);
     for (const line of importLines) {
       expect(line).not.toMatch(/from ["']electron["']/);
-      expect(line).not.toMatch(/from ["']ws["']/);
       expect(line).not.toMatch(/from ["']node:/);
     }
   });
 
-  it("has no console/WebSocket/HTTP/TCP/persistence/safeStorage/environment access of any kind", () => {
+  it("has no console/fetch/XHR/persistence/safeStorage/environment access, and never imports node:net/http/https/dgram/fs directly (all real network activity goes through the imported 'ws' client only)", () => {
     for (const forbidden of [
       /console\./,
-      /WebSocket/,
       /\bfetch\s*\(/,
       /XMLHttpRequest/,
       /safeStorage/i,
@@ -594,8 +613,7 @@ describe("electron/hermesConnection.ts — no real network/persistence/logging c
       /from ["']node:net["']|from ["']node:http["']|from ["']node:https["']|from ["']node:dgram["']/,
     ]) {
       // Comment-stripped: this module's own header prose names every mechanism it deliberately
-      // does not use, and explains the trusted-endpoint-policy blocker in detail — a raw-source
-      // scan would self-trigger on that explanatory text (same rationale as stripComments()).
+      // does not use — a raw-source scan would self-trigger on that explanatory text.
       expect(code, `unexpectedly matched: ${forbidden}`).not.toMatch(forbidden);
     }
   });
@@ -605,8 +623,9 @@ describe("electron/hermesConnection.ts — no real network/persistence/logging c
     expect(exportedFns.sort()).toEqual(["connect", "disconnect", "getConnectionState"].sort());
   });
 
-  it("gates connect() and getConnectionState() on hermesAuthorization.ts's own getAuthorizationState, never a parallel authorization check", () => {
+  it("gates connect() and getConnectionState() on both hermesAuthorization.ts's authorization state and a resolved trusted endpoint, never a parallel check", () => {
     expect(code).toMatch(/getAuthorizationState\(\)\.state !== "authorized_memory_only"/);
+    expect(code).toMatch(/endpoint\.kind !== "trusted"/);
   });
 
   it("connect() and disconnect() take no parameters at all", () => {
@@ -621,22 +640,62 @@ describe("electron/hermesConnection.ts — no real network/persistence/logging c
     expect(code).toMatch(/if \(connectInFlight\)/);
   });
 
-  it("never claims to reach the connected state — connect() only ever sets ambientState to unavailable", () => {
-    expect(code).not.toMatch(/ambientState = "connected"/);
-    expect(code).toMatch(/ambientState = "unavailable"/);
+  it("genuinely reaches the connected state via a real 'open' handler on the fixed, already-documented endpoint — no longer permanently hardcoded to unavailable", () => {
+    expect(code).toMatch(/client\.on\("open", \(\) => \{[\s\S]*?"connected"[\s\S]*?\}\);/);
   });
 
-  it("consumes electron/hermesEndpoint.ts's resolveTrustedEndpoint rather than hardcoding its own unavailable literal", () => {
-    expect(code).toMatch(/from ["']\.\/hermesEndpoint["']/);
-    expect(code).toMatch(/resolveTrustedEndpoint\(\)/);
-    expect(code).toMatch(/endpoint\.kind !== "trusted"/);
+  it("reuses the exact CONNECT_TIMEOUT_MS bound already accepted in lib/hermesClient.ts (20000ms) — not a newly invented number", () => {
+    const hermesClientSource = fs.readFileSync(path.join(__dirname, "..", "lib", "hermesClient.ts"), "utf8");
+    expect(hermesClientSource).toMatch(/CONNECT_TIMEOUT_MS = 20_000/);
+    expect(code).toMatch(/CONNECT_TIMEOUT_MS = 20_000/);
   });
 
-  it("never forwards any field of the resolved endpoint object into a renderer-visible result", () => {
-    // The only permitted renderer-visible literal from this branch is the fixed string
-    // "unavailable" — never `endpoint.reason`, `endpoint.url`, `endpoint.hostPolicy`, etc.
+  it("declares an explicit, bounded maxPayload for the WebSocket client — no unbounded inbound message size", () => {
+    expect(code).toMatch(/maxPayload:\s*MAX_INBOUND_MESSAGE_BYTES/);
+    expect(code).toMatch(/MAX_INBOUND_MESSAGE_BYTES = 65_536/);
+  });
+
+  it("discards every inbound message unparsed — never reads, logs, or acts on WebSocket frame content", () => {
+    const messageHandler = /client\.on\("message", \(\) => \{[\s\S]*?\}\);/.exec(code)?.[0] ?? "";
+    expect(messageHandler).not.toBe("");
+    // The handler body (comment-stripped) must be empty — no parsing, no forwarding.
+    expect(messageHandler.replace(/client\.on\("message", \(\) => \{|\}\);/g, "").trim()).toBe("");
+  });
+
+  it("never calls .send() on the WebSocket client — no JSON-RPC/session/prompt message is ever transmitted", () => {
+    expect(code).not.toMatch(/\.send\(/);
+  });
+
+  it("never references any forbidden Hermes RPC method name — session.create, session.activate, prompt.submit, approval.respond, clarify.respond, or session.interrupt", () => {
+    for (const forbidden of [/session\.create/, /session\.activate/, /prompt\.submit/, /approval\.respond/, /clarify\.respond/, /session\.interrupt/]) {
+      expect(code).not.toMatch(forbidden);
+    }
+  });
+
+  it("builds the connection URL by appending the token as a query parameter to the already-validated endpoint URL — the one documented transport, never a newly invented header/format", () => {
+    expect(code).toMatch(/connectUrl\.searchParams\.set\("token", credential\)/);
+  });
+
+  it("sets Origin and Host options derived only from the resolved endpoint's own host/port — never from renderer-suppliable data", () => {
+    expect(code).toMatch(/origin,/);
+    expect(code).toMatch(/headers: \{ Host: hostHeader \}/);
+  });
+
+  it("never forwards any field of the resolved endpoint object, or the credential, into a renderer-visible result", () => {
+    // The only permitted renderer-visible literals are the fixed HermesConnectionResult state
+    // strings — never `endpoint.url`/`endpoint.hostPolicy`/`credential`/any derived value.
     expect(code).not.toMatch(/state:\s*endpoint\./);
+    expect(code).not.toMatch(/state:\s*credential/);
     expect(code).not.toMatch(/\{\s*state:\s*endpoint\s*\}/);
+  });
+
+  it("terminates the WebSocket client on disconnect(), on a superseded stale connect(), and on a connect timeout — no dangling socket left in any exit path", () => {
+    const terminateCalls = code.match(/\.terminate\(\)/g) ?? [];
+    expect(terminateCalls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("consumes electron/hermesEndpointSetup.ts's getConfiguredEndpoint, falling back to electron/hermesEndpoint.ts's resolveTrustedEndpoint only when nothing is configured", () => {
+    expect(code).toMatch(/getConfiguredEndpoint\(\) \?\? resolveTrustedEndpoint\(\)/);
   });
 });
 
@@ -799,6 +858,23 @@ describe("electron/main.ts — Hermes authorization + connectivity + endpoint-se
   it("never logs a Hermes authorization request payload via logLifecycle or console", () => {
     expect(source).not.toMatch(/logLifecycle\([^)]*credential/i);
     expect(source).not.toMatch(/console\.[a-z]+\([^)]*credential/i);
+  });
+
+  it("D-08F: clearing authorization also disconnects, enforced at the IPC handler itself, not only as a renderer courtesy", () => {
+    const handlerBody = /ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_CLEAR_AUTHORIZATION, \(\) => \{[\s\S]*?\}\);/.exec(source)?.[0] ?? "";
+    expect(handlerBody).toMatch(/clearHermesAuthorization\(\)/);
+    expect(handlerBody).toMatch(/disconnectHermes\(\)/);
+  });
+
+  it("D-08F: clearing the endpoint configuration also disconnects, enforced at the IPC handler itself", () => {
+    const handlerBody = /ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_CLEAR_ENDPOINT_CONFIGURATION, \(\) => \{[\s\S]*?\}\);/.exec(source)?.[0] ?? "";
+    expect(handlerBody).toMatch(/clearEndpointConfiguration\(\)/);
+    expect(handlerBody).toMatch(/disconnectHermes\(\)/);
+  });
+
+  it("D-08F: app exit (before-quit) safely tears down any live Hermes connection", () => {
+    const handlerBody = /app\.on\("before-quit", \(\) => \{[\s\S]*?\}\);/.exec(source)?.[0] ?? "";
+    expect(handlerBody).toMatch(/disconnectHermes\(\)/);
   });
 
   it("registers no Hermes network/health/session/prompt/event IPC channel of any kind", () => {
@@ -1015,6 +1091,13 @@ describe("electron/renderer.ts — D-08C connection sub-panel wiring", () => {
   it("never logs anything from the connection flow", () => {
     expect(connectionSource).not.toMatch(/console\./);
   });
+
+  it("D-08F: handles both new connection outcomes — endpoint_not_configured and connection_timed_out — with fixed, safe text, never an echoed detail", () => {
+    expect(connectionSource).toMatch(/case "endpoint_not_configured":/);
+    expect(connectionSource).toMatch(/case "connection_timed_out":/);
+    expect(connectionSource).toMatch(/result\.state === "endpoint_not_configured"/);
+    expect(connectionSource).toMatch(/result\.state === "connection_timed_out"/);
+  });
 });
 
 describe("electron/renderer.ts — D-08E endpoint setup panel wiring", () => {
@@ -1107,10 +1190,11 @@ describe("electron/renderer.html — static, non-interactive local content", () 
     expect(html).toMatch(/connect-src 'none'/);
   });
 
-  it("contains no textarea or select, and exactly four <input> elements — the Search query box, the Hermes credential box, the Hermes endpoint box, and the risk-acknowledgement checkbox, never a path input", () => {
-    for (const tag of ["<textarea", "<select"]) {
-      expect(lowerHtml).not.toContain(tag);
-    }
+  it("contains exactly one <textarea> (the D-09 local task draft box), no <select>, and exactly four <input> elements — the Search query box, the Hermes credential box, the Hermes endpoint box, and the risk-acknowledgement checkbox, never a path input", () => {
+    expect(lowerHtml).not.toContain("<select");
+    const textareas = [...html.matchAll(/<textarea\b[^>]*>/g)];
+    expect(textareas).toHaveLength(1);
+    expect(textareas[0]?.[0]).toContain('id="task-draft-input"');
     const inputs = [...html.matchAll(/<input\b[^>]*>/g)];
     expect(inputs).toHaveLength(4);
     const inputTags = inputs.map((m) => m[0]);
@@ -1132,7 +1216,7 @@ describe("electron/renderer.html — static, non-interactive local content", () 
     }
   });
 
-  it("contains exactly the five Milestone A workspace-panel buttons, the two D-03 workspace-grant buttons, the four D-08B Hermes buttons, the two D-08C connection buttons, and the four D-08E endpoint-setup buttons, no more", () => {
+  it("contains exactly the five Milestone A workspace-panel buttons, the two D-03 workspace-grant buttons, the four D-08B Hermes buttons, the two D-08C connection buttons, the four D-08E endpoint-setup buttons, and the nine D-09 task-composer buttons, no more", () => {
     const buttonIds = [...html.matchAll(/<button id="([^"]+)"/g)].map((m) => m[1]);
     expect(buttonIds.sort()).toEqual(
       [
@@ -1152,6 +1236,15 @@ describe("electron/renderer.html — static, non-interactive local content", () 
         "hermes-endpoint-clear-btn",
         "hermes-endpoint-submit-btn",
         "hermes-endpoint-cancel-btn",
+        "task-clear-draft-btn",
+        "task-review-btn",
+        "task-add-workspace-name-btn",
+        "task-add-git-summary-btn",
+        "task-add-profile-btn",
+        "task-clear-context-btn",
+        "task-review-back-btn",
+        "task-review-clear-context-btn",
+        "task-review-close-btn",
       ].sort()
     );
   });
@@ -1418,5 +1511,282 @@ describe("electron/renderer.html — D-08C connection sub-panel", () => {
     expect(endpointIndex).toBeGreaterThan(-1);
     expect(connectionIndex).toBeGreaterThan(-1);
     expect(endpointIndex).toBeLessThan(connectionIndex);
+  });
+});
+
+describe("electron/taskComposer.ts — module isolation (D-09)", () => {
+  // taskComposer.ts is a REAL ES module (real `export` statements) — unlike renderer.ts, this
+  // is safe only because it must never be loaded via a <script> tag or `require`d by any
+  // compiled-for-renderer/preload/main file. It exists solely so its pure logic is directly
+  // unit-testable (tests/electronTaskComposer.test.ts) without a DOM. This describe block
+  // enforces the isolation that makes that safe.
+  const composerSource = fs.readFileSync(path.join(__dirname, "..", "electron", "taskComposer.ts"), "utf8");
+  const strippedComposer = stripComments(composerSource);
+  const electronDir = path.join(__dirname, "..", "electron");
+  const otherElectronFiles = fs
+    .readdirSync(electronDir)
+    .filter((f) => f.endsWith(".ts") && f !== "taskComposer.ts" && f !== "ws.d.ts");
+  const rendererHtml = fs.readFileSync(path.join(electronDir, "renderer.html"), "utf8");
+
+  it("is never imported by any other electron/*.ts file (main.ts, preload.ts, renderer.ts included)", () => {
+    for (const file of otherElectronFiles) {
+      const code = stripComments(fs.readFileSync(path.join(electronDir, file), "utf8"));
+      expect(code, `${file} unexpectedly references taskComposer`).not.toMatch(/from ["']\.\/taskComposer["']/);
+    }
+  });
+
+  it("is never loaded via a <script> tag in renderer.html", () => {
+    expect(rendererHtml).not.toMatch(/taskComposer/);
+  });
+
+  it("has no DOM/Node/Electron/network/storage reference of any kind", () => {
+    for (const forbidden of [
+      /\bdocument\./,
+      /\bwindow\./,
+      /from ["']electron["']/,
+      /from ["']node:/,
+      /\bfetch\s*\(/,
+      /XMLHttpRequest/,
+      /WebSocket/,
+      /localStorage/,
+      /sessionStorage/,
+      /indexedDB/,
+      /document\.cookie/,
+      /ipcRenderer/,
+      /child_process/,
+    ]) {
+      expect(strippedComposer).not.toMatch(forbidden);
+    }
+  });
+
+  it("exposes no send/submit/execute/session/prompt export", () => {
+    for (const forbidden of [/export function send/i, /export function submit/i, /export function execute/i, /export function.*[sS]ession/, /export function.*[pP]rompt/]) {
+      expect(strippedComposer).not.toMatch(forbidden);
+    }
+  });
+});
+
+describe("electron/renderer.ts — D-09 task composer wiring", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.ts"), "utf8");
+  const stripped = stripComments(source);
+  const composerSource = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", "taskComposer.ts"), "utf8"));
+  const taskSourceStart = stripped.indexOf("type TaskProfile =");
+  const taskSourceEnd = stripped.indexOf("HermesViewState");
+  const taskSource = taskSourceStart >= 0 && taskSourceEnd > taskSourceStart ? stripped.slice(taskSourceStart, taskSourceEnd) : "";
+
+  it("declares the task composer section locally (no import), starting from TaskProfile", () => {
+    expect(taskSourceStart).toBeGreaterThan(-1);
+  });
+
+  it("declares exactly the six required task profiles, in order, matching taskComposer.ts", () => {
+    const rendererIds = [...taskSource.matchAll(/id:\s*"(explain|review|plan|investigate|summarize_workspace|analyze_git_status)"/g)].map(
+      (m) => m[1],
+    );
+    const composerIds = [...composerSource.matchAll(/id:\s*"(explain|review|plan|investigate|summarize_workspace|analyze_git_status)"/g)].map(
+      (m) => m[1],
+    );
+    const expected = ["explain", "review", "plan", "investigate", "summarize_workspace", "analyze_git_status"];
+    expect(rendererIds).toEqual(expected);
+    expect(composerIds).toEqual(expected);
+  });
+
+  it("MAX_DRAFT_LENGTH, MAX_CONTEXT_ITEMS, MAX_SINGLE_EXCERPT_CHARS, MAX_TOTAL_CONTEXT_CHARS match exactly between renderer.ts and taskComposer.ts (drift guard)", () => {
+    for (const constant of ["MAX_DRAFT_LENGTH", "MAX_CONTEXT_ITEMS", "MAX_SINGLE_EXCERPT_CHARS", "MAX_TOTAL_CONTEXT_CHARS", "MAX_RELATIVE_PATH_LENGTH"]) {
+      const rendererValue = new RegExp(`${constant}\\s*=\\s*([\\d_]+)`).exec(taskSource)?.[1];
+      const composerValue = new RegExp(`${constant}\\s*=\\s*([\\d_]+)`).exec(composerSource)?.[1];
+      expect(rendererValue, `${constant} missing in renderer.ts`).toBeDefined();
+      expect(composerValue, `${constant} missing in taskComposer.ts`).toBeDefined();
+      expect(rendererValue).toBe(composerValue);
+    }
+  });
+
+  it("draft validation rejects empty/whitespace-only/control-character/too-long input, mirroring taskComposer.ts's rules", () => {
+    expect(taskSource).toMatch(/reason:\s*"empty"/);
+    expect(taskSource).toMatch(/reason:\s*"too_long"/);
+    expect(taskSource).toMatch(/reason:\s*"control_characters"/);
+    expect(taskSource).toMatch(/reason:\s*"whitespace_only"/);
+  });
+
+  it("gates opening the review surface on canOpenTaskReview — never opens review unconditionally", () => {
+    const openFnBody = /function handleOpenTaskReview\(\): void \{[\s\S]*?\n\}/.exec(taskSource)?.[0] ?? "";
+    expect(openFnBody).toMatch(/if \(!canOpenTaskReview\(taskDraftText\)\) return;/);
+  });
+
+  it("never contains a Send/Run/Execute/Start agent/Ask Hermes/Start session/Connect and send button label", () => {
+    for (const forbidden of [
+      /"Send"/,
+      /"Run"/,
+      /"Execute"/,
+      /"Start agent"/i,
+      /"Ask Hermes"/i,
+      /"Start session"/i,
+      /"Connect and send"/i,
+    ]) {
+      expect(taskSource).not.toMatch(forbidden);
+    }
+  });
+
+  it("only uses the two allowed action labels for the composer's own primary actions (declared in renderer.html)", () => {
+    const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
+    expect(html).toMatch(/<button id="task-review-btn"[^>]*>Review task draft<\/button>/);
+    expect(html).toMatch(/<button id="task-clear-draft-btn"[^>]*>Clear draft<\/button>/);
+  });
+
+  it("every context candidate builder takes only already-on-screen data — no read/list/search/fetch call inside any builder", () => {
+    const builderNames = [
+      "buildFilePreviewContextItem",
+      "buildSearchResultContextItem",
+      "buildGitSummaryContextItem",
+      "buildWorkspaceNameContextItem",
+      "buildTaskProfileContextItem",
+    ];
+    for (const name of builderNames) {
+      const fnMatch = new RegExp(`function ${name}\\([\\s\\S]*?\\n\\}`).exec(taskSource);
+      expect(fnMatch, `${name} not found`).not.toBeNull();
+      const body = fnMatch?.[0] ?? "";
+      for (const forbidden of [/api\.workspace\./, /readTextFile\(/, /searchText\(/, /listEntries\(/, /getGitSummary\(/, /fetch\(/]) {
+        expect(body).not.toMatch(forbidden);
+      }
+    }
+  });
+
+  it("rejects an absolute or parent-traversal relative path before building a file/search context item", () => {
+    expect(taskSource).toMatch(/function isSafeTaskRelativePath\(relativePath: string\): boolean \{/);
+    expect(taskSource).toMatch(/segment === "\.\."/);
+  });
+
+  it("enforces the item-count and aggregate-character limits in addTaskContextItem", () => {
+    const fnBody = /function addTaskContextItem\([\s\S]*?\n\}/.exec(taskSource)?.[0] ?? "";
+    expect(fnBody).toMatch(/rejected_item_limit/);
+    expect(fnBody).toMatch(/rejected_total_char_limit/);
+  });
+
+  it("provides individual remove and clear-all context actions, both local-only", () => {
+    expect(taskSource).toMatch(/function handleRemoveTaskContextItem\(id: string\): void \{/);
+    expect(taskSource).toMatch(/function handleClearAllTaskContext\(\): void \{/);
+  });
+
+  it("resetWorkspaceViewState clears task context/review/excerpt state immediately on grant or revoke", () => {
+    const fnBody = /function resetWorkspaceViewState\(\): void \{[\s\S]*?\n\}/.exec(stripped)?.[0] ?? "";
+    expect(fnBody).toMatch(/resetTaskContextState\(\);/);
+  });
+
+  it("resetTaskContextState clears items, review-open, and both cached excerpt snapshots", () => {
+    const fnBody = /function resetTaskContextState\(\): void \{[\s\S]*?\n\}/.exec(taskSource)?.[0] ?? "";
+    expect(fnBody).toMatch(/taskContextItems = \[\];/);
+    expect(fnBody).toMatch(/taskReviewOpen = false;/);
+    expect(fnBody).toMatch(/lastFileViewerPreview = null;/);
+    expect(fnBody).toMatch(/lastGitSummaryForContext = null;/);
+  });
+
+  it("the review surface shows only the destination/network disclosure text, never a token/endpoint/session/protocol value", () => {
+    const reviewFnBody = /function renderTaskReview\(\): void \{[\s\S]*?\n\}/.exec(taskSource)?.[0] ?? "";
+    expect(reviewFnBody).toMatch(/"Not configured for sending\."/);
+    expect(reviewFnBody).toMatch(/"No request will be sent in this build\."/);
+    for (const forbidden of [/token/i, /endpoint/i, /\bhost\b/i, /\bport\b/i, /\bsocket\b/i, /session/i, /provider/i, /\bmodel\b/i]) {
+      expect(reviewFnBody).not.toMatch(forbidden);
+    }
+  });
+
+  it("never calls window.vyronDesktop / api.hermes / api.workspace from anywhere in the task composer section", () => {
+    for (const forbidden of [/window\.vyronDesktop/, /api\.hermes\./, /api\.workspace\./]) {
+      expect(taskSource).not.toMatch(forbidden);
+    }
+  });
+
+  it("never references localStorage/sessionStorage/indexedDB/cookie for draft or context state", () => {
+    for (const forbidden of [/localStorage/, /sessionStorage/, /indexedDB/, /document\.cookie/]) {
+      expect(taskSource).not.toMatch(forbidden);
+    }
+  });
+
+  it("wires the task composer controls unconditionally in main(), independent of the desktop bridge (safe unavailable state)", () => {
+    const mainFnBody = /function main\(\): void \{[\s\S]*?\n\}/.exec(stripped)?.[0] ?? "";
+    const wireIndex = mainFnBody.indexOf("wireTaskControls();");
+    const apiCheckIndex = mainFnBody.indexOf("if (!api)");
+    expect(wireIndex).toBeGreaterThan(-1);
+    expect(apiCheckIndex).toBeGreaterThan(-1);
+    expect(wireIndex).toBeLessThan(apiCheckIndex);
+  });
+});
+
+describe("electron/renderer.html — D-09 task section markup", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
+  const lowerHtml = html.toLowerCase();
+
+  it("declares the task panel section with profile group, draft textarea, and review actions", () => {
+    expect(html).toMatch(/<section id="task-panel">/);
+    expect(html).toMatch(/<div id="task-profiles"/);
+    expect(html).toMatch(/<textarea\s+id="task-draft-input"/);
+    expect(html).toMatch(/<button id="task-clear-draft-btn"/);
+    expect(html).toMatch(/<button id="task-review-btn"[^>]*disabled/);
+  });
+
+  it("the draft textarea declares an explicit maxlength matching the required draft bound", () => {
+    expect(html).toMatch(/<textarea\s+id="task-draft-input"\s+maxlength="4000"/);
+  });
+
+  it("declares the context summary controls — count, quick-add, clear-all, itemized list", () => {
+    expect(html).toMatch(/<p id="task-context-count"/);
+    expect(html).toMatch(/<button id="task-add-workspace-name-btn"/);
+    expect(html).toMatch(/<button id="task-add-git-summary-btn"/);
+    expect(html).toMatch(/<button id="task-add-profile-btn"/);
+    expect(html).toMatch(/<button id="task-clear-context-btn"[^>]*\bhidden\b/);
+    expect(html).toMatch(/<ul id="task-context-list"/);
+  });
+
+  it("declares the review surface hidden by default, with the required local-preview disclosure", () => {
+    expect(html).toMatch(/<div id="task-review"[^>]*\bhidden\b/);
+    expect(lowerHtml).toMatch(/this is a local preview\. nothing is being sent\./);
+    expect(lowerHtml).toMatch(/not configured for sending\./);
+    expect(lowerHtml).toMatch(/no request will be sent in this build\./);
+  });
+
+  it("declares the required review actions — back to draft, remove/clear context, close review", () => {
+    expect(html).toMatch(/<button id="task-review-back-btn"/);
+    expect(html).toMatch(/<button id="task-review-clear-context-btn"/);
+    expect(html).toMatch(/<button id="task-review-close-btn"/);
+    expect(html).toMatch(/<ul id="task-review-context-list"/);
+  });
+
+  it("carries the required 'nothing is sent automatically' composer disclosure text", () => {
+    expect(lowerHtml).toMatch(/nothing is sent automatically\./);
+    expect(lowerHtml).toMatch(/review your task and selected context before any future send action becomes available\./);
+  });
+
+  it("contains no Send/Submit/Execute/Start session/Attach-and-send button anywhere in the task panel markup", () => {
+    const sectionMatch = html.match(/<section id="task-panel">[\s\S]*?<\/section>/);
+    expect(sectionMatch).not.toBeNull();
+    const sectionHtml = sectionMatch?.[0] ?? "";
+    for (const forbidden of [
+      />\s*Send\s*</i,
+      />\s*Run\s*</i,
+      />\s*Execute\s*</i,
+      /start session/i,
+      /start agent/i,
+      /ask hermes/i,
+      /attach.and.send/i,
+      /connect and send/i,
+    ]) {
+      expect(sectionHtml).not.toMatch(forbidden);
+    }
+  });
+
+  it("the task panel never declares an endpoint/token/session/provider/model input control", () => {
+    const sectionMatch = html.match(/<section id="task-panel">[\s\S]*?<\/section>/);
+    const sectionHtml = sectionMatch?.[0] ?? "";
+    for (const forbidden of [/id="task-endpoint/i, /id="task-token/i, /id="task-session/i, /id="task-provider/i, /id="task-model/i, /type="password"/i]) {
+      expect(sectionHtml).not.toMatch(forbidden);
+    }
+  });
+
+  it("the task panel is a distinct section, not nested inside the workspace or Hermes panels", () => {
+    const taskIndex = html.indexOf('<section id="task-panel">');
+    const workspacePanelIndex = html.indexOf('<section id="workspace-panel"');
+    const hermesPanelIndex = html.indexOf('<section id="hermes-panel">');
+    expect(taskIndex).toBeGreaterThan(-1);
+    expect(workspacePanelIndex).toBeGreaterThan(-1);
+    expect(hermesPanelIndex).toBeGreaterThan(-1);
+    expect(taskIndex).toBeGreaterThan(workspacePanelIndex);
   });
 });

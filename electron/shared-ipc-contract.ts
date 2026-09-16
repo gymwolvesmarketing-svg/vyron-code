@@ -178,23 +178,24 @@ export interface HermesAuthorizationResult {
  * parameter-free reads; `clearAuthorization` is the sole revocation action.
  */
 /**
- * D-08C connectivity state — VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION.
+ * D-08C/D-08F connectivity state — VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION,
+ * extended by VYRON_CODE_V02_D08E_CHECKPOINT_AND_D08F_EXPLICIT_HERMES_CONNECTIVITY_AUTHORIZATION.
  * One shared enum for both the ambient `getConnectionState` read and the `connect`/
- * `disconnect` action outcomes, exactly mirroring this authorization's own Section 6 required
- * renderer-visible state list. Never carries an endpoint, host, port, protocol, socket,
+ * `disconnect` action outcomes. Never carries an endpoint, host, port, protocol, socket,
  * session ID, or raw error detail — see electron/hermesConnection.ts's own header comment for
- * why `connect()` can never actually reach `"connected"` in this build (no trusted,
- * compile-time-fixed endpoint configuration exists yet — a disclosed, reported blocker, not
- * an oversight).
+ * exactly which of these values `connect()` can produce and why `"connected"` now requires
+ * both a valid D-08B authorization and a valid D-08E configured endpoint.
  */
 export type HermesConnectionAmbientState =
   | "not_authorized"
+  | "endpoint_not_configured"
   | "ready_to_connect"
   | "connecting"
   | "connected"
   | "disconnecting"
   | "disconnected"
   | "unavailable"
+  | "connection_timed_out"
   | "safe_failure";
 
 export interface HermesConnectionState {
