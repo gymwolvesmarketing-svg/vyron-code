@@ -98,8 +98,8 @@ describe("WORKSPACE_IPC_CHANNELS — implemented channels (D-03 + Milestone A)",
   });
 });
 
-describe("HERMES_IPC_CHANNELS — implemented channels (D-08B + D-08C + D-08E)", () => {
-  it("exposes exactly the ten implemented Hermes channels, no more", () => {
+describe("HERMES_IPC_CHANNELS — implemented channels (D-08B + D-08C + D-08E + D-10)", () => {
+  it("exposes exactly the thirteen implemented Hermes channels, no more", () => {
     expect(Object.values(HERMES_IPC_CHANNELS).sort()).toEqual(
       [
         "hermes:beginAuthorization",
@@ -112,6 +112,9 @@ describe("HERMES_IPC_CHANNELS — implemented channels (D-08B + D-08C + D-08E)",
         "hermes:getEndpointConfigurationState",
         "hermes:configureEndpoint",
         "hermes:clearEndpointConfiguration",
+        "hermes:getSessionState",
+        "hermes:createSession",
+        "hermes:closeSession",
       ].sort()
     );
   });
@@ -255,7 +258,7 @@ describe("preload.ts — exposed window.vyronDesktop API", () => {
     }
   });
 
-  it("exposes exactly the ten Hermes methods, no more (D-08B + D-08C + D-08E)", () => {
+  it("exposes exactly the thirteen Hermes methods, no more (D-08B + D-08C + D-08E + D-10)", () => {
     const hermes = exposedApi().hermes as Record<string, unknown>;
     expect(Object.keys(hermes).sort()).toEqual(
       [
@@ -269,6 +272,9 @@ describe("preload.ts — exposed window.vyronDesktop API", () => {
         "getEndpointConfigurationState",
         "configureEndpoint",
         "clearEndpointConfiguration",
+        "getSessionState",
+        "createSession",
+        "closeSession",
       ].sort()
     );
     for (const method of Object.values(hermes)) {
@@ -442,13 +448,15 @@ describe("Electron scaffold source — no shell/child_process execution capabili
     }
   });
 
-  it("confirms exactly the seventeen expected scaffold .ts files exist, no more", () => {
+  it("confirms exactly the eighteen expected scaffold .ts files exist, no more", () => {
+    expect(sourceFiles).toHaveLength(18);
     expect(sourceFiles.sort()).toEqual(
       [
         "hermesAuthorization.ts",
         "hermesConnection.ts",
         "hermesEndpoint.ts",
         "hermesEndpointSetup.ts",
+        "hermesSession.ts",
         "main.ts",
         "preload.ts",
         "renderer.ts",
@@ -618,9 +626,9 @@ describe("electron/hermesConnection.ts — real, bounded, evidence-scoped Hermes
     }
   });
 
-  it("exports exactly the three intended functions, no more", () => {
+  it("exports exactly the four intended functions, no more — callSessionMethod (D-10) is a narrow, closed-vocabulary RPC bridge for electron/hermesSession.ts only", () => {
     const exportedFns = [...code.matchAll(/export\s+(?:async\s+)?function\s+(\w+)/g)].map((m) => m[1]);
-    expect(exportedFns.sort()).toEqual(["connect", "disconnect", "getConnectionState"].sort());
+    expect(exportedFns.sort()).toEqual(["connect", "disconnect", "getConnectionState", "callSessionMethod"].sort());
   });
 
   it("gates connect() and getConnectionState() on both hermesAuthorization.ts's authorization state and a resolved trusted endpoint, never a parallel check", () => {
@@ -655,19 +663,23 @@ describe("electron/hermesConnection.ts — real, bounded, evidence-scoped Hermes
     expect(code).toMatch(/MAX_INBOUND_MESSAGE_BYTES = 65_536/);
   });
 
-  it("discards every inbound message unparsed — never reads, logs, or acts on WebSocket frame content", () => {
-    const messageHandler = /client\.on\("message", \(\) => \{[\s\S]*?\}\);/.exec(code)?.[0] ?? "";
+  it("D-10: the message handler only matches a numeric-id response envelope against pendingRpc, never logs, and discards everything else unparsed", () => {
+    const messageHandler = /client\.on\("message", \(data: unknown\) => \{[\s\S]*?\n    \}\);/.exec(code)?.[0] ?? "";
     expect(messageHandler).not.toBe("");
-    // The handler body (comment-stripped) must be empty — no parsing, no forwarding.
-    expect(messageHandler.replace(/client\.on\("message", \(\) => \{|\}\);/g, "").trim()).toBe("");
+    expect(messageHandler).toMatch(/typeof envelope\.id !== "number"/);
+    expect(messageHandler).toMatch(/pendingRpc\.get\(envelope\.id\)/);
+    expect(messageHandler).not.toMatch(/console\./);
   });
 
-  it("never calls .send() on the WebSocket client — no JSON-RPC/session/prompt message is ever transmitted", () => {
-    expect(code).not.toMatch(/\.send\(/);
+  it("D-10: callSessionMethod is the only place .send() is called, and only for the closed-vocabulary SessionRpcMethod union", () => {
+    const sendCalls = code.match(/\.send\(/g) ?? [];
+    expect(sendCalls).toHaveLength(1);
+    expect(code).toMatch(/export type SessionRpcMethod = "session\.create" \| "session\.activate" \| "session\.close";/);
+    expect(code).toMatch(/export async function callSessionMethod\(method: SessionRpcMethod, params: Record<string, unknown>\)/);
   });
 
-  it("never references any forbidden Hermes RPC method name — session.create, session.activate, prompt.submit, approval.respond, clarify.respond, or session.interrupt", () => {
-    for (const forbidden of [/session\.create/, /session\.activate/, /prompt\.submit/, /approval\.respond/, /clarify\.respond/, /session\.interrupt/]) {
+  it("never references a forbidden Hermes RPC method name as real code — prompt.submit, approval.respond, clarify.respond, or session.interrupt (session.create/session.activate/session.close are D-10's own narrow, evidenced exceptions)", () => {
+    for (const forbidden of [/prompt\.submit/, /approval\.respond/, /clarify\.respond/, /session\.interrupt/]) {
       expect(code).not.toMatch(forbidden);
     }
   });
@@ -765,11 +777,11 @@ describe("electron/hermesEndpoint.ts and its HermesTrustedEndpoint type — neve
     }
   });
 
-  it("hermesConnection.ts and hermesEndpointSetup.ts are the only files that import electron/hermesEndpoint.ts", () => {
+  it("hermesConnection.ts, hermesEndpointSetup.ts, and hermesSession.ts (D-10, for its own precondition re-check) are the only files that import electron/hermesEndpoint.ts", () => {
     const electronDir = path.join(__dirname, "..", "electron");
     const files = fs.readdirSync(electronDir).filter((f) => f.endsWith(".ts") && f !== "hermesEndpoint.ts");
     const importers = files.filter((f) => stripComments(fs.readFileSync(path.join(electronDir, f), "utf8")).match(/from ["']\.\/hermesEndpoint["']/));
-    expect(importers.sort()).toEqual(["hermesConnection.ts", "hermesEndpointSetup.ts"].sort());
+    expect(importers.sort()).toEqual(["hermesConnection.ts", "hermesEndpointSetup.ts", "hermesSession.ts"].sort());
   });
 });
 
@@ -782,11 +794,11 @@ describe("electron/hermesEndpointSetup.ts and its getConfiguredEndpoint accessor
     }
   });
 
-  it("hermesConnection.ts and main.ts are the only files that import electron/hermesEndpointSetup.ts", () => {
+  it("hermesConnection.ts, main.ts, and hermesSession.ts (D-10, for its own precondition re-check) are the only files that import electron/hermesEndpointSetup.ts", () => {
     const electronDir = path.join(__dirname, "..", "electron");
     const files = fs.readdirSync(electronDir).filter((f) => f.endsWith(".ts") && f !== "hermesEndpointSetup.ts");
     const importers = files.filter((f) => stripComments(fs.readFileSync(path.join(electronDir, f), "utf8")).match(/from ["']\.\/hermesEndpointSetup["']/));
-    expect(importers.sort()).toEqual(["hermesConnection.ts", "main.ts"].sort());
+    expect(importers.sort()).toEqual(["hermesConnection.ts", "main.ts", "hermesSession.ts"].sort());
   });
 });
 
@@ -1216,7 +1228,7 @@ describe("electron/renderer.html — static, non-interactive local content", () 
     }
   });
 
-  it("contains exactly the five Milestone A workspace-panel buttons, the two D-03 workspace-grant buttons, the four D-08B Hermes buttons, the two D-08C connection buttons, the four D-08E endpoint-setup buttons, and the nine D-09 task-composer buttons, no more", () => {
+  it("contains exactly the five Milestone A workspace-panel buttons, the two D-03 workspace-grant buttons, the four D-08B Hermes buttons, the two D-08C connection buttons, the four D-08E endpoint-setup buttons, the nine D-09 task-composer buttons, and the two D-10 session buttons, no more", () => {
     const buttonIds = [...html.matchAll(/<button id="([^"]+)"/g)].map((m) => m[1]);
     expect(buttonIds.sort()).toEqual(
       [
@@ -1245,6 +1257,8 @@ describe("electron/renderer.html — static, non-interactive local content", () 
         "task-review-back-btn",
         "task-review-clear-context-btn",
         "task-review-close-btn",
+        "hermes-session-create-btn",
+        "hermes-session-close-btn",
       ].sort()
     );
   });
@@ -1679,12 +1693,25 @@ describe("electron/renderer.ts — D-09 task composer wiring", () => {
     expect(fnBody).toMatch(/lastGitSummaryForContext = null;/);
   });
 
-  it("the review surface shows only the destination/network disclosure text, never a token/endpoint/session/protocol value", () => {
+  it("the review surface shows only the destination/network disclosure text plus the safe D-10 session-info delegate, never a token/endpoint/raw-protocol value", () => {
     const reviewFnBody = /function renderTaskReview\(\): void \{[\s\S]*?\n\}/.exec(taskSource)?.[0] ?? "";
     expect(reviewFnBody).toMatch(/"Not configured for sending\."/);
     expect(reviewFnBody).toMatch(/"No request will be sent in this build\."/);
-    for (const forbidden of [/token/i, /endpoint/i, /\bhost\b/i, /\bport\b/i, /\bsocket\b/i, /session/i, /provider/i, /\bmodel\b/i]) {
+    // The only "session"-shaped reference allowed here is the delegate call itself — the actual
+    // safe rendering happens in renderTaskSessionInfo(), asserted separately below.
+    expect(reviewFnBody).toMatch(/renderTaskSessionInfo\(\);/);
+    for (const forbidden of [/token/i, /endpoint/i, /\bhost\b/i, /\bport\b/i, /\bsocket\b/i, /provider/i, /\bmodel\b/i]) {
       expect(reviewFnBody).not.toMatch(forbidden);
+    }
+  });
+
+  it("D-10: renderTaskSessionInfo shows only a fixed Active/Not created label and a fixed 'not available' sending note — never a session id, raw state string, or IPC call of its own", () => {
+    const fnBody = /function renderTaskSessionInfo\(\): void \{[\s\S]*?\n\}/.exec(taskSource)?.[0] ?? "";
+    expect(fnBody).not.toBe("");
+    expect(fnBody).toMatch(/"Active" : "Not created"/);
+    expect(fnBody).toMatch(/"Not available in this build\."/);
+    for (const forbidden of [/window\.vyronDesktop/, /api\.hermes/, /token/i, /endpoint/i, /\bhost\b/i, /\bport\b/i, /\bsocket\b/i]) {
+      expect(fnBody).not.toMatch(forbidden);
     }
   });
 
@@ -1788,5 +1815,277 @@ describe("electron/renderer.html — D-09 task section markup", () => {
     expect(workspacePanelIndex).toBeGreaterThan(-1);
     expect(hermesPanelIndex).toBeGreaterThan(-1);
     expect(taskIndex).toBeGreaterThan(workspacePanelIndex);
+  });
+});
+
+describe("electron/hermesSession.ts — explicit, bounded session lifecycle (D-10)", () => {
+  const filePath = path.join(__dirname, "..", "electron", "hermesSession.ts");
+  const rawSource = fs.readFileSync(filePath, "utf8");
+  const code = stripComments(rawSource);
+
+  it("imports only type-only from shared-ipc-contract.ts and value imports from hermesAuthorization.ts/hermesEndpoint.ts/hermesEndpointSetup.ts/hermesConnection.ts — nothing from 'electron', 'ws', or any node:* built-in", () => {
+    const importLines = code.match(/^\s*import\b.*$/gm) ?? [];
+    expect(importLines.length).toBe(5);
+    expect(importLines.some((line) => line.includes('from "./shared-ipc-contract"') && /^\s*import type\b/.test(line))).toBe(true);
+    expect(importLines.some((line) => line.includes('from "./hermesAuthorization"'))).toBe(true);
+    expect(importLines.some((line) => line.includes('from "./hermesEndpoint"'))).toBe(true);
+    expect(importLines.some((line) => line.includes('from "./hermesEndpointSetup"'))).toBe(true);
+    expect(importLines.some((line) => line.includes('from "./hermesConnection"') && line.includes("callSessionMethod"))).toBe(true);
+    for (const line of importLines) {
+      expect(line).not.toMatch(/from ["']electron["']/);
+      expect(line).not.toMatch(/from ["']ws["']/);
+      expect(line).not.toMatch(/from ["']node:/);
+    }
+  });
+
+  it("has no console/network/persistence/safeStorage/environment access of any kind", () => {
+    for (const forbidden of [
+      /console\./,
+      /\bfetch\s*\(/,
+      /XMLHttpRequest/,
+      /WebSocket/,
+      /safeStorage/i,
+      /keytar/i,
+      /process\.env/,
+      /require\(/,
+      /localStorage/,
+      /sessionStorage/,
+      /indexedDB/,
+      /from ["']node:fs["']|from ["']fs["']/,
+    ]) {
+      expect(code, `unexpectedly matched: ${forbidden}`).not.toMatch(forbidden);
+    }
+  });
+
+  it("exports exactly the four intended functions, no more", () => {
+    const exportedFns = [...code.matchAll(/export\s+(?:async\s+)?function\s+(\w+)/g)].map((m) => m[1]);
+    expect(exportedFns.sort()).toEqual(["getSessionState", "createSession", "closeSession", "clearSession"].sort());
+  });
+
+  it("getSessionState/createSession/closeSession/clearSession take no parameters at all", () => {
+    expect(code).toMatch(/export function getSessionState\(\): HermesSessionState \{/);
+    expect(code).toMatch(/export async function createSession\(\): Promise<HermesSessionResult> \{/);
+    expect(code).toMatch(/export async function closeSession\(\): Promise<HermesSessionResult> \{/);
+    expect(code).toMatch(/export function clearSession\(\): HermesSessionResult \{/);
+  });
+
+  it("gates createSession() on authorization, endpoint configuration, AND connection — never a parallel/weaker check", () => {
+    expect(code).toMatch(/getAuthorizationState\(\)\.state !== "authorized_memory_only"/);
+    expect(code).toMatch(/endpoint\.kind !== "trusted"/);
+    expect(code).toMatch(/getConnectionState\(\)\.state !== "connected"/);
+  });
+
+  it("sends session.create with a literal empty params object, never a workspace/cwd/path/title/model/provider field", () => {
+    expect(code).toMatch(/callSessionMethod\("session\.create", \{\}\)/);
+  });
+
+  it("sends session.activate and session.close addressed only by the opaque server-issued session_id, never a renderer-suppliable value", () => {
+    expect(code).toMatch(/callSessionMethod\("session\.activate", \{ session_id: sessionId \}\)/);
+    expect(code).toMatch(/callSessionMethod\("session\.close", \{ session_id: sessionId \}\)/);
+  });
+
+  it("never exports a raw session id accessor — activeHermesSessionId itself is never returned by any exported function", () => {
+    expect(code).not.toMatch(/export.*activeHermesSessionId/);
+    // Every exported function's own return type is HermesSessionState/HermesSessionResult —
+    // both proven elsewhere to be `{ state }`-only shapes.
+    const exportedFns = [...code.matchAll(/export\s+(?:async\s+)?function\s+\w+\([^)]*\):\s*(?:Promise<)?(\w+)/g)].map((m) => m[1]);
+    for (const returnType of exportedFns) {
+      expect(["HermesSessionState", "HermesSessionResult"]).toContain(returnType);
+    }
+  });
+
+  it("uses a monotonic generation counter for T-17-style stale-create race protection", () => {
+    expect(code).toMatch(/let generation = 0;/);
+    expect(code).toMatch(/generation !== generationAtStart/);
+    expect(code).toMatch(/let createInFlight = false;/);
+    expect(code).toMatch(/if \(createInFlight\)/);
+  });
+
+  it("clearSession() is the only export other modules call for cross-module cleanup, and it always resets to no_session", () => {
+    const fnBody = /export function clearSession\(\): HermesSessionResult \{[\s\S]*?\n\}/.exec(code)?.[0] ?? "";
+    expect(fnBody).toMatch(/resetToNoSession\(\);/);
+    expect(fnBody).toMatch(/return \{ state: "no_session" \};/);
+  });
+
+  it("is never imported by electron/preload.ts or electron/shared-ipc-contract.ts directly — only main.ts orchestrates it", () => {
+    for (const file of ["preload.ts", "shared-ipc-contract.ts"]) {
+      const otherCode = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", file), "utf8"));
+      expect(otherCode, `${file} unexpectedly imports hermesSession.ts`).not.toMatch(/from ["']\.\/hermesSession["']/);
+    }
+  });
+
+  it("main.ts is the only file that imports electron/hermesSession.ts", () => {
+    const electronDir = path.join(__dirname, "..", "electron");
+    const files = fs.readdirSync(electronDir).filter((f) => f.endsWith(".ts") && f !== "hermesSession.ts");
+    const importers = files.filter((f) => stripComments(fs.readFileSync(path.join(electronDir, f), "utf8")).match(/from ["']\.\/hermesSession["']/));
+    expect(importers).toEqual(["main.ts"]);
+  });
+});
+
+describe("electron/main.ts — D-10 session IPC wiring and cross-module cleanup", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "electron", "main.ts"), "utf8");
+  const stripped = stripComments(source);
+
+  it("registers exactly the three D-10 session IPC handlers, each taking no renderer argument", () => {
+    for (const channel of ["HERMES_GET_SESSION_STATE", "HERMES_CREATE_SESSION", "HERMES_CLOSE_SESSION"]) {
+      expect(stripped).toMatch(new RegExp(`ipcMain\\.handle\\(HERMES_IPC_CHANNELS\\.${channel}, \\(\\) =>`));
+    }
+  });
+
+  it("disconnect, clear-authorization, clear-endpoint-configuration, and before-quit all also call clearSession()", () => {
+    const disconnectHandler = /ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_DISCONNECT, \(\) => \{[\s\S]*?\n  \}\);/.exec(stripped)?.[0] ?? "";
+    expect(disconnectHandler).toMatch(/clearSession\(\);/);
+    const clearAuthHandler = /ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_CLEAR_AUTHORIZATION, \(\) => \{[\s\S]*?\n  \}\);/.exec(stripped)?.[0] ?? "";
+    expect(clearAuthHandler).toMatch(/clearSession\(\);/);
+    const clearEndpointHandler = /ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_CLEAR_ENDPOINT_CONFIGURATION, \(\) => \{[\s\S]*?\n  \}\);/.exec(stripped)?.[0] ?? "";
+    expect(clearEndpointHandler).toMatch(/clearSession\(\);/);
+    const beforeQuitHandler = /app\.on\("before-quit", \(\) => \{[\s\S]*?\n\}\);/.exec(stripped)?.[0] ?? "";
+    expect(beforeQuitHandler).toMatch(/clearSession\(\);/);
+  });
+});
+
+describe("electron/renderer.ts — D-10 session sub-panel wiring", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.ts"), "utf8");
+  const stripped = stripComments(source);
+  const sessionSourceStart = stripped.indexOf("HermesSessionViewState");
+  const sessionSourceEnd = stripped.indexOf("async function initHermesState");
+  const sessionSource = sessionSourceStart >= 0 && sessionSourceEnd > sessionSourceStart ? stripped.slice(sessionSourceStart, sessionSourceEnd) : "";
+
+  it("declares the session sub-panel type/interfaces locally", () => {
+    expect(sessionSourceStart).toBeGreaterThan(-1);
+    expect(sessionSource).toMatch(/interface HermesSessionElements/);
+  });
+
+  it("calls exactly the three D-10 bridge methods — getSessionState, createSession, closeSession", () => {
+    for (const method of ["getSessionState", "createSession", "closeSession"]) {
+      expect(sessionSource).toMatch(new RegExp(`api\\.hermes\\.${method}\\(`));
+    }
+  });
+
+  it("createSession/closeSession are called with no arguments at all", () => {
+    expect(sessionSource).toMatch(/api\.hermes\.createSession\(\)/);
+    expect(sessionSource).toMatch(/api\.hermes\.closeSession\(\)/);
+  });
+
+  it("uses its own independent monotonic request generation, separate from every other sub-panel's", () => {
+    expect(sessionSource).toMatch(/let hermesSessionRequestGeneration = 0;/);
+    expect(sessionSource).toMatch(/requestId !== hermesSessionRequestGeneration/);
+  });
+
+  it("derives its gate states purely from the connection sub-panel's own view state — never opens a new connection itself", () => {
+    expect(sessionSource).toMatch(/async function syncHermesSessionForConnectionView\(connectionView: HermesConnectionViewState\)/);
+    expect(sessionSource).not.toMatch(/new WS\(/);
+    expect(sessionSource).not.toMatch(/api\.hermes\.connect\(/);
+  });
+
+  it("never shows a session id, raw response, endpoint, token, host, port, or socket detail in the session sub-panel", () => {
+    // Word-boundary checks would false-positive on the safe, fixed state-name literal
+    // "endpoint_not_configured" (D-10's own required gate state) — these patterns instead
+    // target actual value access/interpolation, never a bare state-name mention.
+    for (const forbidden of [
+      /statusEl\.textContent = result\./,
+      /statusEl\.textContent = \$\{/,
+      /\btoken\b/i,
+      /endpoint\.\w/i,
+      /\$\{\s*endpoint/i,
+      /\bhost\b/i,
+      /\bport\b/i,
+      /\bsocket\b/i,
+      /sessionId/,
+      /session_id/,
+    ]) {
+      expect(sessionSource).not.toMatch(forbidden);
+    }
+  });
+
+  it("never introduces a send/submit/execute/run/attach action or a provider/model/multimodel/terminal/shell control", () => {
+    for (const forbidden of [
+      /"Send"/,
+      /"Submit"/,
+      /"Run"/,
+      /"Execute"/,
+      /Attach/i,
+      /provider/i,
+      /\bmodel\b/i,
+      /multimodel/i,
+      /terminal/i,
+      /shell/i,
+      /child_process/i,
+    ]) {
+      expect(sessionSource).not.toMatch(forbidden);
+    }
+  });
+
+  it("never logs anything from the session flow", () => {
+    expect(sessionSource).not.toMatch(/console\./);
+  });
+
+  it("the session sub-panel is toggled hidden/shown alongside the connection sub-panel in renderHermesPanel", () => {
+    const panelFnBody = /function renderHermesPanel\(view: HermesViewState\): void \{[\s\S]*?\n\}/.exec(stripped)?.[0] ?? "";
+    expect(panelFnBody).toMatch(/hermes-session-section/);
+    expect(panelFnBody).toMatch(/sessionSection\.hidden = revoking;/);
+  });
+
+  it("the task composer's session-info line reads only a cached ambient state, never calling IPC itself (D-09/D-10 isolation preserved)", () => {
+    const taskSourceStart = stripped.indexOf("type TaskProfile =");
+    const taskSourceEnd = stripped.indexOf("HermesViewState");
+    const taskSource = taskSourceStart >= 0 && taskSourceEnd > taskSourceStart ? stripped.slice(taskSourceStart, taskSourceEnd) : "";
+    const fnBody = /function renderTaskSessionInfo\(\): void \{[\s\S]*?\n\}/.exec(taskSource)?.[0] ?? "";
+    expect(fnBody).not.toBe("");
+    expect(fnBody).not.toMatch(/window\.vyronDesktop/);
+    expect(fnBody).not.toMatch(/api\.hermes/);
+  });
+});
+
+describe("electron/renderer.html — D-10 session sub-panel markup", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
+  const lowerHtml = html.toLowerCase();
+
+  it("declares the session section hidden by default, with the required create/close controls", () => {
+    expect(html).toMatch(/<div id="hermes-session-section"[^>]*\bhidden\b/);
+    expect(html).toMatch(/<button id="hermes-session-create-btn"/);
+    expect(html).toMatch(/<button id="hermes-session-close-btn"[^>]*\bhidden\b/);
+  });
+
+  it("states plainly that no session is active by default, and discloses that creating one never sends the draft/context", () => {
+    expect(lowerHtml).toMatch(/no hermes session is active/);
+  });
+
+  it("the session sub-panel itself contains no chat/prompt/message-history/session-id/attach/provider/model/subagent/terminal/shell/write control", () => {
+    const sectionMatch = html.match(/<div id="hermes-session-section"[\s\S]*?<p id="hermes-session-error"[^>]*><\/p>\s*<\/div>/);
+    expect(sectionMatch).not.toBeNull();
+    const sectionHtml = sectionMatch?.[0] ?? "";
+    for (const forbidden of [
+      /id="hermes-chat/i,
+      /id="hermes-prompt/i,
+      /id="hermes-message/i,
+      /id="hermes-session-id/i,
+      /id="hermes-attach/i,
+      /id="hermes-provider/i,
+      /id="hermes-model/i,
+      /id="hermes-subagent/i,
+      /id="hermes-terminal/i,
+      /id="hermes-shell/i,
+      /<input\b/i,
+      /<form\b/i,
+      /<textarea\b/i,
+    ]) {
+      expect(sectionHtml).not.toMatch(forbidden);
+    }
+  });
+
+  it("the session section is a distinct, separate section from the connection sub-panel, not nested inside it", () => {
+    const connectionIndex = html.indexOf('<div id="hermes-connection-section"');
+    const sessionIndex = html.indexOf('<div id="hermes-session-section"');
+    expect(connectionIndex).toBeGreaterThan(-1);
+    expect(sessionIndex).toBeGreaterThan(-1);
+    expect(connectionIndex).toBeLessThan(sessionIndex);
+  });
+
+  it("the task review surface declares the Hermes session / task sending informational rows, with the required fixed disclosure text", () => {
+    expect(html).toMatch(/<dt>Hermes session<\/dt>/);
+    expect(html).toMatch(/<dd id="task-review-hermes-session">Not created<\/dd>/);
+    expect(html).toMatch(/<dt>Task sending<\/dt>/);
+    expect(html).toMatch(/<dd id="task-review-task-sending">Not available in this build\.<\/dd>/);
   });
 });

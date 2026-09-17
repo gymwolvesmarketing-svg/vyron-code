@@ -166,6 +166,19 @@ interface HermesEndpointConfigurationResult {
   readonly state: HermesEndpointConfigurationOutcomeState;
 }
 
+// VYRON_CODE_V02_D10_EXPLICIT_HERMES_SESSION_CREATION_AUTHORIZATION — duplicated locally for
+// the same reason every other type here is. Carries no session id/raw response/token/endpoint
+// field anywhere.
+type HermesSessionAmbientState = "no_session" | "creating" | "active" | "closing" | "closed" | "unavailable" | "safe_failure";
+
+interface HermesSessionState {
+  readonly state: HermesSessionAmbientState;
+}
+
+interface HermesSessionResult {
+  readonly state: HermesSessionAmbientState;
+}
+
 interface DesktopHermesApi {
   getAvailability(): Promise<HermesAvailability>;
   getAuthorizationState(): Promise<HermesAuthorizationState>;
@@ -177,6 +190,9 @@ interface DesktopHermesApi {
   getEndpointConfigurationState(): Promise<HermesEndpointState>;
   configureEndpoint(request: HermesEndpointConfigurationRequest): Promise<HermesEndpointConfigurationResult>;
   clearEndpointConfiguration(): Promise<HermesEndpointConfigurationResult>;
+  getSessionState(): Promise<HermesSessionState>;
+  createSession(): Promise<HermesSessionResult>;
+  closeSession(): Promise<HermesSessionResult>;
 }
 
 interface DesktopApi {
@@ -1221,6 +1237,21 @@ function handleCloseTaskReview(): void {
   renderTaskReview();
 }
 
+/**
+ * D-10 — a purely informational, always-safe reflection of the Hermes session sub-panel's own
+ * already-fetched state (see `lastKnownHermesSessionAmbientState`'s own doc comment). Never
+ * triggers an IPC call of its own — reads only the cache the session sub-panel already
+ * maintains — and never enables any send/attach/run action; "Task sending" always reads as
+ * unavailable in this build, regardless of session state.
+ */
+function renderTaskSessionInfo(): void {
+  const sessionEl = document.getElementById("task-review-hermes-session");
+  const sendingEl = document.getElementById("task-review-task-sending");
+  if (!sessionEl || !sendingEl) return;
+  sessionEl.textContent = lastKnownHermesSessionAmbientState === "active" ? "Active" : "Not created";
+  sendingEl.textContent = "Not available in this build.";
+}
+
 function renderTaskReview(): void {
   const panel = document.getElementById("task-review");
   if (!panel) return;
@@ -1238,6 +1269,7 @@ function renderTaskReview(): void {
   draftEl.textContent = taskDraftText;
   destinationEl.textContent = "Not configured for sending.";
   networkEl.textContent = "No request will be sent in this build.";
+  renderTaskSessionInfo();
 
   listEl.replaceChildren();
   if (taskContextItems.length === 0) {
@@ -1274,6 +1306,7 @@ function initTaskState(): void {
   renderTaskProfiles();
   renderTaskDraftStatus();
   renderTaskContext();
+  renderTaskSessionInfo();
   renderTaskReview();
 }
 
@@ -1401,6 +1434,11 @@ function renderHermesPanel(view: HermesViewState): void {
   // rather than this function assuming "ready_to_connect" and possibly stomping a real value.
   const connectionSection = document.getElementById("hermes-connection-section");
   if (connectionSection) connectionSection.hidden = revoking;
+  // D-10 session sub-panel is likewise only ever visible while authorized, hidden again on
+  // "revoking" — its own CONTENT is never set here either; syncHermesSessionForConnectionView
+  // (called from the end of renderHermesConnection) decides what it should show next.
+  const sessionSection = document.getElementById("hermes-session-section");
+  if (sessionSection) sessionSection.hidden = revoking;
 }
 
 function handleOpenHermesPanel(): void {
@@ -1831,6 +1869,10 @@ function renderHermesConnection(view: HermesConnectionViewState): void {
       errorEl.textContent = "Connection could not be completed. Please try again.";
       break;
   }
+
+  // D-10 — keeps the session sub-panel's own gate state in sync with every connection state
+  // change, from every existing call site, without each needing its own explicit call.
+  void syncHermesSessionForConnectionView(view);
 }
 
 async function handleConnectHermes(): Promise<void> {
@@ -1886,6 +1928,222 @@ async function handleDisconnectHermes(): Promise<void> {
   renderHermesConnection("disconnected");
 }
 
+// ---------------------------------------------------------------------------------------
+// D-10 session sub-panel — VYRON_CODE_V02_D10_EXPLICIT_HERMES_SESSION_CREATION_AUTHORIZATION.
+// Visible only once authorized (same toggle as the connection sub-panel above). Its own gate
+// states ("endpoint_not_configured"/"not_connected") are derived entirely from the connection
+// sub-panel's own already-tracked view state — see `syncHermesSessionForConnectionView`, called
+// from the end of `renderHermesConnection` itself, so every existing call site that already
+// updates connection state (initHermesState, handleConnectHermes, handleDisconnectHermes, and
+// the clear-authorization/clear-endpoint-configuration handlers via their own disconnect calls)
+// keeps the session sub-panel in sync for free, without each needing its own explicit call.
+// createSession()/closeSession() are called with zero arguments — no session id, title,
+// model/provider, workspace/cwd/path, or task draft/profile/context value is ever available to
+// pass, since none of those exist anywhere in this section's own local state.
+// ---------------------------------------------------------------------------------------
+type HermesSessionViewState =
+  | "endpoint_not_configured"
+  | "not_connected"
+  | "no_session"
+  | "creating"
+  | "active"
+  | "closing"
+  | "closed"
+  | "unavailable"
+  | "safe_failure";
+
+/** Monotonic request generation — the same T-17-style guard used throughout this file's other
+ * Hermes sub-panels, applied independently here. */
+let hermesSessionRequestGeneration = 0;
+
+/** Read-only cache of the last known session ambient state, for the Task section's own
+ * informational display only (see `renderTaskSessionInfo`) — mirrors the established
+ * `currentWorkspaceDisplayName`/`lastGitSummaryForContext` read-only-cache pattern. Never used
+ * to gate, enable, or drive any task-composer action, and never sent anywhere. */
+let lastKnownHermesSessionAmbientState: HermesSessionAmbientState = "unavailable";
+
+interface HermesSessionElements {
+  readonly statusEl: HTMLElement;
+  readonly createBtn: HTMLButtonElement;
+  readonly closeBtn: HTMLButtonElement;
+  readonly noteEl: HTMLElement;
+  readonly errorEl: HTMLElement;
+}
+
+function getHermesSessionElements(): HermesSessionElements | null {
+  const statusEl = document.getElementById("hermes-session-status");
+  const createBtn = document.getElementById("hermes-session-create-btn");
+  const closeBtn = document.getElementById("hermes-session-close-btn");
+  const noteEl = document.getElementById("hermes-session-note");
+  const errorEl = document.getElementById("hermes-session-error");
+  if (
+    !(statusEl instanceof HTMLElement) ||
+    !(createBtn instanceof HTMLButtonElement) ||
+    !(closeBtn instanceof HTMLButtonElement) ||
+    !(noteEl instanceof HTMLElement) ||
+    !(errorEl instanceof HTMLElement)
+  ) {
+    return null;
+  }
+  return { statusEl, createBtn, closeBtn, noteEl, errorEl };
+}
+
+/**
+ * Renders one of the required D-10 session states using only fixed, safe, hand-written string
+ * literals — never a session id, raw protocol detail, or anything beyond this file's own
+ * required copy. No state here ever mentions a session identifier or raw response.
+ */
+function renderHermesSession(view: HermesSessionViewState): void {
+  const els = getHermesSessionElements();
+  if (!els) return;
+  const { statusEl, createBtn, closeBtn, noteEl, errorEl } = els;
+
+  errorEl.hidden = true;
+  errorEl.textContent = "";
+  noteEl.hidden = true;
+  noteEl.textContent = "";
+  createBtn.disabled = false;
+  createBtn.textContent = "Create Hermes session";
+  closeBtn.disabled = false;
+  closeBtn.textContent = "Close Hermes session";
+
+  lastKnownHermesSessionAmbientState = view === "endpoint_not_configured" || view === "not_connected" ? "unavailable" : view;
+  renderTaskSessionInfo();
+
+  switch (view) {
+    case "endpoint_not_configured":
+      statusEl.textContent = "Configure a local Hermes endpoint before creating a session.";
+      createBtn.hidden = true;
+      closeBtn.hidden = true;
+      break;
+    case "not_connected":
+      statusEl.textContent = "Connect to Hermes before creating a session.";
+      createBtn.hidden = true;
+      closeBtn.hidden = true;
+      break;
+    case "no_session":
+      statusEl.textContent = "No Hermes session is active.";
+      createBtn.hidden = false;
+      closeBtn.hidden = true;
+      noteEl.hidden = false;
+      noteEl.textContent = "Creating a session does not send your task draft or workspace context.";
+      break;
+    case "creating":
+      statusEl.textContent = "Creating session…";
+      createBtn.hidden = true;
+      closeBtn.hidden = true;
+      break;
+    case "active":
+      statusEl.textContent = "Hermes session active.";
+      createBtn.hidden = true;
+      closeBtn.hidden = false;
+      noteEl.hidden = false;
+      noteEl.textContent = "Task sending is not available in this build.";
+      break;
+    case "closing":
+      statusEl.textContent = "Closing session…";
+      createBtn.hidden = true;
+      closeBtn.hidden = false;
+      closeBtn.disabled = true;
+      closeBtn.textContent = "Closing…";
+      break;
+    case "closed":
+      statusEl.textContent = "No Hermes session is active.";
+      createBtn.hidden = false;
+      closeBtn.hidden = true;
+      break;
+    case "unavailable":
+      statusEl.textContent = "Hermes session creation is unavailable in this build.";
+      createBtn.hidden = true;
+      closeBtn.hidden = true;
+      break;
+    case "safe_failure":
+      statusEl.textContent = "No Hermes session is active.";
+      createBtn.hidden = false;
+      closeBtn.hidden = true;
+      errorEl.hidden = false;
+      errorEl.textContent = "Session creation could not be completed. Please try again.";
+      break;
+  }
+}
+
+/** Derives and renders the session sub-panel's own state purely from the connection
+ * sub-panel's already-current view state — never opens a new connection, never reads endpoint/
+ * token/credential itself. Only fetches the real session state (`api.hermes.getSessionState()`)
+ * once the connection is genuinely `"connected"`. */
+async function syncHermesSessionForConnectionView(connectionView: HermesConnectionViewState): Promise<void> {
+  if (connectionView === "endpoint_not_configured") {
+    renderHermesSession("endpoint_not_configured");
+    return;
+  }
+  if (connectionView !== "connected") {
+    renderHermesSession("not_connected");
+    return;
+  }
+  const api = window.vyronDesktop;
+  if (!api) {
+    renderHermesSession("unavailable");
+    return;
+  }
+  const requestId = ++hermesSessionRequestGeneration;
+  try {
+    const result = await api.hermes.getSessionState();
+    if (requestId !== hermesSessionRequestGeneration) return;
+    if (result.state === "unavailable") {
+      renderHermesSession("not_connected");
+    } else {
+      renderHermesSession(result.state);
+    }
+  } catch {
+    if (requestId !== hermesSessionRequestGeneration) return;
+    renderHermesSession("unavailable");
+  }
+}
+
+async function handleCreateHermesSession(): Promise<void> {
+  const api = window.vyronDesktop;
+  if (!api) {
+    renderHermesSession("unavailable");
+    return;
+  }
+  const requestId = ++hermesSessionRequestGeneration;
+  renderHermesSession("creating");
+  try {
+    const result = await api.hermes.createSession();
+    if (requestId !== hermesSessionRequestGeneration) return;
+    if (result.state === "active") {
+      renderHermesSession("active");
+    } else if (result.state === "no_session" || result.state === "closed") {
+      renderHermesSession("no_session");
+    } else if (result.state === "unavailable") {
+      renderHermesSession("unavailable");
+    } else {
+      renderHermesSession("safe_failure");
+    }
+  } catch {
+    if (requestId !== hermesSessionRequestGeneration) return;
+    renderHermesSession("safe_failure");
+  }
+}
+
+async function handleCloseHermesSession(): Promise<void> {
+  const api = window.vyronDesktop;
+  if (!api) {
+    renderHermesSession("unavailable");
+    return;
+  }
+  // Supersedes any in-flight createSession() immediately, before the IPC call even starts.
+  hermesSessionRequestGeneration++;
+  renderHermesSession("closing");
+  try {
+    await api.hermes.closeSession();
+  } catch {
+    // Close must always leave the UI in a safe, no-session-looking state, even if the IPC call
+    // itself rejected.
+  }
+  renderHermesSession("no_session");
+}
+
 async function initHermesState(api: DesktopApi): Promise<void> {
   try {
     const availability = await api.hermes.getAvailability();
@@ -1923,6 +2181,8 @@ function wireHermesControls(): void {
   }
   document.getElementById("hermes-connect-btn")?.addEventListener("click", () => void handleConnectHermes());
   document.getElementById("hermes-disconnect-btn")?.addEventListener("click", () => void handleDisconnectHermes());
+  document.getElementById("hermes-session-create-btn")?.addEventListener("click", () => void handleCreateHermesSession());
+  document.getElementById("hermes-session-close-btn")?.addEventListener("click", () => void handleCloseHermesSession());
 }
 
 // ---------------------------------------------------------------------------------------

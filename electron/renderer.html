@@ -88,8 +88,9 @@
         Visible only once authorized. No endpoint/host/port editing control exists here — the
         one place an endpoint can ever be entered is the dedicated D-08E panel above, which
         only ever submits it to the main process; this section itself never accepts, displays,
-        or edits any endpoint value. No session, chat, prompt, context, or provider/model
-        control exists here either.
+        or edits any endpoint value. No chat, prompt, context, or provider/model control exists
+        here — the D-10 session sub-panel immediately below is a distinct, separate section, not
+        nested inside this one.
       -->
       <div id="hermes-connection-section" hidden>
         <p id="hermes-connection-status">Hermes connection has not been attempted.</p>
@@ -98,6 +99,26 @@
           <button id="hermes-disconnect-btn" type="button" hidden>Disconnect</button>
         </div>
         <p id="hermes-connection-error" class="muted" hidden></p>
+      </div>
+
+      <!--
+        D-10 session sub-panel — VYRON_CODE_V02_D10_EXPLICIT_HERMES_SESSION_CREATION_AUTHORIZATION.
+        Visible only once authorized (same toggle as the connection sub-panel above). No chat
+        transcript, prompt composer, message history, assistant response, session id/metadata,
+        context/file/Git/search attach, tool activity, provider/model selector, subagent,
+        multimodel, terminal, shell, or write/save/commit/push/pull/fetch control exists here or
+        anywhere else on this page — creating a session never sends the task draft or any
+        selected context (see the Task section below, whose own review surface only ever shows
+        this session's safe state, never a way to send anything to it).
+      -->
+      <div id="hermes-session-section" hidden>
+        <p id="hermes-session-status">No Hermes session is active.</p>
+        <div class="hermes-actions">
+          <button id="hermes-session-create-btn" type="button">Create Hermes session</button>
+          <button id="hermes-session-close-btn" type="button" hidden>Close Hermes session</button>
+        </div>
+        <p id="hermes-session-note" class="muted" hidden></p>
+        <p id="hermes-session-error" class="muted" hidden></p>
       </div>
     </section>
 
@@ -211,6 +232,10 @@
           <dd id="task-review-destination">Not configured for sending.</dd>
           <dt>Network</dt>
           <dd id="task-review-network">No request will be sent in this build.</dd>
+          <dt>Hermes session</dt>
+          <dd id="task-review-hermes-session">Not created</dd>
+          <dt>Task sending</dt>
+          <dd id="task-review-task-sending">Not available in this build.</dd>
         </dl>
         <div class="task-actions">
           <button id="task-review-back-btn" type="button">Back to draft</button>

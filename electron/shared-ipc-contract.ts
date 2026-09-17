@@ -244,10 +244,28 @@ export interface HermesEndpointConfigurationResult {
 }
 
 /**
- * D-08B + D-08C + D-08E's full Hermes bridge — exactly ten methods. `connect`/`disconnect`/
- * `clearEndpointConfiguration` take no arguments at all; `configureEndpoint` takes exactly one
- * `endpoint` string field. No endpoint/host/port/token/prompt/session ID/workspace data or
- * options object of any kind is ever accepted from or returned to the renderer.
+ * D-10 session lifecycle state — VYRON_CODE_V02_D10_EXPLICIT_HERMES_SESSION_CREATION_AUTHORIZATION.
+ * Never carries a session id, a raw session.create/activate response, a token, an endpoint, or
+ * any protocol detail — only this safe state enum. See electron/hermesSession.ts's own header
+ * for the full evidence trail behind what `createSession()`/`closeSession()` can produce and
+ * exactly which two closed-vocabulary RPC calls they send.
+ */
+export type HermesSessionAmbientState = "no_session" | "creating" | "active" | "closing" | "closed" | "unavailable" | "safe_failure";
+
+export interface HermesSessionState {
+  readonly state: HermesSessionAmbientState;
+}
+
+export interface HermesSessionResult {
+  readonly state: HermesSessionAmbientState;
+}
+
+/**
+ * D-08B + D-08C + D-08E + D-10's full Hermes bridge — exactly thirteen methods.
+ * `connect`/`disconnect`/`clearEndpointConfiguration`/`getSessionState`/`createSession`/
+ * `closeSession` take no arguments at all; `configureEndpoint` takes exactly one `endpoint`
+ * string field. No endpoint/host/port/token/prompt/session ID/workspace data or options object
+ * of any kind is ever accepted from or returned to the renderer.
  */
 export interface DesktopHermesApi {
   getAvailability(): Promise<HermesAvailability>;
@@ -260,6 +278,9 @@ export interface DesktopHermesApi {
   getEndpointConfigurationState(): Promise<HermesEndpointState>;
   configureEndpoint(request: HermesEndpointConfigurationRequest): Promise<HermesEndpointConfigurationResult>;
   clearEndpointConfiguration(): Promise<HermesEndpointConfigurationResult>;
+  getSessionState(): Promise<HermesSessionState>;
+  createSession(): Promise<HermesSessionResult>;
+  closeSession(): Promise<HermesSessionResult>;
 }
 
 /**
@@ -328,6 +349,9 @@ export const HERMES_IPC_CHANNELS = {
   HERMES_GET_ENDPOINT_CONFIGURATION_STATE: "hermes:getEndpointConfigurationState",
   HERMES_CONFIGURE_ENDPOINT: "hermes:configureEndpoint",
   HERMES_CLEAR_ENDPOINT_CONFIGURATION: "hermes:clearEndpointConfiguration",
+  HERMES_GET_SESSION_STATE: "hermes:getSessionState",
+  HERMES_CREATE_SESSION: "hermes:createSession",
+  HERMES_CLOSE_SESSION: "hermes:closeSession",
 } as const;
 
 export type HermesIpcChannel = (typeof HERMES_IPC_CHANNELS)[keyof typeof HERMES_IPC_CHANNELS];

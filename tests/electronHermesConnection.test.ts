@@ -50,8 +50,10 @@ const { MockWebSocket, getMockInstances, resetMockInstances } = vi.hoisted(() =>
     }
 
     send(): void {
-      // Never actually called by electron/hermesConnection.ts — present only to match the
-      // real `ws` client's shape.
+      // Not exercised by this file's own tests (connect()/disconnect() never call .send() —
+      // only D-10's callSessionMethod() does; see tests/electronHermesSession.test.ts for a
+      // MockWebSocket that records sent frames). Present here only to match the real `ws`
+      // client's shape for TypeScript purposes.
     }
   }
 

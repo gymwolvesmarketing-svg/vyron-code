@@ -173,6 +173,19 @@ interface HermesEndpointConfigurationResult {
   readonly state: HermesEndpointConfigurationOutcomeState;
 }
 
+// VYRON_CODE_V02_D10_EXPLICIT_HERMES_SESSION_CREATION_AUTHORIZATION — duplicated locally for the
+// same reason every other type here is. Carries no session id/raw response/token/endpoint field
+// anywhere.
+type HermesSessionAmbientState = "no_session" | "creating" | "active" | "closing" | "closed" | "unavailable" | "safe_failure";
+
+interface HermesSessionState {
+  readonly state: HermesSessionAmbientState;
+}
+
+interface HermesSessionResult {
+  readonly state: HermesSessionAmbientState;
+}
+
 interface DesktopHermesApi {
   getAvailability(): Promise<HermesAvailability>;
   getAuthorizationState(): Promise<HermesAuthorizationState>;
@@ -184,6 +197,9 @@ interface DesktopHermesApi {
   getEndpointConfigurationState(): Promise<HermesEndpointState>;
   configureEndpoint(request: HermesEndpointConfigurationRequest): Promise<HermesEndpointConfigurationResult>;
   clearEndpointConfiguration(): Promise<HermesEndpointConfigurationResult>;
+  getSessionState(): Promise<HermesSessionState>;
+  createSession(): Promise<HermesSessionResult>;
+  closeSession(): Promise<HermesSessionResult>;
 }
 
 interface DesktopApi {
@@ -229,6 +245,9 @@ const HERMES_DISCONNECT_CHANNEL = "hermes:disconnect";
 const HERMES_GET_ENDPOINT_CONFIGURATION_STATE_CHANNEL = "hermes:getEndpointConfigurationState";
 const HERMES_CONFIGURE_ENDPOINT_CHANNEL = "hermes:configureEndpoint";
 const HERMES_CLEAR_ENDPOINT_CONFIGURATION_CHANNEL = "hermes:clearEndpointConfiguration";
+const HERMES_GET_SESSION_STATE_CHANNEL = "hermes:getSessionState";
+const HERMES_CREATE_SESSION_CHANNEL = "hermes:createSession";
+const HERMES_CLOSE_SESSION_CHANNEL = "hermes:closeSession";
 
 const vyronDesktop: DesktopApi = {
   platform: "desktop",
@@ -277,6 +296,11 @@ const vyronDesktop: DesktopApi = {
     getEndpointConfigurationState: () => ipcRenderer.invoke(HERMES_GET_ENDPOINT_CONFIGURATION_STATE_CHANNEL),
     configureEndpoint: (request: HermesEndpointConfigurationRequest) => ipcRenderer.invoke(HERMES_CONFIGURE_ENDPOINT_CHANNEL, request),
     clearEndpointConfiguration: () => ipcRenderer.invoke(HERMES_CLEAR_ENDPOINT_CONFIGURATION_CHANNEL),
+    // D-10 — no argument of any kind; no session id/title/model/provider/workspace/context
+    // field can ever be forwarded through these three closures.
+    getSessionState: () => ipcRenderer.invoke(HERMES_GET_SESSION_STATE_CHANNEL),
+    createSession: () => ipcRenderer.invoke(HERMES_CREATE_SESSION_CHANNEL),
+    closeSession: () => ipcRenderer.invoke(HERMES_CLOSE_SESSION_CHANNEL),
   },
 };
 

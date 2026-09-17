@@ -54,6 +54,7 @@ import {
   configureEndpoint,
   clearEndpointConfiguration,
 } from "./hermesEndpointSetup";
+import { getSessionState, createSession, closeSession, clearSession } from "./hermesSession";
 
 /**
  * Explicit, disabled-by-default opt-in for the lifecycle diagnostics below —
@@ -193,25 +194,42 @@ function registerHermesIpcHandlers(): void {
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_AUTHORIZATION, () => {
     const result = clearHermesAuthorization();
     disconnectHermes();
+    // D-10 — clearing authorization also clears any locally-tracked Hermes session, for the
+    // same enforced-guarantee reason disconnect() already is: a session cannot genuinely
+    // remain usable once its own connection is gone.
+    clearSession();
     return result;
   });
   // D-08C/D-08F — connect/disconnect take no arguments at all; see electron/hermesConnection.ts's
   // own header for exactly what "connected" means and the full evidence trail behind it.
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_CONNECTION_STATE, () => getConnectionState());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CONNECT, () => connectHermes());
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_DISCONNECT, () => disconnectHermes());
+  // D-10 — disconnecting also clears any locally-tracked Hermes session at the IPC boundary
+  // itself, not merely as a renderer-side courtesy.
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_DISCONNECT, () => {
+    const result = disconnectHermes();
+    clearSession();
+    return result;
+  });
   // D-08E — configureEndpoint's raw request is passed straight through unexamined, exactly as
   // electron/hermesEndpointSetup.ts's own isValidRequestShape expects; no second, weaker, or
   // divergent validation exists here. clearEndpointConfiguration takes no arguments.
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_ENDPOINT_CONFIGURATION_STATE, () => getEndpointConfigurationState());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CONFIGURE_ENDPOINT, (_event, request: unknown) => configureEndpoint(request));
-  // D-08F — clearing the endpoint configuration also disconnects any live/in-flight Hermes
-  // connection at the IPC boundary itself, for the same enforced-guarantee reason as above.
+  // D-08F/D-10 — clearing the endpoint configuration also disconnects any live/in-flight Hermes
+  // connection and clears any locally-tracked session, for the same enforced-guarantee reason.
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_ENDPOINT_CONFIGURATION, () => {
     const result = clearEndpointConfiguration();
     disconnectHermes();
+    clearSession();
     return result;
   });
+  // D-10 — getSessionState/createSession/closeSession take no arguments at all; see
+  // electron/hermesSession.ts's own header for the full evidence trail and exactly what
+  // createSession() sends.
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_SESSION_STATE, () => getSessionState());
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CREATE_SESSION, () => createSession());
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLOSE_SESSION, () => closeSession());
 }
 
 /**
@@ -321,6 +339,9 @@ app.on("before-quit", () => {
   // rather than relying on the OS to tear down the socket as a side effect of process death.
   // disconnectHermes() is already idempotent/safe to call even when nothing is connected.
   disconnectHermes();
+  // D-10 — clears any locally-tracked Hermes session for the same reason; clearSession() is
+  // likewise idempotent/safe to call even when no session was ever created.
+  clearSession();
 });
 app.on("will-quit", () => logLifecycle("will-quit"));
 // `quit` fires AFTER the app has finished quitting, immediately before the process itself
