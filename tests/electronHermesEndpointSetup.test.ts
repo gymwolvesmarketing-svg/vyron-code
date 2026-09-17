@@ -3,10 +3,10 @@ import { getEndpointConfigurationState, configureEndpoint, clearEndpointConfigur
 
 // Every endpoint value below is an explicit, obviously-fake sample — never a real Hermes
 // deployment target, never read from .env.local/process.env, never a real running service.
-// VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION explicitly forbids any
-// network/DNS/TCP/WebSocket activity in this task; none is used, attempted, or possible here —
+// VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION explicitly forbids any network/DNS/
+// TCP/HTTP activity in this task; none is used, attempted, or possible here —
 // configureEndpoint() performs only in-memory string/URL validation, never I/O.
-const FAKE_LOOPBACK_ENDPOINT = "ws://127.0.0.1:19130/api/ws";
+const FAKE_LOOPBACK_ENDPOINT = "http://127.0.0.1:19130";
 
 beforeEach(() => {
   // Reset the module's in-memory configuration between tests via the real, exported
@@ -74,8 +74,8 @@ describe("configureEndpoint — the single narrow endpoint-submission boundary",
     expect(getEndpointConfigurationState().state).toBe("not_configured");
   });
 
-  it("rejects a request carrying token/session/prompt-shaped fields instead of endpoint", async () => {
-    expect(await configureEndpoint({ token: "fake-value" })).toEqual({ state: "invalid_configuration" });
+  it("rejects a request carrying key/session/prompt-shaped fields instead of endpoint", async () => {
+    expect(await configureEndpoint({ key: "fake-value" })).toEqual({ state: "invalid_configuration" });
     expect(await configureEndpoint({ sessionId: "fake-session" })).toEqual({ state: "invalid_configuration" });
     expect(await configureEndpoint({ prompt: "hello" })).toEqual({ state: "invalid_configuration" });
   });
@@ -89,11 +89,11 @@ describe("configureEndpoint — the single narrow endpoint-submission boundary",
   });
 
   it("rejects an endpoint containing control characters", async () => {
-    expect(await configureEndpoint({ endpoint: `ws://127.0.0.1:19130/api\x00/ws` })).toEqual({ state: "invalid_configuration" });
+    expect(await configureEndpoint({ endpoint: `http://127.0.0.1:19130/\x00` })).toEqual({ state: "invalid_configuration" });
   });
 
   it("rejects an oversized endpoint (over the 2048-character bound)", async () => {
-    const oversized = "ws://127.0.0.1:19130/" + "a".repeat(2100);
+    const oversized = "http://127.0.0.1:19130/" + "a".repeat(2100);
     expect(await configureEndpoint({ endpoint: oversized })).toEqual({ state: "invalid_configuration" });
   });
 
@@ -101,40 +101,63 @@ describe("configureEndpoint — the single narrow endpoint-submission boundary",
     expect(await configureEndpoint({ endpoint: "not a url at all" })).toEqual({ state: "invalid_configuration" });
   });
 
-  it("rejects an unsupported scheme (http)", async () => {
-    expect(await configureEndpoint({ endpoint: "http://127.0.0.1:19130/api/ws" })).toEqual({ state: "policy_rejected" });
+  it("rejects an unsupported scheme (ws) — the retired dashboard-socket scheme is no longer accepted", async () => {
+    expect(await configureEndpoint({ endpoint: "ws://127.0.0.1:19130" })).toEqual({ state: "policy_rejected" });
+  });
+
+  it("rejects an unsupported scheme (wss)", async () => {
+    expect(await configureEndpoint({ endpoint: "wss://127.0.0.1:19130" })).toEqual({ state: "policy_rejected" });
+  });
+
+  it("rejects an unsupported scheme (https) — only http: is accepted this milestone", async () => {
+    expect(await configureEndpoint({ endpoint: "https://127.0.0.1:19130" })).toEqual({ state: "policy_rejected" });
   });
 
   it("rejects URL userinfo", async () => {
-    expect(await configureEndpoint({ endpoint: "ws://user:pass@127.0.0.1:19130/api/ws" })).toEqual({ state: "policy_rejected" });
+    expect(await configureEndpoint({ endpoint: "http://user:pass@127.0.0.1:19130" })).toEqual({ state: "policy_rejected" });
   });
 
   it("rejects a query string", async () => {
-    expect(await configureEndpoint({ endpoint: "ws://127.0.0.1:19130/api/ws?token=fake" })).toEqual({ state: "policy_rejected" });
+    expect(await configureEndpoint({ endpoint: "http://127.0.0.1:19130?key=fake" })).toEqual({ state: "policy_rejected" });
   });
 
   it("rejects a fragment", async () => {
-    expect(await configureEndpoint({ endpoint: "ws://127.0.0.1:19130/api/ws#frag" })).toEqual({ state: "policy_rejected" });
+    expect(await configureEndpoint({ endpoint: "http://127.0.0.1:19130#frag" })).toEqual({ state: "policy_rejected" });
   });
 
   it("rejects a disallowed non-loopback host", async () => {
-    expect(await configureEndpoint({ endpoint: "ws://203.0.113.5:19130/api/ws" })).toEqual({ state: "policy_rejected" });
+    expect(await configureEndpoint({ endpoint: "http://203.0.113.5:19130" })).toEqual({ state: "policy_rejected" });
   });
 
   it("rejects a wildcard bind address (0.0.0.0)", async () => {
-    expect(await configureEndpoint({ endpoint: "ws://0.0.0.0:19130/api/ws" })).toEqual({ state: "policy_rejected" });
+    expect(await configureEndpoint({ endpoint: "http://0.0.0.0:19130" })).toEqual({ state: "policy_rejected" });
   });
 
   it("rejects a link-local address", async () => {
-    expect(await configureEndpoint({ endpoint: "ws://169.254.1.1:19130/api/ws" })).toEqual({ state: "policy_rejected" });
+    expect(await configureEndpoint({ endpoint: "http://169.254.1.1:19130" })).toEqual({ state: "policy_rejected" });
   });
 
   it("rejects a trailing-dot hostname form (not exactly 'localhost')", async () => {
-    expect(await configureEndpoint({ endpoint: "ws://localhost.:19130/api/ws" })).toEqual({ state: "policy_rejected" });
+    expect(await configureEndpoint({ endpoint: "http://localhost.:19130" })).toEqual({ state: "policy_rejected" });
   });
 
   it("rejects a subdomain-trick hostname that merely starts with a loopback-looking string", async () => {
-    expect(await configureEndpoint({ endpoint: "ws://127.0.0.1.example.invalid:19130/api/ws" })).toEqual({ state: "policy_rejected" });
+    expect(await configureEndpoint({ endpoint: "http://127.0.0.1.example.invalid:19130" })).toEqual({ state: "policy_rejected" });
+  });
+
+  it("rejects a disallowed pathname — anything other than empty, '/', or '/v1'", async () => {
+    for (const path of ["/api/ws", "/v1/chat/completions", "/health", "/v2"]) {
+      const result = await configureEndpoint({ endpoint: `http://127.0.0.1:19130${path}` });
+      expect(result, `path ${path} should be rejected`).toEqual({ state: "policy_rejected" });
+    }
+  });
+
+  it("accepts every permitted pathname shape — empty, '/', and '/v1'", async () => {
+    for (const path of ["", "/", "/v1"]) {
+      const result = await configureEndpoint({ endpoint: `http://127.0.0.1:19130${path}` });
+      expect(result, `path "${path}" should be accepted`).toEqual({ state: "configured_memory_only" });
+      clearEndpointConfiguration();
+    }
   });
 
   it("safely accepts (not bypasses) encoded/shorthand IPv4 forms that the URL parser itself normalizes to loopback", async () => {
@@ -142,7 +165,7 @@ describe("configureEndpoint — the single narrow endpoint-submission boundary",
     // "127.0.0.1" before this module's exact-match host check ever runs — confirmed via a
     // direct Node check, not assumed. A trick encoding of any OTHER address would normalize to
     // that other address's own canonical form and be correctly rejected instead.
-    for (const form of ["ws://0x7f000001:19130/api/ws", "ws://2130706433:19130/api/ws", "ws://127.1:19130/api/ws"]) {
+    for (const form of ["http://0x7f000001:19130", "http://2130706433:19130", "http://127.1:19130"]) {
       const result = await configureEndpoint({ endpoint: form });
       expect(result, `expected ${form} to be accepted as loopback`).toEqual({ state: "configured_memory_only" });
       clearEndpointConfiguration();
@@ -150,26 +173,17 @@ describe("configureEndpoint — the single narrow endpoint-submission boundary",
   });
 
   it("rejects an endpoint with no port at all", async () => {
-    expect(await configureEndpoint({ endpoint: "ws://127.0.0.1/api/ws" })).toEqual({ state: "invalid_configuration" });
+    expect(await configureEndpoint({ endpoint: "http://127.0.0.1" })).toEqual({ state: "invalid_configuration" });
   });
 
   it("rejects an endpoint with an explicit zero port", async () => {
-    expect(await configureEndpoint({ endpoint: "ws://127.0.0.1:0/api/ws" })).toEqual({ state: "invalid_configuration" });
-  });
-
-  it("rejects an endpoint whose path exceeds the 512-character bound", async () => {
-    const longPath = "ws://127.0.0.1:19130/" + "a".repeat(600);
-    expect(await configureEndpoint({ endpoint: longPath })).toEqual({ state: "invalid_configuration" });
-  });
-
-  it("accepts wss as well as ws", async () => {
-    expect(await configureEndpoint({ endpoint: "wss://127.0.0.1:19130/api/ws" })).toEqual({ state: "configured_memory_only" });
+    expect(await configureEndpoint({ endpoint: "http://127.0.0.1:0" })).toEqual({ state: "invalid_configuration" });
   });
 
   it("a later successful call replaces (not merges with) a prior configuration", async () => {
-    await configureEndpoint({ endpoint: "ws://127.0.0.1:19130/api/ws" });
+    await configureEndpoint({ endpoint: "http://127.0.0.1:19130" });
     expect(getEndpointConfigurationState().state).toBe("configured_memory_only");
-    const second = await configureEndpoint({ endpoint: "ws://localhost:19131/api/ws" });
+    const second = await configureEndpoint({ endpoint: "http://localhost:19131" });
     expect(second.state).toBe("configured_memory_only");
     expect(getEndpointConfigurationState().state).toBe("configured_memory_only");
   });
@@ -232,6 +246,7 @@ describe("getConfiguredEndpoint — main-process-internal accessor, never render
     if (endpoint?.kind === "trusted") {
       expect(endpoint.url).toBeInstanceOf(URL);
       expect(endpoint.url.hostname).toBe("127.0.0.1");
+      expect(endpoint.transport).toBe("http");
     }
   });
 

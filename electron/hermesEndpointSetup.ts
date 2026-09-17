@@ -1,28 +1,32 @@
 /**
- * Main-process-only, memory-only Hermes endpoint configuration service —
- * VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION.
+ * Main-process-only, memory-only Hermes API Server endpoint configuration service —
+ * originally VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION, re-scoped by
+ * VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION away from the Hermes dashboard's
+ * internal WebSocket surface onto the officially documented Hermes API Server (see
+ * electron/hermesEndpoint.ts's own header and electron/hermesApiServer.ts's own header for the
+ * full evidence trail behind this change).
  *
- * Implements Option B from VYRON_CODE_V02_D08D_TRUSTED_ENDPOINT_SOURCE_DECISION.md: an
- * explicit, user-initiated, memory-only local Hermes endpoint. The user may submit exactly one
- * candidate endpoint string; it is validated entirely in this process, held only in a private
- * module-scope variable, and is cleared on explicit revoke or process exit. No persistence of
- * any kind — no `localStorage`/`sessionStorage`/IndexedDB/SQLite/JSON file/config file/
- * registry/preferences/`safeStorage`/keychain/Credential Manager/environment variable/command
- * line/clipboard is ever written to or read from by this module (none of those APIs are
- * imported or reachable — see the import list below, exactly two, both local).
+ * Implements the same explicit, user-initiated, memory-only local endpoint model as before: the
+ * user may submit exactly one candidate endpoint string; it is validated entirely in this
+ * process, held only in a private module-scope variable, and is cleared on explicit revoke or
+ * process exit. No persistence of any kind — no `localStorage`/`sessionStorage`/IndexedDB/
+ * SQLite/JSON file/config file/registry/preferences/`safeStorage`/keychain/Credential Manager/
+ * environment variable/command line/clipboard is ever written to or read from by this module
+ * (none of those APIs are imported or reachable — see the import list below, exactly two, both
+ * local).
  *
  * Reuses electron/hermesEndpoint.ts's `validateEndpointCandidate` UNCHANGED — no parallel or
- * weaker validation exists here. This module's own job is narrower: turn a renderer-submitted
- * raw request into the single `{endpointId, url, hostPolicy: "loopback-only"}` candidate shape
- * that validator already accepts, apply the two additional bounds this authorization's own
- * policy requires beyond that engine (a non-empty, non-zero port; a bounded path length), and
- * hold the result in memory. `hostPolicy` is always fixed to `"loopback-only"` here — Option B
- * never offers the user an `"explicit-approved-host"` choice, consistent with
- * VYRON_CODE_V02_D08D_ENDPOINT_SOURCE_OPTION_MATRIX.md's finding that no non-loopback Hermes
+ * weaker validation exists here. That shared engine now owns every policy bound this module
+ * used to enforce a second time (a non-empty, non-zero port; a closed pathname set of `""`,
+ * `"/"`, or `"/v1"`) — so this module's own job is narrower still: turn a renderer-submitted raw
+ * request into the single `{endpointId, url, hostPolicy: "loopback-only"}` candidate shape that
+ * validator already accepts, apply the one input-size bound that belongs at THIS layer (the raw
+ * pre-parse string length, before any URL parsing happens at all), and hold the result in
+ * memory. `hostPolicy` is always fixed to `"loopback-only"` here — no non-loopback Hermes
  * topology has any supporting evidence in this product's own documented scope.
  *
- * This module performs NO network activity of any kind — no DNS resolution, no TCP/HTTP/
- * WebSocket connection, no reachability probe. Validation is purely syntactic (URL parsing and
+ * This module performs NO network activity of any kind — no DNS resolution, no TCP/HTTP
+ * connection, no reachability probe. Validation is purely syntactic (URL parsing and
  * exact-string host-allowlist matching), which is also why encoded/trick IPv4 forms (hex,
  * octal, decimal, shorthand) are already handled safely without needing any of that: the
  * WHATWG `URL` parser itself normalizes them to a canonical dotted-decimal hostname *before*
@@ -34,11 +38,11 @@
  * Independent-lifetime policy: this module has no relationship to
  * electron/hermesAuthorization.ts's credential or electron/workspace-grant.ts's workspace
  * grant. Clearing the endpoint configuration never touches either; clearing the credential or
- * the workspace grant never touches this module. electron/hermesConnection.ts consumes this
+ * the workspace grant never touches this module. electron/hermesApiServer.ts consumes this
  * module's `getConfiguredEndpoint()` directly (falling back to
  * electron/hermesEndpoint.ts's `resolveTrustedEndpoint()` when nothing is configured) — that
- * integration lives entirely in hermesConnection.ts, not here, so this module needs no
- * knowledge of authorization or connection state at all.
+ * integration lives entirely in hermesApiServer.ts, not here, so this module needs no
+ * knowledge of authorization or verification state at all.
  */
 import type { HermesEndpointConfigurationRequest, HermesEndpointConfigurationResult, HermesEndpointState } from "./shared-ipc-contract";
 import { validateEndpointCandidate, type HermesTrustedEndpoint } from "./hermesEndpoint";
@@ -47,13 +51,6 @@ import { validateEndpointCandidate, type HermesTrustedEndpoint } from "./hermesE
  * parsed as a URL — this authorization's own required "explicit bounded endpoint input
  * length" rule. */
 const MAX_ENDPOINT_INPUT_LENGTH = 2048;
-
-/** This authorization's own required "explicit bounded path length" rule, applied to the
- * parsed URL's pathname after validateEndpointCandidate already accepted it. Hostname length
- * needs no separate bound: hostPolicy is always "loopback-only" here, whose allowlist is a
- * fixed set of short literal strings — no hostname longer than that fixed set could ever match
- * it, so an explicit length check would be unreachable dead code, not a real protection. */
-const MAX_PATH_LENGTH = 512;
 
 /** A fixed, non-sensitive, app-assigned label — never derived from the submitted URL (which
  * would risk indirectly leaking host/port information through the label itself). */
@@ -65,7 +62,7 @@ const FIXED_ENDPOINT_ID = "desktop-configured-endpoint";
 let configuredEndpoint: HermesTrustedEndpoint | null = null;
 
 /** Monotonic generation counter — the same T-17-style guard hermesAuthorization.ts and
- * hermesConnection.ts already use. A configureEndpoint() call already in flight when
+ * hermesApiServer.ts already use. A configureEndpoint() call already in flight when
  * clearEndpointConfiguration() runs (or another configureEndpoint() call starts) safely
  * discards its own result instead of committing a now-superseded configuration. */
 let generation = 0;
@@ -91,10 +88,10 @@ export function getEndpointConfigurationState(): HermesEndpointState {
 
 /**
  * The single narrow endpoint-submission boundary. Validates the request shape, then the
- * candidate itself (via the unchanged, shared policy engine), then this authorization's own
- * two additional bounds (non-empty/non-zero port, bounded path length) — and commits only if
- * no clearEndpointConfiguration()/configureEndpoint() call has happened in the meantime. Never
- * echoes the submitted URL, or any component of it, back in the result.
+ * candidate itself (via the unchanged, shared policy engine, which now owns the port and
+ * pathname bounds too) — and commits only if no clearEndpointConfiguration()/
+ * configureEndpoint() call has happened in the meantime. Never echoes the submitted URL, or any
+ * component of it, back in the result.
  */
 export async function configureEndpoint(request: unknown): Promise<HermesEndpointConfigurationResult> {
   try {
@@ -108,12 +105,6 @@ export async function configureEndpoint(request: unknown): Promise<HermesEndpoin
 
     if (result.kind !== "trusted") {
       return { state: result.reason === "policy_rejected" ? "policy_rejected" : "invalid_configuration" };
-    }
-    if (result.url.port === "" || result.url.port === "0") {
-      return { state: "invalid_configuration" };
-    }
-    if (result.url.pathname.length > MAX_PATH_LENGTH) {
-      return { state: "invalid_configuration" };
     }
 
     const generationAtStart = ++generation;
@@ -149,7 +140,7 @@ export function clearEndpointConfiguration(): HermesEndpointConfigurationResult 
  * Main-process-INTERNAL accessor for the configured endpoint — mirroring
  * electron/workspace-grant.ts's `getCurrentCanonicalRoot()` pattern. NEVER imported by
  * electron/preload.ts and NEVER part of any IPC-returned value; the only intended caller is
- * electron/hermesConnection.ts. Returns the already-validated `HermesTrustedEndpoint` object
+ * electron/hermesApiServer.ts. Returns the already-validated `HermesTrustedEndpoint` object
  * directly — no re-validation is needed, since nothing external (unlike a filesystem path)
  * could have changed underneath a plain in-memory string between configure-time and now.
  */

@@ -120,29 +120,8 @@ interface HermesAuthorizationResult {
   readonly state: HermesAuthorizationOutcomeState;
 }
 
-// VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION (D-08C),
-// extended by VYRON_CODE_V02_D08E_CHECKPOINT_AND_D08F_EXPLICIT_HERMES_CONNECTIVITY_AUTHORIZATION.
-type HermesConnectionAmbientState =
-  | "not_authorized"
-  | "endpoint_not_configured"
-  | "ready_to_connect"
-  | "connecting"
-  | "connected"
-  | "disconnecting"
-  | "disconnected"
-  | "unavailable"
-  | "connection_timed_out"
-  | "safe_failure";
-
-interface HermesConnectionState {
-  readonly state: HermesConnectionAmbientState;
-}
-
-interface HermesConnectionResult {
-  readonly state: HermesConnectionAmbientState;
-}
-
-// VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION.
+// VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION, re-scoped by
+// VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION onto the Hermes API Server.
 type HermesEndpointAmbientState = "not_configured" | "configured_memory_only";
 
 interface HermesEndpointState {
@@ -166,17 +145,24 @@ interface HermesEndpointConfigurationResult {
   readonly state: HermesEndpointConfigurationOutcomeState;
 }
 
-// VYRON_CODE_V02_D10_EXPLICIT_HERMES_SESSION_CREATION_AUTHORIZATION — duplicated locally for
-// the same reason every other type here is. Carries no session id/raw response/token/endpoint
+// VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION — duplicated locally for the same
+// reason every other type here is. Carries no endpoint/API-key/raw HTTP status/headers/body
 // field anywhere.
-type HermesSessionAmbientState = "no_session" | "creating" | "active" | "closing" | "closed" | "unavailable" | "safe_failure";
+type HermesApiServerAmbientState =
+  | "not_authorized"
+  | "endpoint_not_configured"
+  | "ready_to_verify"
+  | "verifying"
+  | "reachable"
+  | "unavailable"
+  | "safe_failure";
 
-interface HermesSessionState {
-  readonly state: HermesSessionAmbientState;
+interface HermesApiServerState {
+  readonly state: HermesApiServerAmbientState;
 }
 
-interface HermesSessionResult {
-  readonly state: HermesSessionAmbientState;
+interface HermesApiServerResult {
+  readonly state: HermesApiServerAmbientState;
 }
 
 interface DesktopHermesApi {
@@ -184,15 +170,12 @@ interface DesktopHermesApi {
   getAuthorizationState(): Promise<HermesAuthorizationState>;
   beginAuthorization(request: HermesAuthorizationRequest): Promise<HermesAuthorizationResult>;
   clearAuthorization(): Promise<HermesAuthorizationResult>;
-  getConnectionState(): Promise<HermesConnectionState>;
-  connect(): Promise<HermesConnectionResult>;
-  disconnect(): Promise<HermesConnectionResult>;
   getEndpointConfigurationState(): Promise<HermesEndpointState>;
   configureEndpoint(request: HermesEndpointConfigurationRequest): Promise<HermesEndpointConfigurationResult>;
   clearEndpointConfiguration(): Promise<HermesEndpointConfigurationResult>;
-  getSessionState(): Promise<HermesSessionState>;
-  createSession(): Promise<HermesSessionResult>;
-  closeSession(): Promise<HermesSessionResult>;
+  getApiServerVerificationState(): Promise<HermesApiServerState>;
+  verifyApiServerConnection(): Promise<HermesApiServerResult>;
+  clearApiServerVerification(): Promise<HermesApiServerResult>;
 }
 
 interface DesktopApi {
@@ -1238,17 +1221,18 @@ function handleCloseTaskReview(): void {
 }
 
 /**
- * D-10 — a purely informational, always-safe reflection of the Hermes session sub-panel's own
- * already-fetched state (see `lastKnownHermesSessionAmbientState`'s own doc comment). Never
- * triggers an IPC call of its own — reads only the cache the session sub-panel already
- * maintains — and never enables any send/attach/run action; "Task sending" always reads as
- * unavailable in this build, regardless of session state.
+ * D-10 (remediated) — a purely informational, always-safe reflection of the Hermes API Server
+ * verification sub-panel's own already-fetched state (see
+ * `lastKnownApiServerAmbientState`'s own doc comment). Never triggers an IPC call of its own —
+ * reads only the cache the verification sub-panel already maintains — and never enables any
+ * send/attach/run action; "Task sending" always reads as unavailable in this build, regardless
+ * of verification state.
  */
-function renderTaskSessionInfo(): void {
-  const sessionEl = document.getElementById("task-review-hermes-session");
+function renderTaskApiVerificationInfo(): void {
+  const verificationEl = document.getElementById("task-review-hermes-verification");
   const sendingEl = document.getElementById("task-review-task-sending");
-  if (!sessionEl || !sendingEl) return;
-  sessionEl.textContent = lastKnownHermesSessionAmbientState === "active" ? "Active" : "Not created";
+  if (!verificationEl || !sendingEl) return;
+  verificationEl.textContent = lastKnownApiServerAmbientState === "reachable" ? "Verified" : "Not verified";
   sendingEl.textContent = "Not available in this build.";
 }
 
@@ -1269,7 +1253,7 @@ function renderTaskReview(): void {
   draftEl.textContent = taskDraftText;
   destinationEl.textContent = "Not configured for sending.";
   networkEl.textContent = "No request will be sent in this build.";
-  renderTaskSessionInfo();
+  renderTaskApiVerificationInfo();
 
   listEl.replaceChildren();
   if (taskContextItems.length === 0) {
@@ -1306,7 +1290,7 @@ function initTaskState(): void {
   renderTaskProfiles();
   renderTaskDraftStatus();
   renderTaskContext();
-  renderTaskSessionInfo();
+  renderTaskApiVerificationInfo();
   renderTaskReview();
 }
 
@@ -1427,18 +1411,14 @@ function renderHermesPanel(view: HermesViewState): void {
   clearBtn.disabled = revoking;
   clearBtn.textContent = revoking ? "Revoking…" : "Clear Hermes authorization";
 
-  // D-08C connection sub-panel is only ever visible while authorized — hidden again on
-  // "revoking" (about to leave). Its own CONTENT is deliberately never set here: each caller
-  // of renderHermesPanel("authorized") (a fresh beginAuthorization success, or initHermesState
-  // restoring real state on startup) decides what the connection section should show next,
-  // rather than this function assuming "ready_to_connect" and possibly stomping a real value.
-  const connectionSection = document.getElementById("hermes-connection-section");
-  if (connectionSection) connectionSection.hidden = revoking;
-  // D-10 session sub-panel is likewise only ever visible while authorized, hidden again on
-  // "revoking" — its own CONTENT is never set here either; syncHermesSessionForConnectionView
-  // (called from the end of renderHermesConnection) decides what it should show next.
-  const sessionSection = document.getElementById("hermes-session-section");
-  if (sessionSection) sessionSection.hidden = revoking;
+  // D-10 (remediated) API Server verification sub-panel is only ever visible while
+  // authorized — hidden again on "revoking" (about to leave). Its own CONTENT is deliberately
+  // never set here: each caller of renderHermesPanel("authorized") (a fresh beginAuthorization
+  // success, or initHermesState restoring real state on startup) decides what the verification
+  // section should show next, rather than this function assuming a value and possibly
+  // stomping a real one.
+  const apiServerSection = document.getElementById("hermes-api-server-section");
+  if (apiServerSection) apiServerSection.hidden = revoking;
 }
 
 function handleOpenHermesPanel(): void {
@@ -1469,9 +1449,14 @@ async function handleBeginHermesAuthorization(event: SubmitEvent): Promise<void>
     if (requestId !== hermesRequestGeneration) return;
     if (result.state === "authorized_memory_only") {
       renderHermesPanel("authorized");
-      // A freshly successful authorization is always connection-ready — D-08C's own ambient
-      // state starts "ready_to_connect" the moment authorization becomes valid.
-      renderHermesConnection("ready_to_connect");
+      // A freshly successful authorization is always verify-ready if an endpoint is already
+      // configured, or endpoint-not-configured otherwise — never assumed, always asked.
+      try {
+        const endpointState = await api.hermes.getEndpointConfigurationState();
+        renderHermesApiServer(endpointState.state === "configured_memory_only" ? "ready_to_verify" : "endpoint_not_configured");
+      } catch {
+        renderHermesApiServer("endpoint_not_configured");
+      }
     } else if (result.state === "revoked" || result.state === "not_authorized") {
       renderHermesPanel("not_authorized");
     } else if (result.state === "unavailable") {
@@ -1496,11 +1481,12 @@ async function handleClearHermesAuthorization(): Promise<void> {
   // Increment first, synchronously, before the IPC call even starts — supersedes any
   // beginAuthorization call already in flight immediately, not only after this call resolves.
   hermesRequestGeneration++;
-  // Also supersedes any in-flight connect() and resets the main process's own connection
-  // state — clearing authorization must always leave connectivity inactive too (D-08C's
-  // getConnectionState() would already report "not_authorized" once cleared regardless, but
-  // this keeps electron/hermesConnection.ts's own internal state hygienic rather than stale).
-  hermesConnectionRequestGeneration++;
+  // Also supersedes any in-flight verifyApiServerConnection() and resets the main process's
+  // own verification state — clearing authorization must always leave verification inactive
+  // too (getApiServerVerificationState() would already report "not_authorized" once cleared
+  // regardless, but this keeps electron/hermesApiServer.ts's own internal state hygienic
+  // rather than stale).
+  hermesApiServerRequestGeneration++;
   renderHermesPanel("revoking");
   try {
     await api.hermes.clearAuthorization();
@@ -1509,10 +1495,11 @@ async function handleClearHermesAuthorization(): Promise<void> {
     // itself rejected — never leave the user looking at a stale "authorized" panel.
   }
   try {
-    await api.hermes.disconnect();
+    await api.hermes.clearApiServerVerification();
   } catch {
-    // Best-effort only — clearAuthorization() above already makes getConnectionState()
-    // report "not_authorized" regardless of whether this call itself succeeds.
+    // Best-effort only — clearAuthorization() above already makes
+    // getApiServerVerificationState() report "not_authorized" regardless of whether this call
+    // itself succeeds.
   }
   renderHermesPanel("not_authorized");
 }
@@ -1684,6 +1671,9 @@ async function handleConfigureHermesEndpoint(event: SubmitEvent): Promise<void> 
     if (requestId !== hermesEndpointRequestGeneration) return;
     if (result.state === "configured_memory_only") {
       renderHermesEndpointPanel("configured");
+      // Keeps the verification sub-panel in sync — it was showing "endpoint not configured"
+      // (or was hidden while unauthorized) and should now offer verification if authorized.
+      renderHermesApiServer("ready_to_verify");
     } else if (result.state === "policy_rejected") {
       renderHermesEndpointPanel("policy_rejected");
     } else if (result.state === "invalid_configuration") {
@@ -1718,15 +1708,17 @@ async function handleClearHermesEndpointConfiguration(): Promise<void> {
     // Clear must always leave the UI in a safe, not-configured-looking state, even if the IPC
     // call itself rejected.
   }
-  // Also resets D-08C connection state hygiene, mirroring handleClearHermesAuthorization's own
-  // best-effort disconnect() call — getConnectionState() would already report correctly
-  // without this once the endpoint is gone, but this keeps hermesConnection.ts's own internal
-  // state tidy rather than stale.
+  // Also resets D-10 (remediated) API Server verification state hygiene, mirroring
+  // handleClearHermesAuthorization's own best-effort clearApiServerVerification() call —
+  // getApiServerVerificationState() would already report correctly without this once the
+  // endpoint is gone, but this keeps hermesApiServer.ts's own internal state tidy rather than
+  // stale, and visibly resets the verification sub-panel's own displayed text.
   try {
-    await api.hermes.disconnect();
+    await api.hermes.clearApiServerVerification();
   } catch {
     // Best-effort only.
   }
+  renderHermesApiServer("endpoint_not_configured");
   renderHermesEndpointPanel("not_configured");
 }
 
@@ -1752,396 +1744,164 @@ function wireHermesEndpointControls(): void {
 }
 
 // ---------------------------------------------------------------------------------------
-// D-08C connection sub-panel — VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION,
-// extended by VYRON_CODE_V02_D08E_CHECKPOINT_AND_D08F_EXPLICIT_HERMES_CONNECTIVITY_AUTHORIZATION.
-// Visible only while the outer Hermes panel is in its "authorized" view (see
-// renderHermesPanel above). connect()/disconnect() never take an endpoint/host/port/socket
-// argument of any kind — the main process alone resolves the already-configured endpoint and
-// owns the real WebSocket client; see electron/hermesConnection.ts's own header for the full
-// evidence trail behind exactly what "connected" now means and what it still never does
-// (no session/prompt/context/event capability of any kind).
+// D-10 (remediated) API Server verification sub-panel —
+// VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION. Visible only while the outer
+// Hermes panel is in its "authorized" view (see renderHermesPanel above).
+// verifyApiServerConnection()/clearApiServerVerification() never take an endpoint/API-key/
+// path/method/header/body/options argument of any kind — the main process alone resolves the
+// already-configured endpoint and owns the one bounded `GET /health` request; see
+// electron/hermesApiServer.ts's own header for the full evidence trail behind exactly what
+// "reachable" now means and what this build still never does (no prompt/context/event
+// capability of any kind, and no JSON-RPC transport of any kind either — the prior socket-
+// based connectivity/lifecycle capability this authorization retires is described only in
+// this authorization's own remediation discovery report, not here).
 // ---------------------------------------------------------------------------------------
-type HermesConnectionViewState =
+type HermesApiServerViewState =
   | "endpoint_not_configured"
-  | "ready_to_connect"
-  | "connecting"
-  | "connected"
-  | "disconnecting"
-  | "disconnected"
+  | "ready_to_verify"
+  | "verifying"
+  | "reachable"
   | "unavailable"
-  | "connection_timed_out"
   | "safe_failure";
 
 /** Monotonic request generation — the same T-17-style guard the authorization panel above
- * uses, applied independently to the connection sub-panel. */
-let hermesConnectionRequestGeneration = 0;
+ * uses, applied independently to the API Server verification sub-panel. */
+let hermesApiServerRequestGeneration = 0;
 
-interface HermesConnectionElements {
-  readonly statusEl: HTMLElement;
-  readonly connectBtn: HTMLButtonElement;
-  readonly disconnectBtn: HTMLButtonElement;
-  readonly errorEl: HTMLElement;
-}
-
-function getHermesConnectionElements(): HermesConnectionElements | null {
-  const statusEl = document.getElementById("hermes-connection-status");
-  const connectBtn = document.getElementById("hermes-connect-btn");
-  const disconnectBtn = document.getElementById("hermes-disconnect-btn");
-  const errorEl = document.getElementById("hermes-connection-error");
-  if (
-    !(statusEl instanceof HTMLElement) ||
-    !(connectBtn instanceof HTMLButtonElement) ||
-    !(disconnectBtn instanceof HTMLButtonElement) ||
-    !(errorEl instanceof HTMLElement)
-  ) {
-    return null;
-  }
-  return { statusEl, connectBtn, disconnectBtn, errorEl };
-}
-
-/**
- * Renders one of the required D-08C connection states using only fixed, safe, hand-written
- * string literals — never an endpoint, host, port, socket detail, or raw error. No state here
- * ever mentions a network address, protocol, or session identifier.
- */
-function renderHermesConnection(view: HermesConnectionViewState): void {
-  const els = getHermesConnectionElements();
-  if (!els) return;
-  const { statusEl, connectBtn, disconnectBtn, errorEl } = els;
-
-  errorEl.hidden = true;
-  errorEl.textContent = "";
-  connectBtn.disabled = false;
-  disconnectBtn.disabled = false;
-  disconnectBtn.textContent = "Disconnect";
-
-  switch (view) {
-    case "endpoint_not_configured":
-      statusEl.textContent = "Configure a local Hermes endpoint before connecting.";
-      connectBtn.hidden = false;
-      connectBtn.disabled = true;
-      disconnectBtn.hidden = true;
-      break;
-    case "ready_to_connect":
-      statusEl.textContent = "Hermes connection has not been attempted.";
-      connectBtn.hidden = false;
-      disconnectBtn.hidden = true;
-      break;
-    case "connecting":
-      statusEl.textContent = "Connecting…";
-      connectBtn.hidden = true;
-      disconnectBtn.hidden = false;
-      break;
-    case "connected":
-      statusEl.textContent = "Connected.";
-      connectBtn.hidden = true;
-      disconnectBtn.hidden = false;
-      break;
-    case "disconnecting":
-      statusEl.textContent = "Disconnecting…";
-      connectBtn.hidden = true;
-      disconnectBtn.hidden = false;
-      disconnectBtn.disabled = true;
-      disconnectBtn.textContent = "Disconnecting…";
-      break;
-    case "disconnected":
-      statusEl.textContent = "Disconnected.";
-      connectBtn.hidden = false;
-      disconnectBtn.hidden = true;
-      break;
-    case "unavailable":
-      statusEl.textContent = "Hermes connectivity is unavailable in this build.";
-      connectBtn.hidden = false;
-      disconnectBtn.hidden = true;
-      break;
-    case "connection_timed_out":
-      statusEl.textContent = "Hermes connection has not been attempted.";
-      connectBtn.hidden = false;
-      disconnectBtn.hidden = true;
-      errorEl.hidden = false;
-      errorEl.textContent = "The connection attempt timed out. Please try again.";
-      break;
-    case "safe_failure":
-      statusEl.textContent = "Hermes connection has not been attempted.";
-      connectBtn.hidden = false;
-      disconnectBtn.hidden = true;
-      errorEl.hidden = false;
-      errorEl.textContent = "Connection could not be completed. Please try again.";
-      break;
-  }
-
-  // D-10 — keeps the session sub-panel's own gate state in sync with every connection state
-  // change, from every existing call site, without each needing its own explicit call.
-  void syncHermesSessionForConnectionView(view);
-}
-
-async function handleConnectHermes(): Promise<void> {
-  const api = window.vyronDesktop;
-  if (!api) {
-    renderHermesConnection("unavailable");
-    return;
-  }
-  const requestId = ++hermesConnectionRequestGeneration;
-  renderHermesConnection("connecting");
-  try {
-    const result = await api.hermes.connect();
-    // Superseded by a later connect/disconnect while this call was in flight — never render
-    // a result that is no longer current.
-    if (requestId !== hermesConnectionRequestGeneration) return;
-    if (result.state === "connected") {
-      renderHermesConnection("connected");
-    } else if (result.state === "unavailable") {
-      renderHermesConnection("unavailable");
-    } else if (result.state === "endpoint_not_configured") {
-      renderHermesConnection("endpoint_not_configured");
-    } else if (result.state === "connection_timed_out") {
-      renderHermesConnection("connection_timed_out");
-    } else if (result.state === "disconnected") {
-      renderHermesConnection("disconnected");
-    } else if (result.state === "not_authorized") {
-      // Authorization must have been cleared elsewhere while this call was in flight.
-      renderHermesPanel("not_authorized");
-    } else {
-      renderHermesConnection("safe_failure");
-    }
-  } catch {
-    if (requestId !== hermesConnectionRequestGeneration) return;
-    renderHermesConnection("safe_failure");
-  }
-}
-
-async function handleDisconnectHermes(): Promise<void> {
-  const api = window.vyronDesktop;
-  if (!api) {
-    renderHermesConnection("unavailable");
-    return;
-  }
-  // Supersedes any in-flight connect() immediately, before the IPC call even starts.
-  hermesConnectionRequestGeneration++;
-  renderHermesConnection("disconnecting");
-  try {
-    await api.hermes.disconnect();
-  } catch {
-    // Disconnect must always leave the UI in a safe, disconnected-looking state, even if the
-    // IPC call itself rejected.
-  }
-  renderHermesConnection("disconnected");
-}
-
-// ---------------------------------------------------------------------------------------
-// D-10 session sub-panel — VYRON_CODE_V02_D10_EXPLICIT_HERMES_SESSION_CREATION_AUTHORIZATION.
-// Visible only once authorized (same toggle as the connection sub-panel above). Its own gate
-// states ("endpoint_not_configured"/"not_connected") are derived entirely from the connection
-// sub-panel's own already-tracked view state — see `syncHermesSessionForConnectionView`, called
-// from the end of `renderHermesConnection` itself, so every existing call site that already
-// updates connection state (initHermesState, handleConnectHermes, handleDisconnectHermes, and
-// the clear-authorization/clear-endpoint-configuration handlers via their own disconnect calls)
-// keeps the session sub-panel in sync for free, without each needing its own explicit call.
-// createSession()/closeSession() are called with zero arguments — no session id, title,
-// model/provider, workspace/cwd/path, or task draft/profile/context value is ever available to
-// pass, since none of those exist anywhere in this section's own local state.
-// ---------------------------------------------------------------------------------------
-type HermesSessionViewState =
-  | "endpoint_not_configured"
-  | "not_connected"
-  | "no_session"
-  | "creating"
-  | "active"
-  | "closing"
-  | "closed"
-  | "unavailable"
-  | "safe_failure";
-
-/** Monotonic request generation — the same T-17-style guard used throughout this file's other
- * Hermes sub-panels, applied independently here. */
-let hermesSessionRequestGeneration = 0;
-
-/** Read-only cache of the last known session ambient state, for the Task section's own
- * informational display only (see `renderTaskSessionInfo`) — mirrors the established
+/** Read-only cache of the last known verification ambient state, for the Task section's own
+ * informational display only (see `renderTaskApiVerificationInfo`) — mirrors the established
  * `currentWorkspaceDisplayName`/`lastGitSummaryForContext` read-only-cache pattern. Never used
  * to gate, enable, or drive any task-composer action, and never sent anywhere. */
-let lastKnownHermesSessionAmbientState: HermesSessionAmbientState = "unavailable";
+let lastKnownApiServerAmbientState: HermesApiServerAmbientState = "unavailable";
 
-interface HermesSessionElements {
+interface HermesApiServerElements {
   readonly statusEl: HTMLElement;
-  readonly createBtn: HTMLButtonElement;
-  readonly closeBtn: HTMLButtonElement;
+  readonly verifyBtn: HTMLButtonElement;
   readonly noteEl: HTMLElement;
   readonly errorEl: HTMLElement;
 }
 
-function getHermesSessionElements(): HermesSessionElements | null {
-  const statusEl = document.getElementById("hermes-session-status");
-  const createBtn = document.getElementById("hermes-session-create-btn");
-  const closeBtn = document.getElementById("hermes-session-close-btn");
-  const noteEl = document.getElementById("hermes-session-note");
-  const errorEl = document.getElementById("hermes-session-error");
+function getHermesApiServerElements(): HermesApiServerElements | null {
+  const statusEl = document.getElementById("hermes-api-server-status");
+  const verifyBtn = document.getElementById("hermes-api-server-verify-btn");
+  const noteEl = document.getElementById("hermes-api-server-note");
+  const errorEl = document.getElementById("hermes-api-server-error");
   if (
     !(statusEl instanceof HTMLElement) ||
-    !(createBtn instanceof HTMLButtonElement) ||
-    !(closeBtn instanceof HTMLButtonElement) ||
+    !(verifyBtn instanceof HTMLButtonElement) ||
     !(noteEl instanceof HTMLElement) ||
     !(errorEl instanceof HTMLElement)
   ) {
     return null;
   }
-  return { statusEl, createBtn, closeBtn, noteEl, errorEl };
+  return { statusEl, verifyBtn, noteEl, errorEl };
 }
 
 /**
- * Renders one of the required D-10 session states using only fixed, safe, hand-written string
- * literals — never a session id, raw protocol detail, or anything beyond this file's own
- * required copy. No state here ever mentions a session identifier or raw response.
+ * Renders one of the required D-10 (remediated) verification states using only fixed, safe,
+ * hand-written string literals — never an endpoint, API key, raw HTTP status/headers/body, or
+ * anything beyond this file's own required copy. No state here ever mentions a network
+ * address, port, or protocol detail.
  */
-function renderHermesSession(view: HermesSessionViewState): void {
-  const els = getHermesSessionElements();
+function renderHermesApiServer(view: HermesApiServerViewState): void {
+  const els = getHermesApiServerElements();
   if (!els) return;
-  const { statusEl, createBtn, closeBtn, noteEl, errorEl } = els;
+  const { statusEl, verifyBtn, noteEl, errorEl } = els;
 
   errorEl.hidden = true;
   errorEl.textContent = "";
   noteEl.hidden = true;
   noteEl.textContent = "";
-  createBtn.disabled = false;
-  createBtn.textContent = "Create Hermes session";
-  closeBtn.disabled = false;
-  closeBtn.textContent = "Close Hermes session";
+  verifyBtn.disabled = false;
+  verifyBtn.textContent = "Verify local Hermes connection";
 
-  lastKnownHermesSessionAmbientState = view === "endpoint_not_configured" || view === "not_connected" ? "unavailable" : view;
-  renderTaskSessionInfo();
+  lastKnownApiServerAmbientState = view === "endpoint_not_configured" ? "unavailable" : view;
+  renderTaskApiVerificationInfo();
 
   switch (view) {
     case "endpoint_not_configured":
-      statusEl.textContent = "Configure a local Hermes endpoint before creating a session.";
-      createBtn.hidden = true;
-      closeBtn.hidden = true;
+      statusEl.textContent = "No local Hermes API Server endpoint configured.";
+      verifyBtn.hidden = true;
       break;
-    case "not_connected":
-      statusEl.textContent = "Connect to Hermes before creating a session.";
-      createBtn.hidden = true;
-      closeBtn.hidden = true;
-      break;
-    case "no_session":
-      statusEl.textContent = "No Hermes session is active.";
-      createBtn.hidden = false;
-      closeBtn.hidden = true;
+    case "ready_to_verify":
+      statusEl.textContent = "Ready to verify local Hermes API Server.";
+      verifyBtn.hidden = false;
       noteEl.hidden = false;
-      noteEl.textContent = "Creating a session does not send your task draft or workspace context.";
+      noteEl.textContent = "Verification does not send a task, workspace or context.";
       break;
-    case "creating":
-      statusEl.textContent = "Creating session…";
-      createBtn.hidden = true;
-      closeBtn.hidden = true;
+    case "verifying":
+      statusEl.textContent = "Verifying local Hermes connection…";
+      verifyBtn.hidden = false;
+      verifyBtn.disabled = true;
+      verifyBtn.textContent = "Verifying…";
       break;
-    case "active":
-      statusEl.textContent = "Hermes session active.";
-      createBtn.hidden = true;
-      closeBtn.hidden = false;
+    case "reachable":
+      statusEl.textContent = "Local Hermes API Server reachable.";
+      verifyBtn.hidden = false;
       noteEl.hidden = false;
       noteEl.textContent = "Task sending is not available in this build.";
       break;
-    case "closing":
-      statusEl.textContent = "Closing session…";
-      createBtn.hidden = true;
-      closeBtn.hidden = false;
-      closeBtn.disabled = true;
-      closeBtn.textContent = "Closing…";
-      break;
-    case "closed":
-      statusEl.textContent = "No Hermes session is active.";
-      createBtn.hidden = false;
-      closeBtn.hidden = true;
-      break;
     case "unavailable":
-      statusEl.textContent = "Hermes session creation is unavailable in this build.";
-      createBtn.hidden = true;
-      closeBtn.hidden = true;
+      statusEl.textContent = "Local Hermes API Server verification is unavailable in this build.";
+      verifyBtn.hidden = true;
       break;
     case "safe_failure":
-      statusEl.textContent = "No Hermes session is active.";
-      createBtn.hidden = false;
-      closeBtn.hidden = true;
+      statusEl.textContent = "Ready to verify local Hermes API Server.";
+      verifyBtn.hidden = false;
       errorEl.hidden = false;
-      errorEl.textContent = "Session creation could not be completed. Please try again.";
+      errorEl.textContent = "Verification could not be completed. Please try again.";
       break;
   }
 }
 
-/** Derives and renders the session sub-panel's own state purely from the connection
- * sub-panel's already-current view state — never opens a new connection, never reads endpoint/
- * token/credential itself. Only fetches the real session state (`api.hermes.getSessionState()`)
- * once the connection is genuinely `"connected"`. */
-async function syncHermesSessionForConnectionView(connectionView: HermesConnectionViewState): Promise<void> {
-  if (connectionView === "endpoint_not_configured") {
-    renderHermesSession("endpoint_not_configured");
-    return;
-  }
-  if (connectionView !== "connected") {
-    renderHermesSession("not_connected");
-    return;
-  }
+async function handleVerifyApiServerConnection(): Promise<void> {
   const api = window.vyronDesktop;
   if (!api) {
-    renderHermesSession("unavailable");
+    renderHermesApiServer("unavailable");
     return;
   }
-  const requestId = ++hermesSessionRequestGeneration;
+  const requestId = ++hermesApiServerRequestGeneration;
+  renderHermesApiServer("verifying");
   try {
-    const result = await api.hermes.getSessionState();
-    if (requestId !== hermesSessionRequestGeneration) return;
-    if (result.state === "unavailable") {
-      renderHermesSession("not_connected");
-    } else {
-      renderHermesSession(result.state);
-    }
-  } catch {
-    if (requestId !== hermesSessionRequestGeneration) return;
-    renderHermesSession("unavailable");
-  }
-}
-
-async function handleCreateHermesSession(): Promise<void> {
-  const api = window.vyronDesktop;
-  if (!api) {
-    renderHermesSession("unavailable");
-    return;
-  }
-  const requestId = ++hermesSessionRequestGeneration;
-  renderHermesSession("creating");
-  try {
-    const result = await api.hermes.createSession();
-    if (requestId !== hermesSessionRequestGeneration) return;
-    if (result.state === "active") {
-      renderHermesSession("active");
-    } else if (result.state === "no_session" || result.state === "closed") {
-      renderHermesSession("no_session");
+    const result = await api.hermes.verifyApiServerConnection();
+    // Superseded by a later verify/clear while this call was in flight — never render a
+    // result that is no longer current.
+    if (requestId !== hermesApiServerRequestGeneration) return;
+    if (result.state === "reachable") {
+      renderHermesApiServer("reachable");
+    } else if (result.state === "verifying") {
+      renderHermesApiServer("verifying");
     } else if (result.state === "unavailable") {
-      renderHermesSession("unavailable");
+      renderHermesApiServer("unavailable");
+    } else if (result.state === "endpoint_not_configured") {
+      renderHermesApiServer("endpoint_not_configured");
+    } else if (result.state === "not_authorized") {
+      // Authorization must have been cleared elsewhere while this call was in flight.
+      renderHermesPanel("not_authorized");
     } else {
-      renderHermesSession("safe_failure");
+      renderHermesApiServer("safe_failure");
     }
   } catch {
-    if (requestId !== hermesSessionRequestGeneration) return;
-    renderHermesSession("safe_failure");
+    if (requestId !== hermesApiServerRequestGeneration) return;
+    renderHermesApiServer("safe_failure");
   }
 }
 
-async function handleCloseHermesSession(): Promise<void> {
+async function handleClearApiServerVerification(): Promise<void> {
   const api = window.vyronDesktop;
   if (!api) {
-    renderHermesSession("unavailable");
+    renderHermesApiServer("unavailable");
     return;
   }
-  // Supersedes any in-flight createSession() immediately, before the IPC call even starts.
-  hermesSessionRequestGeneration++;
-  renderHermesSession("closing");
+  // Supersedes any in-flight verify immediately, before the IPC call even starts.
+  hermesApiServerRequestGeneration++;
   try {
-    await api.hermes.closeSession();
+    await api.hermes.clearApiServerVerification();
   } catch {
-    // Close must always leave the UI in a safe, no-session-looking state, even if the IPC call
-    // itself rejected.
+    // Clearing must always leave the UI in a safe, ready-to-verify-looking state, even if the
+    // IPC call itself rejected.
   }
-  renderHermesSession("no_session");
+  renderHermesApiServer("ready_to_verify");
 }
 
 async function initHermesState(api: DesktopApi): Promise<void> {
@@ -2154,14 +1914,16 @@ async function initHermesState(api: DesktopApi): Promise<void> {
     const state = await api.hermes.getAuthorizationState();
     if (state.state === "authorized_memory_only") {
       renderHermesPanel("authorized");
-      // Restore the real connection state rather than assuming "ready_to_connect" — an app
-      // restart always begins with a fresh, never-connected state in this build (D-08C has
-      // no cross-restart persistence of any kind), but this still asks rather than assumes.
+      // Restore the real ambient verification state rather than assuming "ready_to_verify" —
+      // an app restart always begins with a fresh, never-verified state in this build (no
+      // cross-restart persistence of any kind), but this still asks rather than assumes. This
+      // is a safe, side-effect-free state READ — never a network probe; D-10's own "no
+      // auto-verify at startup" rule means verifyApiServerConnection() is never called here.
       try {
-        const connectionState = await api.hermes.getConnectionState();
-        renderHermesConnection(connectionState.state === "not_authorized" ? "ready_to_connect" : connectionState.state);
+        const verificationState = await api.hermes.getApiServerVerificationState();
+        renderHermesApiServer(verificationState.state === "not_authorized" ? "ready_to_verify" : verificationState.state);
       } catch {
-        renderHermesConnection("ready_to_connect");
+        renderHermesApiServer("ready_to_verify");
       }
     } else {
       renderHermesPanel("not_authorized");
@@ -2179,10 +1941,7 @@ function wireHermesControls(): void {
   if (form instanceof HTMLFormElement) {
     form.addEventListener("submit", (event) => void handleBeginHermesAuthorization(event));
   }
-  document.getElementById("hermes-connect-btn")?.addEventListener("click", () => void handleConnectHermes());
-  document.getElementById("hermes-disconnect-btn")?.addEventListener("click", () => void handleDisconnectHermes());
-  document.getElementById("hermes-session-create-btn")?.addEventListener("click", () => void handleCreateHermesSession());
-  document.getElementById("hermes-session-close-btn")?.addEventListener("click", () => void handleCloseHermesSession());
+  document.getElementById("hermes-api-server-verify-btn")?.addEventListener("click", () => void handleVerifyApiServerConnection());
 }
 
 // ---------------------------------------------------------------------------------------

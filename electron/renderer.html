@@ -51,27 +51,29 @@
       <p id="hermes-error" class="muted" hidden></p>
 
       <!--
-        D-08E endpoint setup panel — VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION.
+        Hermes API Server endpoint setup panel — originally VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION,
+        re-scoped by VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION from the Hermes
+        dashboard's internal socket surface onto the officially documented Hermes API Server.
         Independent of authorization above — a user may configure this before, after, or
         without ever authorizing. The endpoint is held only in main-process memory for this app
-        session, never saved, and never used here to open a real Hermes connection (see
-        electron/hermesEndpointSetup.ts and electron/hermesConnection.ts). The one input field
+        session, never saved, and never used here to open any connection itself (see
+        electron/hermesEndpointSetup.ts and electron/hermesApiServer.ts). The one input field
         accepts only a full endpoint URL; the main process alone decides whether it is safe
-        (loopback-only) — this page never validates or interprets it beyond a superficial,
-        non-sensitive format check that gates the Configure button.
+        (loopback-only, explicit port required) — this page never validates or interprets it
+        beyond a superficial, non-sensitive format check that gates the Configure button.
       -->
       <div id="hermes-endpoint-section">
         <p id="hermes-endpoint-status">No local companion endpoint configured</p>
-        <p class="muted" id="hermes-endpoint-explanation">Configure the local Hermes companion endpoint only if you operate or trust that local service.</p>
+        <p class="muted" id="hermes-endpoint-explanation">Configure the local Hermes API Server endpoint only if you operate or trust that local service.</p>
         <p class="muted">The endpoint is used only for this running desktop app and is not saved.</p>
-        <p class="muted" id="hermes-endpoint-risk-notice">The current Hermes protocol does not provide desktop-side server identity verification. Configure only a local companion service you trust.</p>
+        <p class="muted" id="hermes-endpoint-risk-notice">This app cannot verify the identity of the service at the endpoint you configure. Configure only a local companion service you trust.</p>
         <div class="hermes-actions">
           <button id="hermes-endpoint-setup-btn" type="button">Configure local Hermes connection</button>
           <button id="hermes-endpoint-clear-btn" type="button" hidden>Clear local Hermes connection setup</button>
         </div>
         <form id="hermes-endpoint-form" class="hermes-form" hidden>
-          <label for="hermes-endpoint-input" class="visually-hidden">Hermes endpoint URL</label>
-          <input id="hermes-endpoint-input" type="text" autocomplete="off" maxlength="2048" placeholder="ws://&lt;host&gt;/&lt;path&gt;" />
+          <label for="hermes-endpoint-input" class="visually-hidden">Hermes API Server endpoint URL</label>
+          <input id="hermes-endpoint-input" type="text" autocomplete="off" maxlength="2048" placeholder="http://127.0.0.1:&lt;port&gt;" />
           <label class="hermes-risk-label">
             <input id="hermes-endpoint-risk-checkbox" type="checkbox" />
             I trust this local Hermes companion service
@@ -83,42 +85,25 @@
       </div>
 
       <!--
-        D-08C connection sub-panel — VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION,
-        extended by VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION.
+        D-10 (remediated) API Server verification sub-panel — VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION.
         Visible only once authorized. No endpoint/host/port editing control exists here — the
-        one place an endpoint can ever be entered is the dedicated D-08E panel above, which
-        only ever submits it to the main process; this section itself never accepts, displays,
-        or edits any endpoint value. No chat, prompt, context, or provider/model control exists
-        here — the D-10 session sub-panel immediately below is a distinct, separate section, not
-        nested inside this one.
-      -->
-      <div id="hermes-connection-section" hidden>
-        <p id="hermes-connection-status">Hermes connection has not been attempted.</p>
-        <div class="hermes-actions">
-          <button id="hermes-connect-btn" type="button">Connect</button>
-          <button id="hermes-disconnect-btn" type="button" hidden>Disconnect</button>
-        </div>
-        <p id="hermes-connection-error" class="muted" hidden></p>
-      </div>
-
-      <!--
-        D-10 session sub-panel — VYRON_CODE_V02_D10_EXPLICIT_HERMES_SESSION_CREATION_AUTHORIZATION.
-        Visible only once authorized (same toggle as the connection sub-panel above). No chat
+        one place an endpoint can ever be entered is the dedicated setup panel above, which only
+        ever submits it to the main process; this section itself never accepts, displays, or
+        edits any endpoint/API-key value, and never shows a raw HTTP status/header/body. No chat
         transcript, prompt composer, message history, assistant response, session id/metadata,
         context/file/Git/search attach, tool activity, provider/model selector, subagent,
         multimodel, terminal, shell, or write/save/commit/push/pull/fetch control exists here or
-        anywhere else on this page — creating a session never sends the task draft or any
+        anywhere else on this page — verifying the connection never sends the task draft or any
         selected context (see the Task section below, whose own review surface only ever shows
-        this session's safe state, never a way to send anything to it).
+        this verification's safe state, never a way to send anything to it).
       -->
-      <div id="hermes-session-section" hidden>
-        <p id="hermes-session-status">No Hermes session is active.</p>
+      <div id="hermes-api-server-section" hidden>
+        <p id="hermes-api-server-status">No local Hermes API Server endpoint configured.</p>
         <div class="hermes-actions">
-          <button id="hermes-session-create-btn" type="button">Create Hermes session</button>
-          <button id="hermes-session-close-btn" type="button" hidden>Close Hermes session</button>
+          <button id="hermes-api-server-verify-btn" type="button">Verify local Hermes connection</button>
         </div>
-        <p id="hermes-session-note" class="muted" hidden></p>
-        <p id="hermes-session-error" class="muted" hidden></p>
+        <p id="hermes-api-server-note" class="muted" hidden></p>
+        <p id="hermes-api-server-error" class="muted" hidden></p>
       </div>
     </section>
 
@@ -232,8 +217,8 @@
           <dd id="task-review-destination">Not configured for sending.</dd>
           <dt>Network</dt>
           <dd id="task-review-network">No request will be sent in this build.</dd>
-          <dt>Hermes session</dt>
-          <dd id="task-review-hermes-session">Not created</dd>
+          <dt>Hermes API verification</dt>
+          <dd id="task-review-hermes-verification">Not verified</dd>
           <dt>Task sending</dt>
           <dd id="task-review-task-sending">Not available in this build.</dd>
         </dl>

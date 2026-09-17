@@ -30,11 +30,16 @@
  * Extended by VYRON_CODE_V02_D08E_CHECKPOINT_AND_D08F_EXPLICIT_HERMES_CONNECTIVITY_AUTHORIZATION
  * with `getCurrentCredential()` — a main-process-INTERNAL accessor, mirroring
  * electron/workspace-grant.ts's `getCurrentCanonicalRoot()` and
- * electron/hermesEndpointSetup.ts's `getConfiguredEndpoint()` exactly. The one intended caller
- * is electron/hermesConnection.ts, which needs the real credential to build the one documented
- * `/api/ws?token=...` connection URL (see hermesConnection.ts's own header for the full
- * evidence trail). This accessor is NEVER imported by electron/preload.ts and NEVER part of
- * any IPC-returned value — every guarantee in this file's own header (never persisted, never
+ * electron/hermesEndpointSetup.ts's `getConfiguredEndpoint()` exactly. This module's own
+ * "hold one string in memory, validate it, let it go" contract is entirely transport-agnostic —
+ * it never referenced `/api/ws`, a query parameter, or any other transport detail itself, so
+ * VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION reuses it UNCHANGED for the Hermes API
+ * Server's own `API_SERVER_KEY` credential. The one current intended caller of
+ * `getCurrentCredential()` is electron/hermesApiServer.ts, which sends the real credential only
+ * as an `Authorization: Bearer <credential>` header on its one explicit verification request —
+ * never as a URL/query parameter (see hermesApiServer.ts's own header for the full evidence
+ * trail). This accessor is NEVER imported by electron/preload.ts and NEVER part of any
+ * IPC-returned value — every guarantee in this file's own header (never persisted, never
  * logged, never returned to renderer) is unchanged by its existence, exactly as adding the
  * analogous accessors to the workspace-grant and endpoint-setup modules changed none of their
  * own guarantees either.

@@ -172,44 +172,17 @@ export interface HermesAuthorizationResult {
 }
 
 /**
- * D-08B's full Hermes authorization bridge — exactly four methods, none of which can create a
- * network connection, a session, or any Hermes protocol activity. `beginAuthorization` is the
- * sole one-way credential-submission boundary; `getAvailability`/`getAuthorizationState` are
- * parameter-free reads; `clearAuthorization` is the sole revocation action.
+ * D-08B's full Hermes authorization bridge — `beginAuthorization` is the sole one-way
+ * credential-submission boundary; `getAvailability`/`getAuthorizationState` are parameter-free
+ * reads; `clearAuthorization` is the sole revocation action. Reused unchanged for the D-10
+ * remediation's `API_SERVER_KEY` credential (see electron/hermesAuthorization.ts's own header).
  */
 /**
- * D-08C/D-08F connectivity state — VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION,
- * extended by VYRON_CODE_V02_D08E_CHECKPOINT_AND_D08F_EXPLICIT_HERMES_CONNECTIVITY_AUTHORIZATION.
- * One shared enum for both the ambient `getConnectionState` read and the `connect`/
- * `disconnect` action outcomes. Never carries an endpoint, host, port, protocol, socket,
- * session ID, or raw error detail — see electron/hermesConnection.ts's own header comment for
- * exactly which of these values `connect()` can produce and why `"connected"` now requires
- * both a valid D-08B authorization and a valid D-08E configured endpoint.
- */
-export type HermesConnectionAmbientState =
-  | "not_authorized"
-  | "endpoint_not_configured"
-  | "ready_to_connect"
-  | "connecting"
-  | "connected"
-  | "disconnecting"
-  | "disconnected"
-  | "unavailable"
-  | "connection_timed_out"
-  | "safe_failure";
-
-export interface HermesConnectionState {
-  readonly state: HermesConnectionAmbientState;
-}
-
-export interface HermesConnectionResult {
-  readonly state: HermesConnectionAmbientState;
-}
-
-/**
- * D-08E endpoint configuration state — VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION.
- * The user-configured endpoint (Option B from the D-08D decision record) lives only in
- * Electron main-process memory, validated through the existing, unchanged
+ * D-08E endpoint configuration state — VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION,
+ * re-scoped by VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION from the Hermes
+ * dashboard's WebSocket surface onto the officially documented Hermes API Server. The
+ * user-configured endpoint (Option B from the D-08D decision record) lives only in Electron
+ * main-process memory, validated through the existing, unchanged (now HTTP-scoped)
  * `validateEndpointCandidate` policy engine. Never carries a resolved URL/host/port/protocol
  * value to the renderer — only this safe state enum.
  */
@@ -221,8 +194,9 @@ export interface HermesEndpointState {
 
 /**
  * The one and only shape `configureEndpoint` accepts — exactly one field, `endpoint`, a
- * string. No token, header, proxy, certificate, session, prompt, or workspace field is ever
- * accepted here, mirroring `HermesAuthorizationRequest`'s own single-field discipline exactly.
+ * string. No credential, header, proxy, certificate, session, prompt, or workspace field is
+ * ever accepted here, mirroring `HermesAuthorizationRequest`'s own single-field discipline
+ * exactly.
  */
 export interface HermesEndpointConfigurationRequest {
   readonly endpoint: string;
@@ -244,43 +218,50 @@ export interface HermesEndpointConfigurationResult {
 }
 
 /**
- * D-10 session lifecycle state — VYRON_CODE_V02_D10_EXPLICIT_HERMES_SESSION_CREATION_AUTHORIZATION.
- * Never carries a session id, a raw session.create/activate response, a token, an endpoint, or
- * any protocol detail — only this safe state enum. See electron/hermesSession.ts's own header
- * for the full evidence trail behind what `createSession()`/`closeSession()` can produce and
- * exactly which two closed-vocabulary RPC calls they send.
+ * D-10 (remediated) Hermes API Server connection-verification state —
+ * VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION. Never carries an endpoint, API key,
+ * raw HTTP status/headers/body, or any protocol detail — only this safe state enum. See
+ * electron/hermesApiServer.ts's own header for the full evidence trail behind exactly what
+ * `verifyApiServerConnection()` sends (one `GET /health` request, no more) and why no
+ * `Authorization` header is attached to it.
  */
-export type HermesSessionAmbientState = "no_session" | "creating" | "active" | "closing" | "closed" | "unavailable" | "safe_failure";
+export type HermesApiServerAmbientState =
+  | "not_authorized"
+  | "endpoint_not_configured"
+  | "ready_to_verify"
+  | "verifying"
+  | "reachable"
+  | "unavailable"
+  | "safe_failure";
 
-export interface HermesSessionState {
-  readonly state: HermesSessionAmbientState;
+export interface HermesApiServerState {
+  readonly state: HermesApiServerAmbientState;
 }
 
-export interface HermesSessionResult {
-  readonly state: HermesSessionAmbientState;
+export interface HermesApiServerResult {
+  readonly state: HermesApiServerAmbientState;
 }
 
 /**
- * D-08B + D-08C + D-08E + D-10's full Hermes bridge — exactly thirteen methods.
- * `connect`/`disconnect`/`clearEndpointConfiguration`/`getSessionState`/`createSession`/
- * `closeSession` take no arguments at all; `configureEndpoint` takes exactly one `endpoint`
- * string field. No endpoint/host/port/token/prompt/session ID/workspace data or options object
- * of any kind is ever accepted from or returned to the renderer.
+ * D-08B + D-08E + D-10 (remediated)'s full Hermes bridge — exactly ten methods.
+ * `clearAuthorization`/`clearEndpointConfiguration`/`getApiServerVerificationState`/
+ * `verifyApiServerConnection`/`clearApiServerVerification` take no arguments at all;
+ * `configureEndpoint` takes exactly one `endpoint` string field. No endpoint/host/port/
+ * credential/prompt/session ID/workspace data or options object of any kind is ever accepted
+ * from or returned to the renderer. No WebSocket/`ws://`/`wss://`/`/api/ws`/query-string-token/
+ * JSON-RPC/session concept exists anywhere in this bridge.
  */
 export interface DesktopHermesApi {
   getAvailability(): Promise<HermesAvailability>;
   getAuthorizationState(): Promise<HermesAuthorizationState>;
   beginAuthorization(request: HermesAuthorizationRequest): Promise<HermesAuthorizationResult>;
   clearAuthorization(): Promise<HermesAuthorizationResult>;
-  getConnectionState(): Promise<HermesConnectionState>;
-  connect(): Promise<HermesConnectionResult>;
-  disconnect(): Promise<HermesConnectionResult>;
   getEndpointConfigurationState(): Promise<HermesEndpointState>;
   configureEndpoint(request: HermesEndpointConfigurationRequest): Promise<HermesEndpointConfigurationResult>;
   clearEndpointConfiguration(): Promise<HermesEndpointConfigurationResult>;
-  getSessionState(): Promise<HermesSessionState>;
-  createSession(): Promise<HermesSessionResult>;
-  closeSession(): Promise<HermesSessionResult>;
+  getApiServerVerificationState(): Promise<HermesApiServerState>;
+  verifyApiServerConnection(): Promise<HermesApiServerResult>;
+  clearApiServerVerification(): Promise<HermesApiServerResult>;
 }
 
 /**
@@ -343,15 +324,12 @@ export const HERMES_IPC_CHANNELS = {
   HERMES_GET_AUTHORIZATION_STATE: "hermes:getAuthorizationState",
   HERMES_BEGIN_AUTHORIZATION: "hermes:beginAuthorization",
   HERMES_CLEAR_AUTHORIZATION: "hermes:clearAuthorization",
-  HERMES_GET_CONNECTION_STATE: "hermes:getConnectionState",
-  HERMES_CONNECT: "hermes:connect",
-  HERMES_DISCONNECT: "hermes:disconnect",
   HERMES_GET_ENDPOINT_CONFIGURATION_STATE: "hermes:getEndpointConfigurationState",
   HERMES_CONFIGURE_ENDPOINT: "hermes:configureEndpoint",
   HERMES_CLEAR_ENDPOINT_CONFIGURATION: "hermes:clearEndpointConfiguration",
-  HERMES_GET_SESSION_STATE: "hermes:getSessionState",
-  HERMES_CREATE_SESSION: "hermes:createSession",
-  HERMES_CLOSE_SESSION: "hermes:closeSession",
+  HERMES_GET_API_SERVER_VERIFICATION_STATE: "hermes:getApiServerVerificationState",
+  HERMES_VERIFY_API_SERVER_CONNECTION: "hermes:verifyApiServerConnection",
+  HERMES_CLEAR_API_SERVER_VERIFICATION: "hermes:clearApiServerVerification",
 } as const;
 
 export type HermesIpcChannel = (typeof HERMES_IPC_CHANNELS)[keyof typeof HERMES_IPC_CHANNELS];

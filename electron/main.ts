@@ -48,13 +48,12 @@ import { readTextFile } from "./workspaceFileViewer";
 import { searchText } from "./workspaceSearch";
 import { getGitSummary } from "./workspaceGit";
 import { getAvailability, getAuthorizationState, beginAuthorization, clearAuthorization as clearHermesAuthorization } from "./hermesAuthorization";
-import { getConnectionState, connect as connectHermes, disconnect as disconnectHermes } from "./hermesConnection";
 import {
   getEndpointConfigurationState,
   configureEndpoint,
   clearEndpointConfiguration,
 } from "./hermesEndpointSetup";
-import { getSessionState, createSession, closeSession, clearSession } from "./hermesSession";
+import { getApiServerVerificationState, verifyApiServerConnection, clearApiServerVerification } from "./hermesApiServer";
 
 /**
  * Explicit, disabled-by-default opt-in for the lifecycle diagnostics below —
@@ -174,41 +173,27 @@ function registerWorkspaceIpcHandlers(window: BrowserWindow): void {
 }
 
 /**
- * Registers the four Hermes authorization IPC handlers — VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION.
- * Each is a thin delegate to electron/hermesAuthorization.ts, which owns the credential and
- * every validation rule; this file never inspects, logs, or forwards the request payload
- * itself — `beginAuthorization`'s raw `unknown` argument is passed straight through
- * unexamined, exactly as `hermesAuthorization.ts`'s own `validateAuthorizationRequest`
- * expects, so no second, weaker, or divergent validation exists here. No Hermes network,
- * health-check, session, prompt, or event handler is registered anywhere in this file.
+ * Registers the Hermes IPC handlers — VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION,
+ * re-scoped by VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION away from the Hermes
+ * dashboard's internal WebSocket/session surface onto the officially documented Hermes API
+ * Server connection-verification capability (see electron/hermesApiServer.ts's own header for
+ * the full evidence trail). Each handler is a thin delegate to its owning module, which alone
+ * owns the credential/endpoint/verification state and every validation rule; this file never
+ * inspects, logs, or forwards a request payload itself. No WebSocket, `/api/ws`, JSON-RPC,
+ * session, prompt, or event handler is registered anywhere in this file.
  */
 function registerHermesIpcHandlers(): void {
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_AVAILABILITY, () => getAvailability());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_AUTHORIZATION_STATE, () => getAuthorizationState());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_BEGIN_AUTHORIZATION, (_event, request: unknown) => beginAuthorization(request));
-  // D-08F — clearing authorization also disconnects any live/in-flight Hermes connection at
-  // the IPC boundary itself, not merely as a renderer-side courtesy: this is an enforced
-  // guarantee, not something a caller could bypass by invoking this channel through any path
-  // other than the renderer's own convenience wrapper (which already does the same thing,
-  // redundantly and harmlessly — see electron/renderer.ts's own handleClearHermesAuthorization).
+  // D-10 (remediated) — clearing authorization also clears any locally-tracked API Server
+  // verification state at the IPC boundary itself, not merely as a renderer-side courtesy: this
+  // is an enforced guarantee, not something a caller could bypass by invoking this channel
+  // through any path other than the renderer's own convenience wrapper (which already does the
+  // same thing, redundantly and harmlessly).
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_AUTHORIZATION, () => {
     const result = clearHermesAuthorization();
-    disconnectHermes();
-    // D-10 — clearing authorization also clears any locally-tracked Hermes session, for the
-    // same enforced-guarantee reason disconnect() already is: a session cannot genuinely
-    // remain usable once its own connection is gone.
-    clearSession();
-    return result;
-  });
-  // D-08C/D-08F — connect/disconnect take no arguments at all; see electron/hermesConnection.ts's
-  // own header for exactly what "connected" means and the full evidence trail behind it.
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_CONNECTION_STATE, () => getConnectionState());
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CONNECT, () => connectHermes());
-  // D-10 — disconnecting also clears any locally-tracked Hermes session at the IPC boundary
-  // itself, not merely as a renderer-side courtesy.
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_DISCONNECT, () => {
-    const result = disconnectHermes();
-    clearSession();
+    clearApiServerVerification();
     return result;
   });
   // D-08E — configureEndpoint's raw request is passed straight through unexamined, exactly as
@@ -216,20 +201,19 @@ function registerHermesIpcHandlers(): void {
   // divergent validation exists here. clearEndpointConfiguration takes no arguments.
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_ENDPOINT_CONFIGURATION_STATE, () => getEndpointConfigurationState());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CONFIGURE_ENDPOINT, (_event, request: unknown) => configureEndpoint(request));
-  // D-08F/D-10 — clearing the endpoint configuration also disconnects any live/in-flight Hermes
-  // connection and clears any locally-tracked session, for the same enforced-guarantee reason.
+  // D-10 (remediated) — clearing the endpoint configuration also clears any locally-tracked API
+  // Server verification state, for the same enforced-guarantee reason as above.
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_ENDPOINT_CONFIGURATION, () => {
     const result = clearEndpointConfiguration();
-    disconnectHermes();
-    clearSession();
+    clearApiServerVerification();
     return result;
   });
-  // D-10 — getSessionState/createSession/closeSession take no arguments at all; see
-  // electron/hermesSession.ts's own header for the full evidence trail and exactly what
-  // createSession() sends.
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_SESSION_STATE, () => getSessionState());
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CREATE_SESSION, () => createSession());
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLOSE_SESSION, () => closeSession());
+  // D-10 (remediated) — getApiServerVerificationState/verifyApiServerConnection/
+  // clearApiServerVerification take no arguments at all; see electron/hermesApiServer.ts's own
+  // header for the full evidence trail and exactly what verifyApiServerConnection() sends.
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_API_SERVER_VERIFICATION_STATE, () => getApiServerVerificationState());
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_VERIFY_API_SERVER_CONNECTION, () => verifyApiServerConnection());
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_API_SERVER_VERIFICATION, () => clearApiServerVerification());
 }
 
 /**
@@ -335,13 +319,10 @@ app.whenReady().then(() => {
 
 app.on("before-quit", () => {
   logLifecycle("before-quit");
-  // D-08F — ensures any live Hermes WebSocket client is terminated before the process exits,
-  // rather than relying on the OS to tear down the socket as a side effect of process death.
-  // disconnectHermes() is already idempotent/safe to call even when nothing is connected.
-  disconnectHermes();
-  // D-10 — clears any locally-tracked Hermes session for the same reason; clearSession() is
-  // likewise idempotent/safe to call even when no session was ever created.
-  clearSession();
+  // D-10 (remediated) — clears any locally-tracked Hermes API Server verification state before
+  // the process exits, rather than leaving it dangling. clearApiServerVerification() is
+  // idempotent/safe to call even when nothing was ever verified.
+  clearApiServerVerification();
 });
 app.on("will-quit", () => logLifecycle("will-quit"));
 // `quit` fires AFTER the app has finished quitting, immediately before the process itself

@@ -124,32 +124,11 @@ interface HermesAuthorizationResult {
   readonly state: HermesAuthorizationOutcomeState;
 }
 
-// VYRON_CODE_V02_D08B_CHECKPOINT_AND_D08C_SAFE_HERMES_CONNECTIVITY_AUTHORIZATION (D-08C) —
-// duplicated locally for the same reason every other type here is. Carries no endpoint/host/
-// port/socket/session field anywhere.
-type HermesConnectionAmbientState =
-  | "not_authorized"
-  | "endpoint_not_configured"
-  | "ready_to_connect"
-  | "connecting"
-  | "connected"
-  | "disconnecting"
-  | "disconnected"
-  | "unavailable"
-  | "connection_timed_out"
-  | "safe_failure";
-
-interface HermesConnectionState {
-  readonly state: HermesConnectionAmbientState;
-}
-
-interface HermesConnectionResult {
-  readonly state: HermesConnectionAmbientState;
-}
-
-// VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION — duplicated locally for
-// the same reason every other type here is. Carries no resolved URL/host/port/protocol field
-// anywhere; `HermesEndpointConfigurationRequest` carries only the raw, caller-supplied string.
+// VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION, re-scoped by
+// VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION onto the Hermes API Server — duplicated
+// locally for the same reason every other type here is. Carries no resolved URL/host/port/
+// protocol field anywhere; `HermesEndpointConfigurationRequest` carries only the raw,
+// caller-supplied string.
 type HermesEndpointAmbientState = "not_configured" | "configured_memory_only";
 
 interface HermesEndpointState {
@@ -173,17 +152,24 @@ interface HermesEndpointConfigurationResult {
   readonly state: HermesEndpointConfigurationOutcomeState;
 }
 
-// VYRON_CODE_V02_D10_EXPLICIT_HERMES_SESSION_CREATION_AUTHORIZATION — duplicated locally for the
-// same reason every other type here is. Carries no session id/raw response/token/endpoint field
-// anywhere.
-type HermesSessionAmbientState = "no_session" | "creating" | "active" | "closing" | "closed" | "unavailable" | "safe_failure";
+// VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION — duplicated locally for the same
+// reason every other type here is. Carries no endpoint/API-key/raw HTTP status/headers/body
+// field anywhere.
+type HermesApiServerAmbientState =
+  | "not_authorized"
+  | "endpoint_not_configured"
+  | "ready_to_verify"
+  | "verifying"
+  | "reachable"
+  | "unavailable"
+  | "safe_failure";
 
-interface HermesSessionState {
-  readonly state: HermesSessionAmbientState;
+interface HermesApiServerState {
+  readonly state: HermesApiServerAmbientState;
 }
 
-interface HermesSessionResult {
-  readonly state: HermesSessionAmbientState;
+interface HermesApiServerResult {
+  readonly state: HermesApiServerAmbientState;
 }
 
 interface DesktopHermesApi {
@@ -191,15 +177,12 @@ interface DesktopHermesApi {
   getAuthorizationState(): Promise<HermesAuthorizationState>;
   beginAuthorization(request: HermesAuthorizationRequest): Promise<HermesAuthorizationResult>;
   clearAuthorization(): Promise<HermesAuthorizationResult>;
-  getConnectionState(): Promise<HermesConnectionState>;
-  connect(): Promise<HermesConnectionResult>;
-  disconnect(): Promise<HermesConnectionResult>;
   getEndpointConfigurationState(): Promise<HermesEndpointState>;
   configureEndpoint(request: HermesEndpointConfigurationRequest): Promise<HermesEndpointConfigurationResult>;
   clearEndpointConfiguration(): Promise<HermesEndpointConfigurationResult>;
-  getSessionState(): Promise<HermesSessionState>;
-  createSession(): Promise<HermesSessionResult>;
-  closeSession(): Promise<HermesSessionResult>;
+  getApiServerVerificationState(): Promise<HermesApiServerState>;
+  verifyApiServerConnection(): Promise<HermesApiServerResult>;
+  clearApiServerVerification(): Promise<HermesApiServerResult>;
 }
 
 interface DesktopApi {
@@ -239,15 +222,12 @@ const HERMES_GET_AVAILABILITY_CHANNEL = "hermes:getAvailability";
 const HERMES_GET_AUTHORIZATION_STATE_CHANNEL = "hermes:getAuthorizationState";
 const HERMES_BEGIN_AUTHORIZATION_CHANNEL = "hermes:beginAuthorization";
 const HERMES_CLEAR_AUTHORIZATION_CHANNEL = "hermes:clearAuthorization";
-const HERMES_GET_CONNECTION_STATE_CHANNEL = "hermes:getConnectionState";
-const HERMES_CONNECT_CHANNEL = "hermes:connect";
-const HERMES_DISCONNECT_CHANNEL = "hermes:disconnect";
 const HERMES_GET_ENDPOINT_CONFIGURATION_STATE_CHANNEL = "hermes:getEndpointConfigurationState";
 const HERMES_CONFIGURE_ENDPOINT_CHANNEL = "hermes:configureEndpoint";
 const HERMES_CLEAR_ENDPOINT_CONFIGURATION_CHANNEL = "hermes:clearEndpointConfiguration";
-const HERMES_GET_SESSION_STATE_CHANNEL = "hermes:getSessionState";
-const HERMES_CREATE_SESSION_CHANNEL = "hermes:createSession";
-const HERMES_CLOSE_SESSION_CHANNEL = "hermes:closeSession";
+const HERMES_GET_API_SERVER_VERIFICATION_STATE_CHANNEL = "hermes:getApiServerVerificationState";
+const HERMES_VERIFY_API_SERVER_CONNECTION_CHANNEL = "hermes:verifyApiServerConnection";
+const HERMES_CLEAR_API_SERVER_VERIFICATION_CHANNEL = "hermes:clearApiServerVerification";
 
 const vyronDesktop: DesktopApi = {
   platform: "desktop",
@@ -285,22 +265,18 @@ const vyronDesktop: DesktopApi = {
     getAuthorizationState: () => ipcRenderer.invoke(HERMES_GET_AUTHORIZATION_STATE_CHANNEL),
     beginAuthorization: (request: HermesAuthorizationRequest) => ipcRenderer.invoke(HERMES_BEGIN_AUTHORIZATION_CHANNEL, request),
     clearAuthorization: () => ipcRenderer.invoke(HERMES_CLEAR_AUTHORIZATION_CHANNEL),
-    // D-08C — no argument of any kind; the fixed/trusted endpoint (if any) is selected
-    // entirely inside the main process, never supplied by the renderer.
-    getConnectionState: () => ipcRenderer.invoke(HERMES_GET_CONNECTION_STATE_CHANNEL),
-    connect: () => ipcRenderer.invoke(HERMES_CONNECT_CHANNEL),
-    disconnect: () => ipcRenderer.invoke(HERMES_DISCONNECT_CHANNEL),
     // D-08E — configureEndpoint forwards exactly the caller's own single-field request
     // ({endpoint: string}) verbatim, unexamined; this file never reads, logs, or otherwise
     // touches the endpoint value itself. clearEndpointConfiguration takes no argument.
     getEndpointConfigurationState: () => ipcRenderer.invoke(HERMES_GET_ENDPOINT_CONFIGURATION_STATE_CHANNEL),
     configureEndpoint: (request: HermesEndpointConfigurationRequest) => ipcRenderer.invoke(HERMES_CONFIGURE_ENDPOINT_CHANNEL, request),
     clearEndpointConfiguration: () => ipcRenderer.invoke(HERMES_CLEAR_ENDPOINT_CONFIGURATION_CHANNEL),
-    // D-10 — no argument of any kind; no session id/title/model/provider/workspace/context
-    // field can ever be forwarded through these three closures.
-    getSessionState: () => ipcRenderer.invoke(HERMES_GET_SESSION_STATE_CHANNEL),
-    createSession: () => ipcRenderer.invoke(HERMES_CREATE_SESSION_CHANNEL),
-    closeSession: () => ipcRenderer.invoke(HERMES_CLOSE_SESSION_CHANNEL),
+    // D-10 (remediated) — no argument of any kind; no endpoint/API-key/path/method/header/
+    // body/options/model/provider/workspace/context field can ever be forwarded through these
+    // three closures.
+    getApiServerVerificationState: () => ipcRenderer.invoke(HERMES_GET_API_SERVER_VERIFICATION_STATE_CHANNEL),
+    verifyApiServerConnection: () => ipcRenderer.invoke(HERMES_VERIFY_API_SERVER_CONNECTION_CHANNEL),
+    clearApiServerVerification: () => ipcRenderer.invoke(HERMES_CLEAR_API_SERVER_VERIFICATION_CHANNEL),
   },
 };
 
