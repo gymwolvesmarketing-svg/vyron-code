@@ -17,6 +17,18 @@
   box-sizing: border-box;
 }
 
+/* The `hidden` DOM/HTML attribute only wins over an author stylesheet's own `display` value
+   when nothing else sets one — any class-based `display: flex/grid/block` rule below (e.g.
+   .hermes-form, .hermes-actions) otherwise silently overrides the UA stylesheet's own
+   `[hidden] { display: none }` default, leaving an element visible even while every renderer.ts
+   caller correctly sets `.hidden = true` on it. This single global, maximum-specificity rule is
+   the standard fix (making the narrower `button[hidden]`/`.workspace-view[hidden]` rules below
+   redundant but harmless) — every element this file ever marks `hidden` now reliably disappears
+   regardless of what other display rule would otherwise apply to it. */
+[hidden] {
+  display: none !important;
+}
+
 html, body {
   margin: 0;
   padding: 0;

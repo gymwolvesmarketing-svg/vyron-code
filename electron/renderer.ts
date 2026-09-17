@@ -1390,13 +1390,17 @@ function renderHermesPanel(view: HermesViewState): void {
     form.hidden = false;
     const submitting = view === "submitting";
     credentialInput.disabled = submitting;
-    submitBtn.disabled = submitting;
     submitBtn.textContent = submitting ? "Authorizing…" : "Authorize";
     if (view === "safe_failure") {
       credentialInput.value = "";
       errorEl.hidden = false;
       errorEl.textContent = "Authorization could not be stored for this app session. Please try again.";
     }
+    // Never enabled while empty/whitespace-only or submitting — mirrors the endpoint form's
+    // own submitBtn.disabled gating (updateHermesEndpointSubmitEnabled). Closes the gap where a
+    // user could previously click Authorize with an empty credential field and reach the
+    // generic safe_failure state instead of being blocked from submitting at all.
+    submitBtn.disabled = submitting || credentialInput.value.trim().length === 0;
     return;
   }
 
@@ -1572,8 +1576,13 @@ function getHermesEndpointElements(): HermesEndpointElements | null {
  * policy engine). Exists only to keep the submit action disabled for an obviously-incomplete
  * entry; passing this check guarantees nothing about whether the main process will accept it. */
 function looksLikeSuperficiallyValidEndpoint(value: string): boolean {
+  // D-10 (remediated): re-scoped from the retired ws:/wss: dashboard scheme onto http: — the
+  // only scheme electron/hermesEndpoint.ts's validateEndpointCandidate ever accepts now. This
+  // is a superficial UX gate only (the main process alone performs the real, authoritative
+  // validation); before this fix it still matched the OLD ws:/wss: prefix, meaning no
+  // http://<host>:<port> value the backend could ever accept would enable this button at all.
   const trimmed = value.trim();
-  return trimmed.length > 0 && /^wss?:\/\//i.test(trimmed);
+  return trimmed.length > 0 && /^http:\/\//i.test(trimmed);
 }
 
 function updateHermesEndpointSubmitEnabled(): void {
@@ -1933,10 +1942,20 @@ async function initHermesState(api: DesktopApi): Promise<void> {
   }
 }
 
+/** Live-updates the Authorize submit button's disabled state as the user types, mirroring
+ * updateHermesEndpointSubmitEnabled's own pattern for the endpoint form. */
+function updateHermesAuthorizeSubmitEnabled(): void {
+  const els = getHermesElements();
+  if (!els) return;
+  if (els.submitBtn.disabled && els.credentialInput.disabled) return; // currently submitting; renderHermesPanel owns this state
+  els.submitBtn.disabled = els.credentialInput.value.trim().length === 0;
+}
+
 function wireHermesControls(): void {
   document.getElementById("hermes-authorize-btn")?.addEventListener("click", handleOpenHermesPanel);
   document.getElementById("hermes-cancel-btn")?.addEventListener("click", handleCancelHermesAuthorization);
   document.getElementById("hermes-clear-btn")?.addEventListener("click", () => void handleClearHermesAuthorization());
+  document.getElementById("hermes-credential-input")?.addEventListener("input", updateHermesAuthorizeSubmitEnabled);
   const form = document.getElementById("hermes-authorization-form");
   if (form instanceof HTMLFormElement) {
     form.addEventListener("submit", (event) => void handleBeginHermesAuthorization(event));

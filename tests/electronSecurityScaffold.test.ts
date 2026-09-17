@@ -1059,6 +1059,12 @@ describe("electron/renderer.ts — Hermes authorization panel wiring (D-08B)", (
     const occurrences = hermesSource.match(/credentialInput\.value = "";/g) ?? [];
     expect(occurrences.length).toBeGreaterThanOrEqual(3);
   });
+
+  it("gates the Authorize submit button on a non-empty, non-whitespace-only credential — never clickable while the field is empty (closes the empty-submission safe_failure gap)", () => {
+    expect(hermesSource).toMatch(/submitBtn\.disabled = submitting \|\| credentialInput\.value\.trim\(\)\.length === 0;/);
+    expect(hermesSource).toMatch(/function updateHermesAuthorizeSubmitEnabled\(\): void \{/);
+    expect(hermesSource).toMatch(/hermes-credential-input"\)\?\.addEventListener\("input", updateHermesAuthorizeSubmitEnabled\)/);
+  });
 });
 
 describe("electron/renderer.ts — D-10 (remediated) API Server verification sub-panel wiring", () => {
@@ -1154,6 +1160,16 @@ describe("electron/renderer.ts — D-08E endpoint setup panel wiring", () => {
     expect(endpointSource).toMatch(/looksLikeSuperficiallyValidEndpoint/);
     expect(endpointSource).toMatch(/riskCheckbox\.checked/);
     expect(endpointSource).toMatch(/submitBtn\.disabled = !\(/);
+  });
+
+  it("the superficial format check matches http: (D-10 remediated) — never the retired ws:/wss: scheme, which would otherwise permanently disable submit for every endpoint the backend can actually accept", () => {
+    // Not sliced to a closing-brace-bounded "function body": stripComments()'s naive line-
+    // comment stripper treats the literal `//` inside this regex's own `\/\/` escape sequence
+    // as a `// comment` start, corrupting anything textually after it on that line — matching
+    // against the wider endpointSource (which still contains the un-corrupted `http:` prefix
+    // before that point) avoids relying on the corrupted tail.
+    expect(endpointSource).toContain("/^http:");
+    expect(endpointSource).not.toMatch(/\/\^wss\?:/);
   });
 
   it("clears the endpoint input in a finally block after every configureEndpoint attempt, success or failure", () => {
