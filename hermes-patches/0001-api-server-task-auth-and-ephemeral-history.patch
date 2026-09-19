@@ -1,0 +1,86 @@
+From: Vyron Code D-11 local hardening (VYRON_CODE_COMPLETE_LOCAL_HERMES_D11_DELIVERY_AUTHORIZATION)
+Applies to: NousResearch/hermes-agent, installed local copy (confirmed present, unchanged, in
+the current official upstream `main` branch as of this writing too — see
+VYRON_CODE_V02_D11_AUTH_AND_EPHEMERAL_HISTORY_DISCOVERY_REPORT.md for the evidence trail).
+
+OPTIONAL, NOT APPLIED. This patch was not applied to your installed Hermes Agent — this
+development environment's own permission system blocks writes to files outside this
+repository, so it was never attempted against your real installation, by design (no
+work-around was attempted). This file exists so you can review, and optionally apply, the
+exact change yourself.
+
+WHAT IT DOES:
+  1. (Redundant with scripts/hermes-auth-proxy.mjs, included for completeness/correctness if
+     you'd rather fix it at the source): adds an `Authorization: Bearer <API_SERVER_KEY>`
+     check to `POST /v1/chat/completions` and `POST /v1/responses`, identical in spirit to the
+     existing `@_require_auth` decorator already used elsewhere in the same file for
+     `/v1/models` and the response-management routes.
+  2. (Not achievable any other way found this task): sets `agent._persist_disabled = True`
+     immediately after agent construction in `_create_agent`, reusing the exact mechanism
+     `background_review.py` already uses today for its own persistence-isolated forked agents.
+     This prevents the session/history/message durable write that otherwise happens
+     unconditionally on every `api_server` task request.
+
+HOW TO APPLY (PowerShell, run as the same user who owns the Hermes installation):
+  1. Back up first (belt-and-suspenders on top of this patch's own git-apply safety):
+       Copy-Item "$env:LOCALAPPDATA\hermes\hermes-agent\gateway\platforms\api_server.py" "$env:LOCALAPPDATA\hermes\hermes-agent\gateway\platforms\api_server.py.bak"
+       Copy-Item "$env:LOCALAPPDATA\hermes\hermes-agent\gateway\platforms\api_server_openai_routes.py" "$env:LOCALAPPDATA\hermes\hermes-agent\gateway\platforms\api_server_openai_routes.py.bak"
+  2. From this repository root:
+       git apply --directory="$env:LOCALAPPDATA\hermes\hermes-agent" hermes-patches/0001-api-server-task-auth-and-ephemeral-history.patch
+     (or apply the two hunks below by hand if `git apply` complains about line-ending/path
+     differences against your installed copy's exact version.)
+  3. Restart Hermes: `hermes gateway run` (after stopping any existing instance).
+  4. Re-run `scripts/hermes-auth-proxy.mjs` is then optional — Hermes itself now enforces auth,
+     so Vyron Code can point directly at Hermes's own port again instead of the proxy port.
+
+HOW TO ROLL BACK:
+  Restore the two `.bak` files created in step 1, or re-run your own package
+  install/repair/reinstall for Hermes Agent 0.21.0.
+
+--- a/gateway/platforms/api_server_openai_routes.py
++++ b/gateway/platforms/api_server_openai_routes.py
+@@ -409,6 +409,10 @@
+     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
+         """POST /v1/chat/completions — OpenAI Chat Completions format."""
+         from gateway.platforms.api_server import (
+             ThreadSafeAsyncQueue, _chat_usage_payload, _coerce_request_bool,
+             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
+             _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content,
+             _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
++        # VYRON_LOCAL_PATCH: reject before any session/agent/tool work.
++        auth_err = self._check_auth(request)
++        if auth_err:
++            return auth_err
+         # Bound total in-flight agent runs (configurable; #7483).
+         limited = self._concurrency_limited_response()
+         if limited is not None:
+@@ -730,6 +734,10 @@
+     async def _handle_responses(self, request: "web.Request") -> "web.Response":
+         """POST /v1/responses — OpenAI Responses API format."""
+         from gateway.platforms.api_server import (
+             ThreadSafeAsyncQueue, _auto_truncate_response_history, _coerce_request_bool,
+             _content_has_visible_payload, _error_response, _invalid_request,
+             _multimodal_validation_error, _normalize_multimodal_content, _redact_api_error_text,
+             _resolve_media_to_data_urls, _responses_usage_payload)
++        # VYRON_LOCAL_PATCH: reject before any session/agent/tool work.
++        auth_err = self._check_auth(request)
++        if auth_err:
++            return auth_err
+         # Bound total in-flight agent runs (configurable; #7483).
+         limited = self._concurrency_limited_response()
+         if limited is not None:
+
+--- a/gateway/platforms/api_server.py
++++ b/gateway/platforms/api_server.py
+@@ -2161,6 +2161,10 @@
+             agent_kwargs["service_tier"] = request_service_tier
+         agent = AIAgent(**agent_kwargs)
++        # VYRON_LOCAL_PATCH: this platform's task requests must not durably persist prompt,
++        # response, or session/history data. Reuses the exact mechanism
++        # gateway/platforms/../../agent/background_review.py already uses for its own
++        # persistence-isolated forked agents (see agent._persist_disabled call sites throughout
++        # agent/*.py and run_agent.py for the full set of writes this suppresses).
++        agent._persist_disabled = True
+         route_source = (
+             "session_model_lock" if confirmed_runtime_lock
+             else "session_model_override" if session_override
