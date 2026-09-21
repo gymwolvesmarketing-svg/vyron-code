@@ -172,6 +172,31 @@ interface HermesApiServerResult {
   readonly state: HermesApiServerAmbientState;
 }
 
+// VYRON_CODE_COMPLETE_LOCAL_HERMES_D11_DELIVERY_AUTHORIZATION — duplicated locally for the
+// same reason every other type here is. Carries no endpoint/API-key/raw HTTP status/headers/
+// body/session-id field anywhere; `text` is populated only in the "completed" state and is
+// always the already-bounded, plain-text-only assistant response.
+type HermesTaskSubmissionAmbientState =
+  | "idle"
+  | "review_ready"
+  | "sending"
+  | "completed"
+  | "unavailable"
+  | "unauthorized"
+  | "safe_failure"
+  | "cancelled";
+
+interface HermesTaskSubmissionState {
+  readonly state: HermesTaskSubmissionAmbientState;
+  readonly draftLength: number | null;
+  readonly text: string | null;
+  readonly truncated: boolean;
+}
+
+interface HermesTaskDraftReviewRequest {
+  readonly draft: string;
+}
+
 interface DesktopHermesApi {
   getAvailability(): Promise<HermesAvailability>;
   getAuthorizationState(): Promise<HermesAuthorizationState>;
@@ -183,6 +208,10 @@ interface DesktopHermesApi {
   getApiServerVerificationState(): Promise<HermesApiServerState>;
   verifyApiServerConnection(): Promise<HermesApiServerResult>;
   clearApiServerVerification(): Promise<HermesApiServerResult>;
+  getTaskSubmissionState(): Promise<HermesTaskSubmissionState>;
+  reviewTaskDraft(request: HermesTaskDraftReviewRequest): Promise<HermesTaskSubmissionState>;
+  sendReviewedTask(): Promise<HermesTaskSubmissionState>;
+  clearTaskSubmission(): Promise<HermesTaskSubmissionState>;
 }
 
 interface DesktopApi {
@@ -228,6 +257,10 @@ const HERMES_CLEAR_ENDPOINT_CONFIGURATION_CHANNEL = "hermes:clearEndpointConfigu
 const HERMES_GET_API_SERVER_VERIFICATION_STATE_CHANNEL = "hermes:getApiServerVerificationState";
 const HERMES_VERIFY_API_SERVER_CONNECTION_CHANNEL = "hermes:verifyApiServerConnection";
 const HERMES_CLEAR_API_SERVER_VERIFICATION_CHANNEL = "hermes:clearApiServerVerification";
+const HERMES_GET_TASK_SUBMISSION_STATE_CHANNEL = "hermes:getTaskSubmissionState";
+const HERMES_REVIEW_TASK_DRAFT_CHANNEL = "hermes:reviewTaskDraft";
+const HERMES_SEND_REVIEWED_TASK_CHANNEL = "hermes:sendReviewedTask";
+const HERMES_CLEAR_TASK_SUBMISSION_CHANNEL = "hermes:clearTaskSubmission";
 
 const vyronDesktop: DesktopApi = {
   platform: "desktop",
@@ -277,6 +310,14 @@ const vyronDesktop: DesktopApi = {
     getApiServerVerificationState: () => ipcRenderer.invoke(HERMES_GET_API_SERVER_VERIFICATION_STATE_CHANNEL),
     verifyApiServerConnection: () => ipcRenderer.invoke(HERMES_VERIFY_API_SERVER_CONNECTION_CHANNEL),
     clearApiServerVerification: () => ipcRenderer.invoke(HERMES_CLEAR_API_SERVER_VERIFICATION_CHANNEL),
+    // D-11 — getTaskSubmissionState/sendReviewedTask/clearTaskSubmission take no argument of
+    // any kind; reviewTaskDraft forwards exactly the caller's own single-field request
+    // ({draft: string}) verbatim, unexamined — this file never reads, logs, or otherwise
+    // touches the draft value itself.
+    getTaskSubmissionState: () => ipcRenderer.invoke(HERMES_GET_TASK_SUBMISSION_STATE_CHANNEL),
+    reviewTaskDraft: (request: HermesTaskDraftReviewRequest) => ipcRenderer.invoke(HERMES_REVIEW_TASK_DRAFT_CHANNEL, request),
+    sendReviewedTask: () => ipcRenderer.invoke(HERMES_SEND_REVIEWED_TASK_CHANNEL),
+    clearTaskSubmission: () => ipcRenderer.invoke(HERMES_CLEAR_TASK_SUBMISSION_CHANNEL),
   },
 };
 

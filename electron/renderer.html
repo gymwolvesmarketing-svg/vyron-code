@@ -203,25 +203,36 @@
 
       <div id="task-review" hidden>
         <h3>Review task draft</h3>
-        <p class="muted">This is a local preview. Nothing is being sent.</p>
+        <p class="muted">This is a local preview. Review the exact text below before sending anything.</p>
         <dl>
           <dt>Task profile</dt>
           <dd id="task-review-profile"></dd>
           <dt>Task draft</dt>
           <dd id="task-review-draft"></dd>
         </dl>
-        <p class="muted">Selected context</p>
+        <p class="muted">Selected context (informational only — never sent)</p>
         <ul id="task-review-context-list" aria-label="Selected context"></ul>
         <dl>
-          <dt>Destination</dt>
-          <dd id="task-review-destination">Not configured for sending.</dd>
-          <dt>Network</dt>
-          <dd id="task-review-network">No request will be sent in this build.</dd>
+          <dt>What will be sent</dt>
+          <dd id="task-review-send-scope">Only this task text will be sent.</dd>
+          <dt>What will not be sent</dt>
+          <dd id="task-review-no-context">No workspace, file, search result, Git data or selected context is sent.</dd>
+          <dt>Hermes tools &amp; history</dt>
+          <dd id="task-review-tool-history-disclosure">Hermes tools and persistent task history are disabled for this connection.</dd>
           <dt>Hermes API verification</dt>
           <dd id="task-review-hermes-verification">Not verified</dd>
-          <dt>Task sending</dt>
+          <dt>Task submission</dt>
           <dd id="task-review-task-sending">Not available in this build.</dd>
         </dl>
+        <div class="hermes-actions">
+          <button id="task-send-btn" type="button" disabled>Send reviewed task</button>
+        </div>
+        <p id="task-send-error" class="muted" hidden></p>
+        <div id="task-response-section" hidden>
+          <p class="muted">Hermes response</p>
+          <p id="task-response-text"></p>
+          <p id="task-response-truncated-note" class="muted" hidden>Response was truncated.</p>
+        </div>
         <div class="task-actions">
           <button id="task-review-back-btn" type="button">Back to draft</button>
           <button id="task-review-clear-context-btn" type="button">Clear all context</button>

@@ -165,6 +165,31 @@ interface HermesApiServerResult {
   readonly state: HermesApiServerAmbientState;
 }
 
+// VYRON_CODE_COMPLETE_LOCAL_HERMES_D11_DELIVERY_AUTHORIZATION — duplicated locally for the
+// same reason every other type here is. Carries no endpoint/API-key/raw HTTP status/headers/
+// body/session-id field anywhere; `text` is populated only in the "completed" state and is
+// always the already-bounded, plain-text-only assistant response.
+type HermesTaskSubmissionAmbientState =
+  | "idle"
+  | "review_ready"
+  | "sending"
+  | "completed"
+  | "unavailable"
+  | "unauthorized"
+  | "safe_failure"
+  | "cancelled";
+
+interface HermesTaskSubmissionState {
+  readonly state: HermesTaskSubmissionAmbientState;
+  readonly draftLength: number | null;
+  readonly text: string | null;
+  readonly truncated: boolean;
+}
+
+interface HermesTaskDraftReviewRequest {
+  readonly draft: string;
+}
+
 interface DesktopHermesApi {
   getAvailability(): Promise<HermesAvailability>;
   getAuthorizationState(): Promise<HermesAuthorizationState>;
@@ -176,6 +201,10 @@ interface DesktopHermesApi {
   getApiServerVerificationState(): Promise<HermesApiServerState>;
   verifyApiServerConnection(): Promise<HermesApiServerResult>;
   clearApiServerVerification(): Promise<HermesApiServerResult>;
+  getTaskSubmissionState(): Promise<HermesTaskSubmissionState>;
+  reviewTaskDraft(request: HermesTaskDraftReviewRequest): Promise<HermesTaskSubmissionState>;
+  sendReviewedTask(): Promise<HermesTaskSubmissionState>;
+  clearTaskSubmission(): Promise<HermesTaskSubmissionState>;
 }
 
 interface DesktopApi {
@@ -1211,6 +1240,7 @@ function handleOpenTaskReview(): void {
   setTaskDraftInputLocked(true);
   renderTaskDraftStatus();
   renderTaskReview();
+  void handleReviewTaskDraft();
 }
 
 function handleCloseTaskReview(): void {
@@ -1218,6 +1248,7 @@ function handleCloseTaskReview(): void {
   setTaskDraftInputLocked(false);
   renderTaskDraftStatus();
   renderTaskReview();
+  void handleClearTaskSubmission();
 }
 
 /**
@@ -1230,10 +1261,10 @@ function handleCloseTaskReview(): void {
  */
 function renderTaskApiVerificationInfo(): void {
   const verificationEl = document.getElementById("task-review-hermes-verification");
-  const sendingEl = document.getElementById("task-review-task-sending");
-  if (!verificationEl || !sendingEl) return;
+  if (!verificationEl) return;
   verificationEl.textContent = lastKnownApiServerAmbientState === "reachable" ? "Verified" : "Not verified";
-  sendingEl.textContent = "Not available in this build.";
+  // D-11 — task-review-task-sending is owned entirely by renderHermesTaskSubmission() now;
+  // this function must never write to it (that was the pre-D-11 "always unavailable" stub).
 }
 
 function renderTaskReview(): void {
@@ -1245,15 +1276,18 @@ function renderTaskReview(): void {
   const profileEl = document.getElementById("task-review-profile");
   const draftEl = document.getElementById("task-review-draft");
   const listEl = document.getElementById("task-review-context-list");
-  const destinationEl = document.getElementById("task-review-destination");
-  const networkEl = document.getElementById("task-review-network");
-  if (!profileEl || !draftEl || !listEl || !destinationEl || !networkEl) return;
+  if (!profileEl || !draftEl || !listEl) return;
 
   profileEl.textContent = getTaskProfileMeta(taskSelectedProfile).label;
   draftEl.textContent = taskDraftText;
-  destinationEl.textContent = "Not configured for sending.";
-  networkEl.textContent = "No request will be sent in this build.";
+  // task-review-send-scope / task-review-no-context / task-review-tool-history-disclosure are
+  // fixed, static declaration text in renderer.html — never reassigned here.
   renderTaskApiVerificationInfo();
+  // D-11 — redraws the task-submission sub-section from the last known cached state (never a
+  // fresh IPC call from here) so an in-progress review/send/completed state survives an
+  // unrelated re-render (e.g. adding a context item while review is open) instead of being
+  // stomped back to a stale default.
+  renderHermesTaskSubmission(lastKnownTaskSubmissionState.state, lastKnownTaskSubmissionState.text, lastKnownTaskSubmissionState.truncated);
 
   listEl.replaceChildren();
   if (taskContextItems.length === 0) {
@@ -1268,6 +1302,180 @@ function renderTaskReview(): void {
   }
 }
 
+// ---------------------------------------------------------------------------------------
+// D-11 explicit reviewed task submission — VYRON_CODE_COMPLETE_LOCAL_HERMES_D11_DELIVERY_AUTHORIZATION.
+// Lives entirely inside the existing D-09 review surface (task-review), which is the only
+// place the exact outbound text is ever displayed. reviewTaskDraft()/sendReviewedTask()/
+// clearTaskSubmission() never take an endpoint/API-key/path/method/header/body/options/model/
+// provider/workspace/context argument of any kind — the main process alone resolves the
+// already-configured endpoint/credential and owns the one bounded, non-streaming
+// `POST /v1/chat/completions` request; see electron/hermesTaskSubmission.ts's own header for
+// the full evidence trail behind exactly what "completed" now means and what this build still
+// never does (no session/event-stream/provider/model-picker capability of any kind).
+// ---------------------------------------------------------------------------------------
+
+/** Monotonic request generation — the same T-17-style guard every other Hermes sub-panel in
+ * this file uses, applied independently to task submission. */
+let hermesTaskSubmissionRequestGeneration = 0;
+
+/** Read-only cache of the last known task-submission state, so renderTaskReview() (called from
+ * several context-mutation sites while review is open, none of which know anything about task
+ * submission) can safely redraw this sub-section without either stomping it back to a stale
+ * default or issuing its own extra IPC call. Mirrors the established
+ * `lastKnownApiServerAmbientState`/`lastKnownHermesSessionAmbientState`-style cache pattern
+ * already used elsewhere in this file. */
+let lastKnownTaskSubmissionState: HermesTaskSubmissionState = { state: "idle", draftLength: null, text: null, truncated: false };
+
+interface HermesTaskSubmissionElements {
+  readonly statusEl: HTMLElement;
+  readonly sendBtn: HTMLButtonElement;
+  readonly errorEl: HTMLElement;
+  readonly responseSection: HTMLElement;
+  readonly responseTextEl: HTMLElement;
+  readonly truncatedNoteEl: HTMLElement;
+}
+
+function getHermesTaskSubmissionElements(): HermesTaskSubmissionElements | null {
+  const statusEl = document.getElementById("task-review-task-sending");
+  const sendBtn = document.getElementById("task-send-btn");
+  const errorEl = document.getElementById("task-send-error");
+  const responseSection = document.getElementById("task-response-section");
+  const responseTextEl = document.getElementById("task-response-text");
+  const truncatedNoteEl = document.getElementById("task-response-truncated-note");
+  if (
+    !(statusEl instanceof HTMLElement) ||
+    !(sendBtn instanceof HTMLButtonElement) ||
+    !(errorEl instanceof HTMLElement) ||
+    !(responseSection instanceof HTMLElement) ||
+    !(responseTextEl instanceof HTMLElement) ||
+    !(truncatedNoteEl instanceof HTMLElement)
+  ) {
+    return null;
+  }
+  return { statusEl, sendBtn, errorEl, responseSection, responseTextEl, truncatedNoteEl };
+}
+
+/**
+ * Renders one of the required D-11 task-submission states using only fixed, safe,
+ * hand-written string literals plus the one bounded, already-safe response text field — never
+ * an endpoint, API key, raw HTTP status/headers/body, or session id. No state here ever
+ * mentions a network address, port, or protocol detail.
+ */
+function renderHermesTaskSubmission(view: HermesTaskSubmissionAmbientState, text: string | null, truncated: boolean): void {
+  lastKnownTaskSubmissionState = { state: view, draftLength: null, text, truncated };
+  const els = getHermesTaskSubmissionElements();
+  if (!els) return;
+  const { statusEl, sendBtn, errorEl, responseSection, responseTextEl, truncatedNoteEl } = els;
+
+  errorEl.hidden = true;
+  errorEl.textContent = "";
+  responseSection.hidden = true;
+  responseTextEl.textContent = "";
+  truncatedNoteEl.hidden = true;
+  sendBtn.disabled = false;
+  sendBtn.textContent = "Send reviewed task";
+
+  switch (view) {
+    case "idle":
+      statusEl.textContent = "Not available in this build.";
+      sendBtn.hidden = true;
+      break;
+    case "review_ready":
+      statusEl.textContent = "Ready to send.";
+      sendBtn.hidden = false;
+      break;
+    case "sending":
+      statusEl.textContent = "Sending…";
+      sendBtn.hidden = false;
+      sendBtn.disabled = true;
+      sendBtn.textContent = "Sending…";
+      break;
+    case "completed":
+      statusEl.textContent = "Completed.";
+      sendBtn.hidden = false;
+      if (text !== null) {
+        responseSection.hidden = false;
+        // Plain-text assignment only — never innerHTML — so the assistant's own response text
+        // can never be interpreted as markup, an active link, or executable content.
+        responseTextEl.textContent = text;
+        truncatedNoteEl.hidden = !truncated;
+      }
+      break;
+    case "unavailable":
+      statusEl.textContent = "Not available in this build.";
+      sendBtn.hidden = true;
+      break;
+    case "unauthorized":
+      statusEl.textContent = "Authorize Hermes before sending a task.";
+      sendBtn.hidden = true;
+      break;
+    case "safe_failure":
+      statusEl.textContent = "Ready to send.";
+      sendBtn.hidden = false;
+      errorEl.hidden = false;
+      errorEl.textContent = "The task could not be completed. Please try again.";
+      break;
+    case "cancelled":
+      statusEl.textContent = "Ready to send.";
+      sendBtn.hidden = false;
+      break;
+  }
+}
+
+async function handleReviewTaskDraft(): Promise<void> {
+  const api = window.vyronDesktop;
+  if (!api) {
+    renderHermesTaskSubmission("unavailable", null, false);
+    return;
+  }
+  const requestId = ++hermesTaskSubmissionRequestGeneration;
+  try {
+    const result = await api.hermes.reviewTaskDraft({ draft: taskDraftText });
+    if (requestId !== hermesTaskSubmissionRequestGeneration) return;
+    renderHermesTaskSubmission(result.state, result.text, result.truncated);
+  } catch {
+    if (requestId !== hermesTaskSubmissionRequestGeneration) return;
+    renderHermesTaskSubmission("safe_failure", null, false);
+  }
+}
+
+async function handleSendReviewedTask(): Promise<void> {
+  const api = window.vyronDesktop;
+  if (!api) {
+    renderHermesTaskSubmission("unavailable", null, false);
+    return;
+  }
+  const requestId = ++hermesTaskSubmissionRequestGeneration;
+  renderHermesTaskSubmission("sending", null, false);
+  try {
+    const result = await api.hermes.sendReviewedTask();
+    // Superseded by a later send/clear while this call was in flight — never render a result
+    // that is no longer current.
+    if (requestId !== hermesTaskSubmissionRequestGeneration) return;
+    renderHermesTaskSubmission(result.state, result.text, result.truncated);
+  } catch {
+    if (requestId !== hermesTaskSubmissionRequestGeneration) return;
+    renderHermesTaskSubmission("safe_failure", null, false);
+  }
+}
+
+async function handleClearTaskSubmission(): Promise<void> {
+  const api = window.vyronDesktop;
+  if (!api) {
+    renderHermesTaskSubmission("idle", null, false);
+    return;
+  }
+  // Supersedes any in-flight review/send immediately, before the IPC call even starts.
+  hermesTaskSubmissionRequestGeneration++;
+  try {
+    await api.hermes.clearTaskSubmission();
+  } catch {
+    // Clearing must always leave the UI in a safe, idle-looking state, even if the IPC call
+    // itself rejected.
+  }
+  renderHermesTaskSubmission("idle", null, false);
+}
+
 function wireTaskControls(): void {
   document.getElementById("task-clear-draft-btn")?.addEventListener("click", () => handleClearTaskDraft());
   document.getElementById("task-review-btn")?.addEventListener("click", () => handleOpenTaskReview());
@@ -1278,6 +1486,7 @@ function wireTaskControls(): void {
   document.getElementById("task-review-back-btn")?.addEventListener("click", () => handleCloseTaskReview());
   document.getElementById("task-review-close-btn")?.addEventListener("click", () => handleCloseTaskReview());
   document.getElementById("task-review-clear-context-btn")?.addEventListener("click", () => handleClearAllTaskContext());
+  document.getElementById("task-send-btn")?.addEventListener("click", () => void handleSendReviewedTask());
 
   const input = document.getElementById("task-draft-input");
   if (input instanceof HTMLTextAreaElement) {
@@ -1491,6 +1700,9 @@ async function handleClearHermesAuthorization(): Promise<void> {
   // regardless, but this keeps electron/hermesApiServer.ts's own internal state hygienic
   // rather than stale).
   hermesApiServerRequestGeneration++;
+  // D-11 — also supersedes any in-flight review/send and resets the main process's own task
+  // submission state, for the same reason as clearApiServerVerification() above.
+  hermesTaskSubmissionRequestGeneration++;
   renderHermesPanel("revoking");
   try {
     await api.hermes.clearAuthorization();
@@ -1505,7 +1717,13 @@ async function handleClearHermesAuthorization(): Promise<void> {
     // getApiServerVerificationState() report "not_authorized" regardless of whether this call
     // itself succeeds.
   }
+  try {
+    await api.hermes.clearTaskSubmission();
+  } catch {
+    // Best-effort only, same reason.
+  }
   renderHermesPanel("not_authorized");
+  renderHermesTaskSubmission("idle", null, false);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1727,8 +1945,17 @@ async function handleClearHermesEndpointConfiguration(): Promise<void> {
   } catch {
     // Best-effort only.
   }
+  // D-11 — same reset-hygiene reason as clearApiServerVerification() above: a reviewed/sent
+  // task snapshot cannot outlive the endpoint it was reviewed against.
+  hermesTaskSubmissionRequestGeneration++;
+  try {
+    await api.hermes.clearTaskSubmission();
+  } catch {
+    // Best-effort only.
+  }
   renderHermesApiServer("endpoint_not_configured");
   renderHermesEndpointPanel("not_configured");
+  renderHermesTaskSubmission("idle", null, false);
 }
 
 async function initHermesEndpointState(api: DesktopApi): Promise<void> {

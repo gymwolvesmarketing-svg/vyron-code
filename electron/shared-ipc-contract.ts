@@ -243,13 +243,50 @@ export interface HermesApiServerResult {
 }
 
 /**
- * D-08B + D-08E + D-10 (remediated)'s full Hermes bridge — exactly ten methods.
+ * D-11 explicit reviewed task submission state — VYRON_CODE_COMPLETE_LOCAL_HERMES_D11_DELIVERY_AUTHORIZATION.
+ * Never carries an endpoint, API key, raw HTTP status/headers/body, session id, or any
+ * protocol detail — only this safe state enum plus the three bounded, already-safe fields
+ * below. `text` is populated only in the `"completed"` state, and is always the already-
+ * bounded, plain-text-only assistant response — never HTML, never a structured/tool-call
+ * payload (see electron/hermesTaskSubmission.ts's own header for the full evidence trail).
+ */
+export type HermesTaskSubmissionAmbientState =
+  | "idle"
+  | "review_ready"
+  | "sending"
+  | "completed"
+  | "unavailable"
+  | "unauthorized"
+  | "safe_failure"
+  | "cancelled";
+
+export interface HermesTaskSubmissionState {
+  readonly state: HermesTaskSubmissionAmbientState;
+  readonly draftLength: number | null;
+  readonly text: string | null;
+  readonly truncated: boolean;
+}
+
+/**
+ * The one and only shape `reviewTaskDraft` accepts — exactly one field, `draft`, a string.
+ * Mirrors `HermesAuthorizationRequest`/`HermesEndpointConfigurationRequest`'s own single-field
+ * discipline exactly. This is the one narrow, schema-validated crossing point for the user's
+ * own task text — never combined with workspace/file/search/Git/context data at this or any
+ * later step.
+ */
+export interface HermesTaskDraftReviewRequest {
+  readonly draft: string;
+}
+
+/**
+ * D-08B + D-08E + D-10 (remediated) + D-11's full Hermes bridge — exactly fourteen methods.
  * `clearAuthorization`/`clearEndpointConfiguration`/`getApiServerVerificationState`/
- * `verifyApiServerConnection`/`clearApiServerVerification` take no arguments at all;
- * `configureEndpoint` takes exactly one `endpoint` string field. No endpoint/host/port/
- * credential/prompt/session ID/workspace data or options object of any kind is ever accepted
- * from or returned to the renderer. No WebSocket/`ws://`/`wss://`/`/api/ws`/query-string-token/
- * JSON-RPC/session concept exists anywhere in this bridge.
+ * `verifyApiServerConnection`/`clearApiServerVerification`/`getTaskSubmissionState`/
+ * `sendReviewedTask`/`clearTaskSubmission` take no arguments at all; `configureEndpoint` takes
+ * exactly one `endpoint` string field; `reviewTaskDraft` takes exactly one `draft` string field.
+ * No endpoint/host/port/credential/prompt/session ID/workspace/context data or options object
+ * of any kind is ever accepted from or returned to the renderer. No WebSocket/`ws://`/`wss://`/
+ * `/api/ws`/query-string-token/JSON-RPC/session concept exists anywhere in this bridge.
  */
 export interface DesktopHermesApi {
   getAvailability(): Promise<HermesAvailability>;
@@ -262,6 +299,10 @@ export interface DesktopHermesApi {
   getApiServerVerificationState(): Promise<HermesApiServerState>;
   verifyApiServerConnection(): Promise<HermesApiServerResult>;
   clearApiServerVerification(): Promise<HermesApiServerResult>;
+  getTaskSubmissionState(): Promise<HermesTaskSubmissionState>;
+  reviewTaskDraft(request: HermesTaskDraftReviewRequest): Promise<HermesTaskSubmissionState>;
+  sendReviewedTask(): Promise<HermesTaskSubmissionState>;
+  clearTaskSubmission(): Promise<HermesTaskSubmissionState>;
 }
 
 /**
@@ -330,6 +371,10 @@ export const HERMES_IPC_CHANNELS = {
   HERMES_GET_API_SERVER_VERIFICATION_STATE: "hermes:getApiServerVerificationState",
   HERMES_VERIFY_API_SERVER_CONNECTION: "hermes:verifyApiServerConnection",
   HERMES_CLEAR_API_SERVER_VERIFICATION: "hermes:clearApiServerVerification",
+  HERMES_GET_TASK_SUBMISSION_STATE: "hermes:getTaskSubmissionState",
+  HERMES_REVIEW_TASK_DRAFT: "hermes:reviewTaskDraft",
+  HERMES_SEND_REVIEWED_TASK: "hermes:sendReviewedTask",
+  HERMES_CLEAR_TASK_SUBMISSION: "hermes:clearTaskSubmission",
 } as const;
 
 export type HermesIpcChannel = (typeof HERMES_IPC_CHANNELS)[keyof typeof HERMES_IPC_CHANNELS];

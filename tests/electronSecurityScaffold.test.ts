@@ -99,7 +99,7 @@ describe("WORKSPACE_IPC_CHANNELS — implemented channels (D-03 + Milestone A)",
 });
 
 describe("HERMES_IPC_CHANNELS — implemented channels (D-08B + D-08E + D-10 remediated)", () => {
-  it("exposes exactly the ten implemented Hermes channels, no more", () => {
+  it("exposes exactly the fourteen implemented Hermes channels, no more", () => {
     expect(Object.values(HERMES_IPC_CHANNELS).sort()).toEqual(
       [
         "hermes:getAvailability",
@@ -112,6 +112,10 @@ describe("HERMES_IPC_CHANNELS — implemented channels (D-08B + D-08E + D-10 rem
         "hermes:getApiServerVerificationState",
         "hermes:verifyApiServerConnection",
         "hermes:clearApiServerVerification",
+        "hermes:getTaskSubmissionState",
+        "hermes:reviewTaskDraft",
+        "hermes:sendReviewedTask",
+        "hermes:clearTaskSubmission",
       ].sort()
     );
   });
@@ -255,7 +259,7 @@ describe("preload.ts — exposed window.vyronDesktop API", () => {
     }
   });
 
-  it("exposes exactly the ten Hermes methods, no more (D-08B + D-08E + D-10 remediated)", () => {
+  it("exposes exactly the fourteen Hermes methods, no more (D-08B + D-08E + D-10 remediated + D-11)", () => {
     const hermes = exposedApi().hermes as Record<string, unknown>;
     expect(Object.keys(hermes).sort()).toEqual(
       [
@@ -269,11 +273,33 @@ describe("preload.ts — exposed window.vyronDesktop API", () => {
         "getApiServerVerificationState",
         "verifyApiServerConnection",
         "clearApiServerVerification",
+        "getTaskSubmissionState",
+        "reviewTaskDraft",
+        "sendReviewedTask",
+        "clearTaskSubmission",
       ].sort()
     );
     for (const method of Object.values(hermes)) {
       expect(typeof method).toBe("function");
     }
+  });
+
+  it("getTaskSubmissionState/sendReviewedTask/clearTaskSubmission take no arguments at all; reviewTaskDraft takes exactly one single-field request object (D-11, T-14)", () => {
+    const hermes = exposedApi().hermes as Record<string, (...args: unknown[]) => unknown>;
+    ipcRendererInvoke.mockClear();
+    hermes.getTaskSubmissionState?.();
+    hermes.sendReviewedTask?.();
+    hermes.clearTaskSubmission?.();
+    expect(ipcRendererInvoke).toHaveBeenCalledTimes(3);
+    for (const call of ipcRendererInvoke.mock.calls) {
+      expect(call).toHaveLength(1);
+    }
+    ipcRendererInvoke.mockClear();
+    const request = { draft: "placeholder-test-draft-text" };
+    hermes.reviewTaskDraft?.(request);
+    expect(ipcRendererInvoke).toHaveBeenCalledTimes(1);
+    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(1, "hermes:reviewTaskDraft", request);
+    expect(ipcRendererInvoke.mock.calls[0]).toHaveLength(2);
   });
 
   it("getApiServerVerificationState, verifyApiServerConnection, and clearApiServerVerification take no arguments at all — no endpoint/API-key/path/options object can be forwarded (D-10 remediated, T-14)", () => {
@@ -410,10 +436,11 @@ describe("Electron scaffold source — no shell/child_process execution capabili
   // `resolveCanonicalPath`), never as a parallel/weaker path-safety check of their own. This
   // matches the same pattern `lib/search.ts` already uses for the web app.
   const FILES_ALLOWED_DIRECT_FS = new Set(["workspaceExplorer.ts", "workspaceFileViewer.ts", "workspaceSearch.ts", "workspaceGit.ts"]);
-  // hermesApiServer.ts is the one deliberate exception (D-10 remediated) — its single, fully
-  // bounded `GET <origin>/health` request is the one real network call this entire scaffold
-  // makes; see its own header for the full evidence trail and exactly what it never does.
-  const FILES_ALLOWED_FETCH = new Set(["hermesApiServer.ts"]);
+  // hermesApiServer.ts (D-10 remediated) and hermesTaskSubmission.ts (D-11) are the two
+  // deliberate exceptions — one bounded `GET <origin>/health` probe and one bounded, explicit
+  // `POST <origin>/v1/chat/completions` request respectively, the only two real network calls
+  // this entire scaffold makes; see each file's own header for the full evidence trail.
+  const FILES_ALLOWED_FETCH = new Set(["hermesApiServer.ts", "hermesTaskSubmission.ts"]);
   const forbiddenPatterns: Array<[string, RegExp, (file: string) => boolean]> = [
     ["child_process import", /child_process/, () => true],
     ["exec( call", /\bexec\s*\(/, () => true],
@@ -440,14 +467,15 @@ describe("Electron scaffold source — no shell/child_process execution capabili
     }
   });
 
-  it("confirms exactly the sixteen expected scaffold .ts files exist, no more", () => {
-    expect(sourceFiles).toHaveLength(16);
+  it("confirms exactly the seventeen expected scaffold .ts files exist, no more", () => {
+    expect(sourceFiles).toHaveLength(17);
     expect(sourceFiles.sort()).toEqual(
       [
         "hermesApiServer.ts",
         "hermesAuthorization.ts",
         "hermesEndpoint.ts",
         "hermesEndpointSetup.ts",
+        "hermesTaskSubmission.ts",
         "main.ts",
         "preload.ts",
         "renderer.ts",
@@ -569,11 +597,11 @@ describe("electron/hermesAuthorization.ts's getCurrentCredential — never rende
     }
   });
 
-  it("is only ever imported by electron/hermesApiServer.ts", () => {
+  it("is only ever imported by electron/hermesApiServer.ts and electron/hermesTaskSubmission.ts", () => {
     const electronDir = path.join(__dirname, "..", "electron");
     const files = fs.readdirSync(electronDir).filter((f) => f.endsWith(".ts") && f !== "hermesAuthorization.ts");
     const importers = files.filter((f) => stripComments(fs.readFileSync(path.join(electronDir, f), "utf8")).match(/getCurrentCredential/));
-    expect(importers).toEqual(["hermesApiServer.ts"]);
+    expect(importers.sort()).toEqual(["hermesApiServer.ts", "hermesTaskSubmission.ts"].sort());
   });
 });
 
@@ -777,11 +805,11 @@ describe("electron/hermesEndpoint.ts and its HermesTrustedEndpoint type — neve
     }
   });
 
-  it("hermesApiServer.ts and hermesEndpointSetup.ts are the only files that import electron/hermesEndpoint.ts", () => {
+  it("hermesApiServer.ts, hermesEndpointSetup.ts, and hermesTaskSubmission.ts are the only files that import electron/hermesEndpoint.ts", () => {
     const electronDir = path.join(__dirname, "..", "electron");
     const files = fs.readdirSync(electronDir).filter((f) => f.endsWith(".ts") && f !== "hermesEndpoint.ts");
     const importers = files.filter((f) => stripComments(fs.readFileSync(path.join(electronDir, f), "utf8")).match(/from ["']\.\/hermesEndpoint["']/));
-    expect(importers.sort()).toEqual(["hermesApiServer.ts", "hermesEndpointSetup.ts"].sort());
+    expect(importers.sort()).toEqual(["hermesApiServer.ts", "hermesEndpointSetup.ts", "hermesTaskSubmission.ts"].sort());
   });
 });
 
@@ -794,11 +822,11 @@ describe("electron/hermesEndpointSetup.ts and its getConfiguredEndpoint accessor
     }
   });
 
-  it("hermesApiServer.ts and main.ts are the only files that import electron/hermesEndpointSetup.ts", () => {
+  it("hermesApiServer.ts, main.ts, and hermesTaskSubmission.ts are the only files that import electron/hermesEndpointSetup.ts", () => {
     const electronDir = path.join(__dirname, "..", "electron");
     const files = fs.readdirSync(electronDir).filter((f) => f.endsWith(".ts") && f !== "hermesEndpointSetup.ts");
     const importers = files.filter((f) => stripComments(fs.readFileSync(path.join(electronDir, f), "utf8")).match(/from ["']\.\/hermesEndpointSetup["']/));
-    expect(importers.sort()).toEqual(["hermesApiServer.ts", "main.ts"].sort());
+    expect(importers.sort()).toEqual(["hermesApiServer.ts", "main.ts", "hermesTaskSubmission.ts"].sort());
   });
 });
 
@@ -1250,7 +1278,7 @@ describe("electron/renderer.html — static, non-interactive local content", () 
     }
   });
 
-  it("contains exactly the five Milestone A workspace-panel buttons, the two D-03 workspace-grant buttons, the four D-08B Hermes buttons, the four D-08E endpoint-setup buttons, the one D-10 (remediated) API Server verify button, and the nine D-09 task-composer buttons, no more", () => {
+  it("contains exactly the five Milestone A workspace-panel buttons, the two D-03 workspace-grant buttons, the four D-08B Hermes buttons, the four D-08E endpoint-setup buttons, the one D-10 (remediated) API Server verify button, the nine D-09 task-composer buttons, and the one D-11 send button, no more", () => {
     const buttonIds = [...html.matchAll(/<button id="([^"]+)"/g)].map((m) => m[1]);
     expect(buttonIds.sort()).toEqual(
       [
@@ -1278,6 +1306,7 @@ describe("electron/renderer.html — static, non-interactive local content", () 
         "task-review-back-btn",
         "task-review-clear-context-btn",
         "task-review-close-btn",
+        "task-send-btn",
       ].sort()
     );
   });
@@ -1713,31 +1742,35 @@ describe("electron/renderer.ts — D-09 task composer wiring", () => {
     expect(fnBody).toMatch(/lastGitSummaryForContext = null;/);
   });
 
-  it("the review surface shows only the destination/network disclosure text plus the safe D-10 (remediated) verification-info delegate, never a token/endpoint/raw-protocol value", () => {
+  it("D-11: the review surface's own static declaration text (send-scope/no-context/tool-history) lives only in renderer.html, never reassigned by renderTaskReview() — plus the safe D-10 (remediated) verification-info delegate and the D-11 task-submission redraw, never a token/endpoint/raw-protocol value", () => {
     const reviewFnBody = /function renderTaskReview\(\): void \{[\s\S]*?\n\}/.exec(taskSource)?.[0] ?? "";
-    expect(reviewFnBody).toMatch(/"Not configured for sending\."/);
-    expect(reviewFnBody).toMatch(/"No request will be sent in this build\."/);
-    // The only "verification"-shaped reference allowed here is the delegate call itself — the
-    // actual safe rendering happens in renderTaskApiVerificationInfo(), asserted below.
+    expect(reviewFnBody).not.toBe("");
+    // The only "verification"/"submission"-shaped references allowed here are the two delegate
+    // calls themselves — the actual safe rendering happens in renderTaskApiVerificationInfo()/
+    // renderHermesTaskSubmission(), asserted separately below.
     expect(reviewFnBody).toMatch(/renderTaskApiVerificationInfo\(\);/);
+    expect(reviewFnBody).toMatch(/renderHermesTaskSubmission\(lastKnownTaskSubmissionState\.state, lastKnownTaskSubmissionState\.text, lastKnownTaskSubmissionState\.truncated\);/);
     for (const forbidden of [/token/i, /endpoint/i, /\bhost\b/i, /\bport\b/i, /\bsocket\b/i, /provider/i, /\bmodel\b/i]) {
       expect(reviewFnBody).not.toMatch(forbidden);
     }
   });
 
-  it("D-10 (remediated): renderTaskApiVerificationInfo shows only a fixed Verified/Not verified label and a fixed 'not available' sending note — never a raw state string or IPC call of its own", () => {
+  it("D-10 (remediated): renderTaskApiVerificationInfo shows only a fixed Verified/Not verified label — never a raw state string, never an IPC call of its own, and never writes the D-11 task-submission status text (that is renderHermesTaskSubmission()'s own, exclusive responsibility)", () => {
     const fnBody = /function renderTaskApiVerificationInfo\(\): void \{[\s\S]*?\n\}/.exec(taskSource)?.[0] ?? "";
     expect(fnBody).not.toBe("");
     expect(fnBody).toMatch(/"Verified" : "Not verified"/);
-    expect(fnBody).toMatch(/"Not available in this build\."/);
+    expect(fnBody).not.toMatch(/task-review-task-sending/);
     for (const forbidden of [/window\.vyronDesktop/, /api\.hermes/, /token/i, /endpoint/i, /\bhost\b/i, /\bport\b/i, /\bsocket\b/i]) {
       expect(fnBody).not.toMatch(forbidden);
     }
   });
 
-  it("never calls window.vyronDesktop / api.hermes / api.workspace from anywhere in the task composer section", () => {
-    for (const forbidden of [/window\.vyronDesktop/, /api\.hermes\./, /api\.workspace\./]) {
-      expect(taskSource).not.toMatch(forbidden);
+  it("never calls api.workspace from anywhere in the task composer section, and calls api.hermes only for the three narrow, explicit D-11 send-review actions — never authorization/endpoint/verification methods", () => {
+    expect(taskSource).not.toMatch(/api\.workspace\./);
+    const hermesCalls = [...taskSource.matchAll(/api\.hermes\.(\w+)\(/g)].map((m) => m[1]);
+    expect(hermesCalls.length).toBeGreaterThan(0);
+    for (const method of hermesCalls) {
+      expect(["reviewTaskDraft", "sendReviewedTask", "clearTaskSubmission"]).toContain(method);
     }
   });
 
@@ -1782,11 +1815,12 @@ describe("electron/renderer.html — D-09 task section markup", () => {
     expect(html).toMatch(/<ul id="task-context-list"/);
   });
 
-  it("declares the review surface hidden by default, with the required local-preview disclosure", () => {
+  it("declares the review surface hidden by default, with the required D-11 local-preview and send-scope disclosures", () => {
     expect(html).toMatch(/<div id="task-review"[^>]*\bhidden\b/);
-    expect(lowerHtml).toMatch(/this is a local preview\. nothing is being sent\./);
-    expect(lowerHtml).toMatch(/not configured for sending\./);
-    expect(lowerHtml).toMatch(/no request will be sent in this build\./);
+    expect(lowerHtml).toMatch(/this is a local preview\. review the exact text below before sending anything\./);
+    expect(lowerHtml).toMatch(/only this task text will be sent\./);
+    expect(lowerHtml).toMatch(/no workspace, file, search result, git data or selected context is sent\./);
+    expect(lowerHtml).toMatch(/hermes tools and persistent task history are disabled for this connection\./);
   });
 
   it("declares the required review actions — back to draft, remove/clear context, close review", () => {
@@ -1841,10 +1875,18 @@ describe("electron/renderer.html — D-09 task section markup", () => {
 describe("electron/renderer.html — D-10 (remediated) task review verification rows", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
 
-  it("the task review surface declares the Hermes API verification / task sending informational rows, with the required fixed disclosure text", () => {
+  it("the task review surface declares the Hermes API verification / task submission informational rows, with the required fixed initial disclosure text", () => {
     expect(html).toMatch(/<dt>Hermes API verification<\/dt>/);
     expect(html).toMatch(/<dd id="task-review-hermes-verification">Not verified<\/dd>/);
-    expect(html).toMatch(/<dt>Task sending<\/dt>/);
+    expect(html).toMatch(/<dt>Task submission<\/dt>/);
     expect(html).toMatch(/<dd id="task-review-task-sending">Not available in this build\.<\/dd>/);
+  });
+
+  it("declares the D-11 send action, error, and response-display markup, all starting hidden/disabled/empty", () => {
+    expect(html).toMatch(/<button id="task-send-btn" type="button" disabled>Send reviewed task<\/button>/);
+    expect(html).toMatch(/<p id="task-send-error" class="muted" hidden><\/p>/);
+    expect(html).toMatch(/<div id="task-response-section" hidden>/);
+    expect(html).toMatch(/<p id="task-response-text"><\/p>/);
+    expect(html).toMatch(/<p id="task-response-truncated-note" class="muted" hidden>Response was truncated\.<\/p>/);
   });
 });

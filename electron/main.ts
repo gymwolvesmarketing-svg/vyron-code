@@ -54,6 +54,7 @@ import {
   clearEndpointConfiguration,
 } from "./hermesEndpointSetup";
 import { getApiServerVerificationState, verifyApiServerConnection, clearApiServerVerification } from "./hermesApiServer";
+import { getTaskSubmissionState, reviewTaskDraft, sendReviewedTask, clearTaskSubmission } from "./hermesTaskSubmission";
 
 /**
  * Explicit, disabled-by-default opt-in for the lifecycle diagnostics below —
@@ -194,6 +195,10 @@ function registerHermesIpcHandlers(): void {
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_AUTHORIZATION, () => {
     const result = clearHermesAuthorization();
     clearApiServerVerification();
+    // D-11 — clearing authorization also clears any locally-tracked task submission state
+    // (reviewed draft, in-flight send, completed answer), for the same enforced-guarantee
+    // reason as clearApiServerVerification() above.
+    clearTaskSubmission();
     return result;
   });
   // D-08E — configureEndpoint's raw request is passed straight through unexamined, exactly as
@@ -206,6 +211,7 @@ function registerHermesIpcHandlers(): void {
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_ENDPOINT_CONFIGURATION, () => {
     const result = clearEndpointConfiguration();
     clearApiServerVerification();
+    clearTaskSubmission();
     return result;
   });
   // D-10 (remediated) — getApiServerVerificationState/verifyApiServerConnection/
@@ -214,6 +220,15 @@ function registerHermesIpcHandlers(): void {
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_API_SERVER_VERIFICATION_STATE, () => getApiServerVerificationState());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_VERIFY_API_SERVER_CONNECTION, () => verifyApiServerConnection());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_API_SERVER_VERIFICATION, () => clearApiServerVerification());
+  // D-11 — getTaskSubmissionState/sendReviewedTask/clearTaskSubmission take no arguments at
+  // all; reviewTaskDraft's raw request is passed straight through unexamined, exactly as
+  // electron/hermesTaskSubmission.ts's own validation expects — no second, weaker, or
+  // divergent validation exists here. See that module's own header for the full evidence
+  // trail and exactly what sendReviewedTask() sends.
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_TASK_SUBMISSION_STATE, () => getTaskSubmissionState());
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_REVIEW_TASK_DRAFT, (_event, request: unknown) => reviewTaskDraft(request));
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_SEND_REVIEWED_TASK, () => sendReviewedTask());
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_TASK_SUBMISSION, () => clearTaskSubmission());
 }
 
 /**
@@ -323,6 +338,9 @@ app.on("before-quit", () => {
   // the process exits, rather than leaving it dangling. clearApiServerVerification() is
   // idempotent/safe to call even when nothing was ever verified.
   clearApiServerVerification();
+  // D-11 — clears any locally-tracked task submission state (reviewed draft, in-flight send,
+  // completed answer) before the process exits, for the same reason.
+  clearTaskSubmission();
 });
 app.on("will-quit", () => logLifecycle("will-quit"));
 // `quit` fires AFTER the app has finished quitting, immediately before the process itself
