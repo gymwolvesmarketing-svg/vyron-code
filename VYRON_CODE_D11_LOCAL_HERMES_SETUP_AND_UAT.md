@@ -87,10 +87,16 @@ in Vyron Code with the new key.
 ## Known limitation — please read
 
 Hermes's own installed task-persistence behavior (writing your prompt/response/session data to
-its local database) is **not** disabled by anything in this setup — only the tool-access and
-authentication gaps were addressed. See `hermes-patches/0001-api-server-task-auth-and-ephemeral-history.patch`
-if you'd like to apply the (unsupported, source-level) fix for that yourself; it wasn't applied
-automatically, by design.
+its local database, `state.db`) is **not** disabled by anything in this setup — only the
+tool-access and authentication gaps were addressed. This isn't a theoretical gap: a live test
+sent one marked task through this exact setup and then found that exact marker text durably
+written into `state.db`'s `messages` table afterward, confirming the prompt (and the session it
+belongs to) is saved by Hermes regardless of anything Vyron Code does. See
+`hermes-patches/0001-api-server-task-auth-and-ephemeral-history.patch` if you'd like to apply the
+(unsupported, source-level) fix for that yourself; it wasn't applied automatically, by design —
+every attempt to apply it directly from within the development environment that built this
+feature was refused by that environment's own permission system, so it is left for you to review
+and apply at your own discretion, on your own machine.
 
 ## Troubleshooting
 
