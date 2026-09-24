@@ -8,8 +8,8 @@
 3. **"Yerel AI hazır" yazısını bekleyin.** Önce "Vyron Code hazırlanıyor" görünür; yerel AI sizin yerinize
    hazırlanır. İlk açılışta yarım dakika kadar sürebilir.
 4. **Görevinizi yazın.**
-5. **"Taslağı incele"** ile gönderilecek metni kontrol edin.
-6. **"İncelenen task'ı gönder"** ile gönderin. Yanıt düz metin olarak görünür.
+5. Gönder okuna ya da **Ctrl+Enter**'a basın; ara bir inceleme adımı yoktur.
+6. Yanıt aynı ekranda görünür. **"Yeni görev"** ile devam edin.
 7. **"Yerel AI şu anda hazır değil"** görürseniz **"Tekrar dene"** düğmesine basın. Sorun sürerse
    "Tanılama bilgilerini kopyala" ile kısa, gizli bilgi içermeyen bir özet alıp destekle paylaşabilirsiniz.
 

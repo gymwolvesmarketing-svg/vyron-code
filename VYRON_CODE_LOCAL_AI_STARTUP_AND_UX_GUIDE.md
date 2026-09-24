@@ -11,21 +11,19 @@ veya anahtar girmeniz gerekmez.
    - "Yerel AI motoru başlatılıyor…"
    - "Güvenli bağlantı hazırlanıyor…"
    - "Güvenli bağlantı doğrulanıyor…"
-3. Hazır olduğunda üstte **"Yerel AI hazır"** yazar ve "Ne üzerinde çalışmak istiyorsun?" ekranı açılır.
+3. Hazır olduğunda üstte **"Yerel AI hazır"** yazar ve "Vyron ile üret" görev ekranı açılır.
 
 Yerel AI daha önce başka bir yolla çalışıyorsa uygulama onu olduğu gibi kullanır; ikinci bir kopya
 başlatmaz. İlk açılışta hazır olması yarım dakika kadar sürebilir.
 
 ## Bir görev göndermek
 
-1. Kutuya görevinizi yazın (en fazla 4000 karakter).
-2. **"Taslağı incele"** düğmesine basın (ya da Ctrl+Enter).
-3. Gönderilecek metni tam olarak görürsünüz. Ekranda şunlar yazar: yalnız bu metin gönderilir; dosya,
-   workspace, Git veya araç bağlamı gönderilmez; araçlar kapalıdır; kalıcı görev geçmişi oluşturulmaz.
-4. Doğruysa **"İncelenen task'ı gönder"** düğmesine basın. Hiçbir şey kendiliğinden gönderilmez.
-   Vazgeçmek için **"Geri dön"** (ya da Esc) yeterlidir; metin gönderilmemiş olur.
-5. Yanıt "Yanıt" başlığı altında düz metin olarak görünür. Çok uzun yanıtlar kısaltılır ve bu belirtilir.
-6. **"Yanıtı temizle"** taslağı ve yanıtı siler. Uygulamayı kapatıp açtığınızda da hiçbiri saklanmaz.
+1. Ortadaki görev alanına görevinizi yazın (en fazla 4000 karakter). Enter yeni satır ekler.
+2. Gönder okuna basın ya da **Ctrl+Enter** (macOS'ta Cmd+Enter) ile gönderin. Ara bir inceleme veya onay ekranı yoktur.
+3. Yanıt aynı çalışma alanında, "Yanıt" başlığı altında düz metin olarak görünür. Çok uzun yanıtlar kısaltılır ve bu belirtilir.
+4. **"Yeni görev"** yeni bir görev açar; **"Yanıtı temizle"** yanıtı siler. Görev metinleri ve yanıtlar kaydedilmez.
+
+Çalışma alanının tamamı (projeler, yetenekler, bağlayıcılar, managers) için `VYRON_CODE_WORKSPACE_UI_UX_GUIDE.md` dosyasına bakın.
 
 ## "Yerel AI şu anda hazır değil" görürseniz
 
