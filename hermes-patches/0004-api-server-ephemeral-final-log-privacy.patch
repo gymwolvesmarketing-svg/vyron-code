@@ -1,0 +1,363 @@
+From: Vyron Code D-11 local hardening (VYRON_CODE_D11_PATCH_0004_FINAL_LOG_PRIVACY_COMPLETION)
+Applies to: NousResearch/hermes-agent, installed local copy, version 0.21.0, ON TOP OF patches
+0001 and 0002 (both must already be applied; verified present 2026-09-24).
+
+NOT APPLIED BY THIS TOOLING. This file was generated from `diff -u` of the real installed source
+against a patched copy, every edited file was parsed as valid Python, the two behavioural pieces
+(hermes_logging.py record factory, stream_diag.py) were exercised in isolation with the patched
+copies, and `git apply --check` was run against the real installed Hermes root. Nothing was
+written to the installed source. The user applies it manually.
+
+PATCH 0003 IS OBSOLETE. Do not apply it. Its three hunks (turn_context.py, turn_recovery.py x2)
+are already present in the installed source through patch 0002 (with the placeholder
+"<redacted:persist_disabled>"), so 0003 no longer applies (`git apply --check` fails on it).
+
+WHAT REMAINS AFTER 0001 + 0002 (live-proven 2026-09-24 with three fresh markers):
+  1. `agent/chat_completion_helpers.py` logs the raw provider error text plus a full traceback
+     ("Streaming failed before delivery") to agent.log AND errors.log on every failed request.
+  2. The `[api-...]` session tag is stamped on log lines by a global LogRecord factory in
+     `hermes_logging.py` (thread-local set by `set_session_context()`), and the session ID also
+     appears inside message text; the tag even lingers on the thread after a request ends.
+  3. Other error-path log lines that carry error text or request-derived counts: the
+     stream-retry/exhausted diagnostics (`agent/stream_diag.py`), "Retrying API call ... error=",
+     "API call failed after N retries ... msgs= tokens=", and the Codex error line.
+  4. The aiohttp access log line records the response size (response-derived metadata).
+  5. SUCCESS-PATH lines (found by reading a real successful turn in the existing log): "API call #N"
+     logs prompt/completion/total token counts, cache stats and the provider response id
+     (`agent/turn_usage.py`), and "Turn ended" logs `response_len=` (`agent/turn_finalizer.py`).
+
+WHAT THIS PATCH CHANGES (13 hunks, 8 files; every hunk carries the marker VYRON_LOCAL_PATCH_0004):
+  hermes_logging.py                       (2 hunks) ephemeral-session registry + record factory
+  agent/turn_context.py                   (2 hunks) flag the session ephemeral; history count
+  agent/chat_completion_helpers.py        (2 hunks) lines ~3404 and ~3433 stream error logs
+  agent/stream_diag.py                    (1 hunk)  log_stream_retry() - the single choke point
+  agent/turn_recovery.py                  (3 hunks) retries-exhausted, retrying, Codex error
+  agent/turn_finalizer.py                 (1 hunk)  "Turn ended" line: response_len (success path)
+  agent/turn_usage.py                     (1 hunk)  "API call #N" line: tokens/cache/id (success path)
+  gateway/platforms/api_server.py         (1 hunk)  aiohttp access-log format
+
+  Scope: every guard is conditional on `agent._persist_disabled` (set only by patch 0001, i.e.
+  only for API Server agents) or on the in-memory ephemeral-session registry. A normal Hermes
+  agent (CLI, TUI, gateway platforms, desktop) has `_persist_disabled == False`, so it keeps its
+  original session tag, its full tracebacks and every original diagnostic line, unchanged. The
+  only non-agent-scoped change is the aiohttp access-log format; it is safe here because every
+  agent this API Server creates is persistence-disabled (patch 0001), and it keeps method, path
+  and status. Drop that one hunk if you serve non-ephemeral clients from the same API Server.
+
+  Nothing is deleted after writing, no new file/database/cache is created (the registry is a
+  bounded in-memory dict, max 4096 IDs), and logging is not disabled: ephemeral agents still log
+  severity, category (exception class name), retry count, elapsed time, provider/model names and
+  HTTP status.
+
+HOW TO APPLY (PowerShell, as the user who owns the Hermes installation; nothing below prints
+credentials). Stop the running gateway first so the log files are not being written while you patch.
+
+  # 1) Backup: one timestamped .bak next to each of the eight files
+  $root  = "$env:LOCALAPPDATA\hermes\hermes-agent"
+  $files = "hermes_logging.py","agent\turn_context.py","agent\chat_completion_helpers.py","agent\stream_diag.py","agent\turn_recovery.py","agent\turn_finalizer.py","agent\turn_usage.py","gateway\platforms\api_server.py"
+  $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+  foreach ($f in $files) { Copy-Item "$root\$f" "$root\$f.vyron-pre-0004-$ts.bak" }
+
+  # 2) Dry run, then apply. Run from INSIDE the Hermes root (it is itself a git repository);
+  #    do not use --directory, it fails on Windows paths.
+  Set-Location $root
+  git apply --check "D:\Vyron Code\hermes-patches\0004-api-server-ephemeral-final-log-privacy.patch"
+  if ($LASTEXITCODE -eq 0) { git apply "D:\Vyron Code\hermes-patches\0004-api-server-ephemeral-final-log-privacy.patch" } else { Write-Warning "dry run failed - nothing applied" }
+
+HOW TO VERIFY IT ACTUALLY APPLIED (run BEFORE restarting Hermes; a silent apply failure is easy to miss):
+
+  $root  = "$env:LOCALAPPDATA\hermes\hermes-agent"
+  $py    = "$root\venv\Scripts\python.exe"
+  $expect = [ordered]@{ "hermes_logging.py"=2; "agent\turn_context.py"=2; "agent\chat_completion_helpers.py"=2; "agent\stream_diag.py"=1; "agent\turn_recovery.py"=3; "agent\turn_finalizer.py"=1; "agent\turn_usage.py"=1; "gateway\platforms\api_server.py"=1 }
+  $ok = $true
+  foreach ($f in $expect.Keys) {
+    $n = @(Select-String -Path "$root\$f" -Pattern "VYRON_LOCAL_PATCH_0004" -SimpleMatch).Count
+    if ($n -ne $expect[$f]) { $ok = $false }
+    "{0,-38} markers={1} expected={2} {3}" -f $f, $n, $expect[$f], $(if ($n -eq $expect[$f]) {"OK"} else {"MISSING"})
+  }
+  $code = @(
+    @("hermes_logging.py","def mark_ephemeral_session"), @("hermes_logging.py","_EPHEMERAL_SESSION_TAG"),
+    @("agent\turn_context.py","ephemeral=bool(getattr(agent"),
+    @("agent\chat_completion_helpers.py","Streaming failed before delivery: error_type=%s"),
+    @("agent\stream_diag.py","error=[ephemeral API error detail suppressed]"),
+    @("agent\turn_recovery.py","_vyron_ephemeral"),
+    @("agent\turn_finalizer.py","response_len=%s"),
+    @("agent\turn_usage.py","usage=[ephemeral usage suppressed]"),
+    @("gateway\platforms\api_server.py","access_log_format")
+  )
+  foreach ($c in $code) {
+    $hit = Select-String -Path "$root\$($c[0])" -Pattern $c[1] -SimpleMatch -Quiet
+    if (-not $hit) { $ok = $false }
+    "{0,-38} code marker '{1}' {2}" -f $c[0], $c[1], $(if ($hit) {"OK"} else {"MISSING"})
+  }
+  foreach ($f in $expect.Keys) { & $py -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read()); print('parse OK', sys.argv[1])" "$root\$f"; if ($LASTEXITCODE -ne 0) { $ok = $false } }
+  # patches 0001 and 0002 must still be intact
+  "0001/0002 markers: api_server={0} runtime_helpers={1} turn_context={2} turn_recovery={3} (expected 1,1,1,2)" -f `
+    @(Select-String "$root\gateway\platforms\api_server.py" -Pattern "VYRON_LOCAL_PATCH:" -SimpleMatch).Count,
+    @(Select-String "$root\agent\agent_runtime_helpers.py" -Pattern "VYRON_LOCAL_PATCH:" -SimpleMatch).Count,
+    @(Select-String "$root\agent\turn_context.py" -Pattern "VYRON_LOCAL_PATCH:" -SimpleMatch).Count,
+    @(Select-String "$root\agent\turn_recovery.py" -Pattern "VYRON_LOCAL_PATCH:" -SimpleMatch).Count
+  if ($ok) { "RESULT: patch 0004 present and parses - now restart the gateway" } else { "RESULT: NOT APPLIED CORRECTLY - do not restart; roll back or re-apply" }
+
+  # After restarting, confirm the running gateway is newer than the patched files:
+  (Get-Item "$root\hermes_logging.py").LastWriteTime
+  (Get-Process -Id (Get-NetTCPConnection -LocalPort 8642 -State Listen).OwningProcess).StartTime
+
+HOW TO ROLL BACK (restores the newest 0004 backup of each file, then restart Hermes):
+
+  $root  = "$env:LOCALAPPDATA\hermes\hermes-agent"
+  $files = "hermes_logging.py","agent\turn_context.py","agent\chat_completion_helpers.py","agent\stream_diag.py","agent\turn_recovery.py","agent\turn_finalizer.py","agent\turn_usage.py","gateway\platforms\api_server.py"
+  foreach ($f in $files) {
+    $dir = Split-Path "$root\$f"; $leaf = Split-Path $f -Leaf
+    $bak = Get-ChildItem $dir -Filter "$leaf.vyron-pre-0004-*.bak" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($bak) { Copy-Item $bak.FullName "$root\$f" -Force; "restored $f from $($bak.Name)" } else { Write-Warning "no 0004 backup found for $f" }
+  }
+
+##### diff follows #####
+--- a/hermes_logging.py
++++ b/hermes_logging.py
+@@ -95,8 +95,32 @@
+         logging.getLogger(name).setLevel(logging.WARNING)
+ 
+ 
+-def set_session_context(session_id: str) -> None:
++# VYRON_LOCAL_PATCH_0004: session IDs belonging to persistence-disabled ("ephemeral") agents,
++# e.g. Vyron Code's D-11 API Server tasks. In-memory only and bounded; never written to disk.
++# Log records emitted under one of these IDs get a fixed tag instead of the real ID, lose any
++# traceback, and have the ID scrubbed out of the message text. Applies to agent.log and
++# errors.log alike because both are fed by the same record factory below.
++_EPHEMERAL_SESSION_TAG = " [ephemeral]"
++_EPHEMERAL_SESSION_LIMIT = 4096
++_ephemeral_session_ids: dict = {}
++_ephemeral_session_lock = threading.Lock()
++
++
++def mark_ephemeral_session(session_id: Optional[str]) -> None:
++    """Register *session_id* as belonging to a persistence-disabled agent (in-memory, bounded)."""
++    if not session_id:
++        return
++    with _ephemeral_session_lock:
++        _ephemeral_session_ids.pop(session_id, None)
++        _ephemeral_session_ids[session_id] = None
++        while len(_ephemeral_session_ids) > _EPHEMERAL_SESSION_LIMIT:
++            _ephemeral_session_ids.pop(next(iter(_ephemeral_session_ids)))
++
++
++def set_session_context(session_id: str, ephemeral: bool = False) -> None:
+     """Set the session ID for the current thread."""
++    if ephemeral:
++        mark_ephemeral_session(session_id)
+     _session_context.session_id = session_id
+ 
+ 
+@@ -119,7 +143,21 @@
+     def _session_record_factory(*args, **kwargs):
+         record = current_factory(*args, **kwargs)
+         sid = getattr(_session_context, "session_id", None)
+-        record.session_tag = f" [{sid}]" if sid else ""  # type: ignore[attr-defined]
++        if sid and sid in _ephemeral_session_ids:
++            # VYRON_LOCAL_PATCH_0004: persistence-disabled agent - no real session ID, no traceback.
++            record.session_tag = _EPHEMERAL_SESSION_TAG  # type: ignore[attr-defined]
++            if record.exc_info:
++                record.exc_info = None
++                record.exc_text = None
++            try:
++                _rendered = record.getMessage()
++                if sid in _rendered:
++                    record.msg = _rendered.replace(sid, "[ephemeral]")
++                    record.args = ()
++            except Exception:
++                pass
++        else:
++            record.session_tag = f" [{sid}]" if sid else ""  # type: ignore[attr-defined]
+         # QueueListener formats on its own thread, after the profile-scoped
+         # ContextVar is gone; keep the resolved home on the record so a
+         # multiplex desktop ticker can route to the job owner's files (#97489).
+--- a/agent/turn_context.py
++++ b/agent/turn_context.py
+@@ -802,7 +802,8 @@
+     # is populated — inserts a row with system_prompt=NULL on a fresh API/gateway agent that carries
+     # client-managed history, which then trips the "stored system prompt is null; rebuilding from scratch"
+     # warning and a needless first-turn prefix cache miss. (Issue #45499.)
+-    set_session_context(agent.session_id)
++    # VYRON_LOCAL_PATCH_0004: mark persistence-disabled sessions so logs never carry the real ID.
++    set_session_context(agent.session_id, ephemeral=bool(getattr(agent, "_persist_disabled", False)))
+     set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
+     agent._restore_primary_runtime()
+     _publish_runtime_main(agent)
+@@ -829,9 +830,11 @@
+         else _msg_preview.replace("\n", " ")
+     )
+     logger.info(
+-        "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
++        # VYRON_LOCAL_PATCH_0004: the history length is request-derived; not logged for ephemeral agents.
++        "conversation turn: session=%s model=%s provider=%s platform=%s history=%s msg=%r",
+         agent.session_id or "none", agent.model, agent.provider or "unknown",
+-        agent.platform or "unknown", len(conversation_history or []),
++        agent.platform or "unknown",
++        "-" if getattr(agent, "_persist_disabled", False) else len(conversation_history or []),
+         _log_msg_preview,
+     )
+ 
+--- a/agent/chat_completion_helpers.py
++++ b/agent/chat_completion_helpers.py
+@@ -3401,7 +3401,13 @@
+             # preamble beats a failed action; no tool has executed yet).
+             _partial_tool_in_flight = bool(self.result.get("partial_tool_names")) or self.provider_tool_in_flight["yes"]
+             if not (_partial_tool_in_flight and _is_transient and attempt < max_retries):
+-                logger.warning("Streaming failed after partial delivery, not retrying: %s", e)
++                if getattr(self.agent, "_persist_disabled", False):
++                    # VYRON_LOCAL_PATCH_0004: no provider/exception text in durable logs for ephemeral agents.
++                    logger.warning(
++                        "Streaming failed after partial delivery, not retrying: error_type=%s "
++                        "[ephemeral API error detail suppressed]", type(e).__name__)
++                else:
++                    logger.warning("Streaming failed after partial delivery, not retrying: %s", e)
+                 self.result["error"] = e
+                 return False
+             # Marker explains the re-streamed preamble (``_emit_stream_drop`` logs the WARNING);
+@@ -3430,7 +3436,13 @@
+                 f"❌ {_what} {max_retries + 1} attempts. The provider may be experiencing issues — try again in a moment.")
+         else:
+             self._maybe_disable_streaming(e)
+-            logger.exception("Streaming failed before delivery: %s", e)
++            if getattr(self.agent, "_persist_disabled", False):
++                # VYRON_LOCAL_PATCH_0004: no provider/exception text or traceback in durable logs for ephemeral agents.
++                logger.error(
++                    "Streaming failed before delivery: error_type=%s [ephemeral API error detail suppressed]",
++                    type(e).__name__)
++            else:
++                logger.exception("Streaming failed before delivery: %s", e)
+         # Propagate to the main retry loop (credential rotation, fallback, backoff).
+         self.result["error"] = e
+         return False
+--- a/agent/stream_diag.py
++++ b/agent/stream_diag.py
+@@ -102,6 +102,21 @@
+     """Structured WARNING to ``agent.log`` for a transient stream drop + retry, always logged regardless of
+     UI verbosity. With *diag*, also records upstream headers, HTTP status, bytes/chunks, elapsed and TTFB on
+     the dying attempt — enough to tell "one CF edge / downstream provider" from "random across runs"."""
++    if getattr(agent, "_persist_disabled", False):
++        # VYRON_LOCAL_PATCH_0004: ephemeral agents log only generic operational data - no error text,
++        # exception chain, upstream headers or byte/chunk counts.
++        try:
++            _http_status, _bytes, _chunks, _elapsed, _ttfb, _headers_repr = _diag_fields(diag)
++            logger.warning(
++                "Stream %s on attempt %s/%s - retrying. provider=%s base_url=%s error_type=%s "
++                "error=[ephemeral API error detail suppressed] http_status=%s elapsed=%.2fs",
++                kind, attempt, max_attempts, agent.provider or "-", agent.base_url or "-",
++                type(error).__name__, _http_status, _elapsed,
++                extra={"mid_tool_call": mid_tool_call},
++            )
++        except Exception:
++            pass
++        return
+     try:
+         try:
+             _summary = agent._summarize_api_error(error)
+--- a/agent/turn_recovery.py
++++ b/agent/turn_recovery.py
+@@ -811,10 +811,15 @@
+             "      3. Use a smaller / faster reasoning model if the task doesn't require deep thinking.",
+         )
+ 
++    # VYRON_LOCAL_PATCH_0004: no error summary or message/token counts in durable logs for ephemeral agents.
++    _vyron_ephemeral = bool(getattr(agent, "_persist_disabled", False))
+     logger.error(
+         "%sAPI call failed after %s retries. %s | provider=%s model=%s msgs=%s tokens=~%s",
+-        agent.log_prefix, max_retries, _final_summary,
+-        provider, model, len(api_messages), f"{approx_tokens:,}",
++        agent.log_prefix, max_retries,
++        "[ephemeral API error detail suppressed]" if _vyron_ephemeral else _final_summary,
++        provider, model,
++        "-" if _vyron_ephemeral else len(api_messages),
++        "-" if _vyron_ephemeral else f"{approx_tokens:,}",
+     )
+     if api_kwargs is not None:
+         agent._dump_api_request_debug(api_kwargs, reason="max_retries_exhausted", error=api_error)
+@@ -1045,7 +1050,9 @@
+     logger.warning(
+         "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
+         wait_time, retry_count, max_retries, agent._client_log_context(),
+-        _backoff_policy or "default", api_error,
++        _backoff_policy or "default",
++        # VYRON_LOCAL_PATCH_0004: no provider error text in durable logs for ephemeral agents.
++        "[ephemeral API error detail suppressed]" if getattr(agent, "_persist_disabled", False) else api_error,
+     )
+     return wait_time
+ 
+@@ -1070,7 +1077,10 @@
+             )
+             logger.warning(
+                 "Codex response status='%s' (error=%s). Routing to fallback. %s",
+-                _codex_resp_status, _codex_error_msg, agent._client_log_context(),
++                _codex_resp_status,
++                # VYRON_LOCAL_PATCH_0004: no provider error text in durable logs for ephemeral agents.
++                "[ephemeral API error detail suppressed]" if getattr(agent, "_persist_disabled", False) else _codex_error_msg,
++                agent._client_log_context(),
+             )
+             return True, [f"response.status={_codex_resp_status}: {_codex_error_msg}"]
+         # Stream backfill may have failed but normalize can still recover from output_text.
+--- a/agent/turn_finalizer.py
++++ b/agent/turn_finalizer.py
+@@ -315,13 +315,15 @@
+     )
+     _diag_msg = (
+         "Turn ended: reason=%s model=%s api_calls=%d/%d budget=%d/%d "
+-        "tool_turns=%d last_msg_role=%s response_len=%d session=%s"
++        "tool_turns=%d last_msg_role=%s response_len=%s session=%s"
+     )
+     _diag_args = (
+         _turn_exit_reason, agent.model, api_call_count, agent.max_iterations,
+         agent.iteration_budget.used if agent.iteration_budget else 0,
+         agent.iteration_budget.max_total if agent.iteration_budget else 0,
+-        _turn_tool_count, _last_msg_role, len(final_response) if final_response else 0,
++        # VYRON_LOCAL_PATCH_0004: the response length is response-derived; not logged for ephemeral agents.
++        _turn_tool_count, _last_msg_role,
++        "-" if getattr(agent, "_persist_disabled", False) else (len(final_response) if final_response else 0),
+         agent.session_id or "none",
+     )
+     if _last_msg_role == "tool" and not interrupted:
+--- a/agent/turn_usage.py
++++ b/agent/turn_usage.py
+@@ -194,12 +194,20 @@
+     _upstream = getattr(response, "provider", None)
+     if isinstance(_upstream, str) and _upstream:
+         _ident += f" upstream={_upstream}"
+-    logger.info(
+-        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s",
+-        agent.session_api_calls, agent.model, agent.provider or "unknown",
+-        prompt_tokens, completion_tokens, total_tokens,
+-        api_duration, _cache_pct, _ident,
+-    )
++    if getattr(agent, "_persist_disabled", False):
++        # VYRON_LOCAL_PATCH_0004: token counts, cache stats and the provider response id are request/
++        # response-derived; ephemeral agents log only the call number, model, provider and latency.
++        logger.info(
++            "API call #%d: model=%s provider=%s latency=%.1fs usage=[ephemeral usage suppressed]",
++            agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
++        )
++    else:
++        logger.info(
++            "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s",
++            agent.session_api_calls, agent.model, agent.provider or "unknown",
++            prompt_tokens, completion_tokens, total_tokens,
++            api_duration, _cache_pct, _ident,
++        )
+     # nous.anthropic_wire=auto: the session's wire is decided once, from this first response.
+     if agent.session_api_calls == 1 and (agent.provider or "") == "nous":
+         with suppress(Exception):
+--- a/gateway/platforms/api_server.py
++++ b/gateway/platforms/api_server.py
+@@ -3881,7 +3881,10 @@
+ 
+             # Plugin-registered native handlers, wired before AppRunner.setup() freezes the router.
+             self._wire_plugin_handlers(self._app)
+-            self._runner = web.AppRunner(self._app)
++            # VYRON_LOCAL_PATCH_0004: every agent this server creates is persistence-disabled (patch
++            # 0001), so drop the response size, timing, referer and user-agent fields from the aiohttp
++            # access log (response size is response-derived metadata). Method, path and status remain.
++            self._runner = web.AppRunner(self._app, access_log_format='%a "%r" %s')
+             await self._runner.setup()
+             # Bind directly (a pre-probe raced the bind, misreporting TIME_WAIT as "in use").
+             # SO_REUSEADDR off on macOS (BSD can split traffic between two listeners).

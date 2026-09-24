@@ -1,0 +1,132 @@
+From: Vyron Code D-11 local hardening (VYRON_CODE_D11_FINAL_EPHEMERAL_DIAGNOSTICS_PATCH)
+Applies to: NousResearch/hermes-agent, installed local copy, version 0.21.0.
+
+OPTIONAL, NOT APPLIED BY THIS TOOLING. Every attempt to write to Hermes's installed source from
+inside this development environment has been refused by that environment's own permission
+system, across two prior rounds and four distinct techniques (direct Edit, `git apply`, a Python
+read/analysis script, and - this round - a fresh `git apply` attempt). This file exists so you
+can review, and apply yourself, the exact change that closes the second persistence gap found in
+this round: patch 0001 (`agent._persist_disabled = True`) correctly stops the SQLite session/
+message store from writing anything durable, live-proven with two separate unique markers, but a
+second, independent Hermes mechanism - an API-error debug dumper, and a per-turn info log line -
+is not gated by that flag at all, and was live-proven (same markers) to still write prompt text
+to disk.
+
+WHAT IT DOES (four small hunks, three files):
+
+  1. `agent/agent_runtime_helpers.py::dump_api_request_debug` - the single function behind every
+     call to `agent._dump_api_request_debug(...)` (used for the opt-in `HERMES_DUMP_REQUESTS`
+     preflight dump, and unconditionally for the non-retryable-client-error and
+     max-retries-exhausted error paths). Adds one early return: if the calling agent has
+     `_persist_disabled = True`, the function does nothing and no
+     `sessions/request_dump_*.json` file is ever created. This is the single choke point for all
+     three call sites, so one guard covers the opt-in preflight dump and both error paths.
+
+  2. `agent/turn_context.py` - the per-turn `logger.info("conversation turn: ... msg=%r", ...)`
+     line that runs on every turn (success or failure) and, until now, always included an 80-char
+     preview of the user's actual message text. When `_persist_disabled` is set, the preview is
+     replaced with a fixed placeholder; the rest of the line (session/model/provider/platform/
+     history length) is unchanged, so operational log lines for ordinary, non-ephemeral agents
+     are completely unaffected.
+
+  3 & 4. `agent/turn_recovery.py` - two log lines that fire specifically on the non-retryable
+     API-error path and can carry the raw provider error/response text (which, for some provider
+     failure modes, can itself echo back request content): the `logger.error("... Non-retryable
+     client error: %s", ...)` line, and the `logger.warning("API call failed ... summary=%s",
+     ...)` line. Both redact only the error/summary text when `_persist_disabled` is set; retry
+     count, error type, and provider/model context are unchanged, so error-rate monitoring for
+     ordinary agents keeps working exactly as before.
+
+WHAT THIS DELIBERATELY DOES NOT TOUCH:
+
+  - The `[session_id]` tag every Hermes log line carries (via the logging session-context filter
+    set up in `set_session_context()`), used by `hermes logs` to group lines per run. It is
+    generic logging infrastructure that applies to every platform and every agent, not something
+    tied to `dump_api_request_debug` or a specific log line's content, and it is an opaque
+    correlator, not task content - de-scoping it keeps this patch to the narrowest change that
+    actually stops task/response/error *content* from landing on disk, per the mission's own
+    instruction not to globally disable diagnostics.
+  - Any non-`api_server` platform, or any `api_server` agent that does NOT have
+    `_persist_disabled = True` set (i.e. every guard is conditional on that exact flag, which
+    only patch 0001 sets, and only for API Server task agents).
+
+HOW TO APPLY (PowerShell, run as the same user who owns the Hermes installation):
+  1. Back up first:
+       $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+       Copy-Item "$env:LOCALAPPDATA\hermes\hermes-agent\agent\agent_runtime_helpers.py" "$env:LOCALAPPDATA\hermes\hermes-agent\agent\agent_runtime_helpers.py.vyron-pre-diag-patch-$ts.bak"
+       Copy-Item "$env:LOCALAPPDATA\hermes\hermes-agent\agent\turn_context.py" "$env:LOCALAPPDATA\hermes\hermes-agent\agent\turn_context.py.vyron-pre-diag-patch-$ts.bak"
+       Copy-Item "$env:LOCALAPPDATA\hermes\hermes-agent\agent\turn_recovery.py" "$env:LOCALAPPDATA\hermes\hermes-agent\agent\turn_recovery.py.vyron-pre-diag-patch-$ts.bak"
+  2. From this repository root:
+       git apply --directory="$env:LOCALAPPDATA\hermes\hermes-agent" hermes-patches/0002-api-server-ephemeral-diagnostics.patch
+     (or apply the hunks below by hand if `git apply` complains about line-ending/context
+     differences against your installed copy's exact version.)
+  3. Restart Hermes: stop any running `hermes gateway run`, then start it again.
+
+HOW TO ROLL BACK:
+  Restore the three `.bak` files created in step 1 over their originals, then restart Hermes.
+
+--- a/agent/agent_runtime_helpers.py
++++ b/agent/agent_runtime_helpers.py
+@@ -1255,6 +1255,10 @@
+     agent, api_kwargs: Dict[str, Any], *, reason: str, error: Optional[Exception] = None
+ ) -> Optional[Path]:
+     """Dump the request body from api_kwargs (minus transport keys) for debugging provider 4xx failures."""
++    # VYRON_LOCAL_PATCH: never durably dump request/response/error content for an agent whose
++    # task persistence is disabled (e.g. Vyron Code's D-11 API Server connection).
++    if getattr(agent, "_persist_disabled", False):
++        return None
+     try:
+         body = {k: v for k, v in copy.deepcopy(api_kwargs).items() if v is not None and k != "timeout"}
+         api_key = None
+
+--- a/agent/turn_context.py
++++ b/agent/turn_context.py
+@@ -821,10 +821,17 @@
+ 
+     _preview_text = summarize_user_message_for_log(user_message)
+     _msg_preview = _preview_text[:80] + ("..." if len(_preview_text) > 80 else "")
++    # VYRON_LOCAL_PATCH: task-persistence-disabled agents must not have prompt content land in
++    # this durable per-turn log line (e.g. Vyron Code's D-11 API Server connection). The rest of
++    # the line (session/model/provider/platform/history length) is unchanged.
++    _log_msg_preview = (
++        "<redacted:persist_disabled>" if getattr(agent, "_persist_disabled", False)
++        else _msg_preview.replace("\n", " ")
++    )
+     logger.info(
+         "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
+         agent.session_id or "none", agent.model, agent.provider or "unknown",
+         agent.platform or "unknown", len(conversation_history or []),
+-        _msg_preview.replace("\n", " "),
++        _log_msg_preview,
+     )
+ 
+
+--- a/agent/turn_recovery.py
++++ b/agent/turn_recovery.py
+@@ -700,6 +700,9 @@
+             "      • Self-signed local endpoint (llama.cpp, LM Studio, vLLM)? Use http://",
+             "        for localhost, or add the server's cert to your trust store.",
+         )
+-    logger.error("%sNon-retryable client error: %s", agent.log_prefix, api_error)
++    # VYRON_LOCAL_PATCH: redact the raw provider error text for persistence-disabled agents -
++    # some provider failure modes echo request content back in the error body.
++    _logged_api_error = "<redacted:persist_disabled>" if getattr(agent, "_persist_disabled", False) else api_error
++    logger.error("%sNon-retryable client error: %s", agent.log_prefix, _logged_api_error)
+     # Skip persistence on likely context-overflow (400 + large session): persisting the
+     # failed message grows the session and repeats the failure.
+@@ -867,9 +870,14 @@
+     error_type = type(api_error).__name__
+     error_msg = str(api_error).lower()
+     _error_summary = agent._summarize_api_error(api_error)
++    # VYRON_LOCAL_PATCH: redact the error summary for persistence-disabled agents; retry count,
++    # error type, and client/provider/model context are unaffected.
++    _logged_error_summary = (
++        "<redacted:persist_disabled>" if getattr(agent, "_persist_disabled", False) else _error_summary
++    )
+     logger.warning(
+         "API call failed (attempt %s/%s) error_type=%s %s summary=%s",
+-        retry_count, max_retries, error_type, agent._client_log_context(), _error_summary,
++        retry_count, max_retries, error_type, agent._client_log_context(), _logged_error_summary,
+     )
+ 
+     _provider = getattr(agent, "provider", "unknown")

@@ -1,0 +1,204 @@
+From: Vyron Code D-11 local hardening (VYRON_CODE_D11_PATCH_0005 - ephemeral success-path usage/session writes)
+Applies to: NousResearch/hermes-agent, installed local copy, version 0.21.0, ON TOP OF patches
+0001, 0002 and 0004 (all three must already be applied; verified present 2026-09-24).
+
+NOT APPLIED BY THIS TOOLING. Generated from `diff -u` of the real installed source against a patched
+copy; every edited file parses as valid Python; four of the seven guards were exercised in isolation
+(ephemeral agent writes nothing, normal agent behaves exactly as before); `git apply --check` was run
+against the real installed Hermes root. Nothing was written to the installed source.
+
+WHY THIS PATCH EXISTS (live-proven 2026-09-24 10:52, first successful completion on this machine):
+a successful API Server task through OmniRoute wrote one row into `sessions` (api session id,
+api_call_count, input/output tokens, model, billing provider and base URL) and one row into
+`session_model_usage`, plus WAL bytes. `_ensure_db_session()` was already suppressed by patch 0001, but
+`agent/turn_usage.py` calls `queue_token_counts()`, which upserts BOTH rows by itself, and it never
+consulted `_persist_disabled`. The error path never reaches this code (a failed call has no usage), so
+only a real success could expose it.
+
+WHAT THIS PATCH CHANGES (7 hunks, 7 files; each carries the marker VYRON_LOCAL_PATCH_0005):
+  agent/turn_usage.py              the write that created the rows (queue_token_counts + ensure)
+  agent/codex_runtime.py           same accounting write for the codex_responses api mode
+  agent/session_persistence.py     flush_token_counts() drain at every persist point
+  agent/turn_facade.py             ambient accounting context; a None handle clears it, so auxiliary-call
+                                   usage (title/vision/compression/...) is never recorded to the session
+  agent/conversation_loop.py       update_system_prompt(): writes system_prompts BEFORE its UPDATE, even
+                                   when no sessions row exists
+  agent/agent_runtime_helpers.py   update_session_billing_route() (provider / base_url after a model switch)
+  agent/background_review.py       review-fork usage recorded against the parent session
+
+  Scope: every guard is conditional on `getattr(agent, "_persist_disabled", False)`, which only patch 0001
+  sets (API Server agents). Normal Hermes Desktop / TUI / gateway-platform agents have the flag False, so
+  their session, usage, billing and debug behaviour is unchanged.
+
+FOUND BUT DELIBERATELY NOT CHANGED (unreachable for the D-11 request contract, documented for honesty):
+  - Context-compression writes (archive_and_compact, publish_compression_child, ...): triggered only by
+    context size; D-11 tasks are capped at 4,000 characters.
+  - gateway/platforms/api_server.py `record_gateway_session_peer` / `update_session_runtime_lock`: run only
+    when a client sends X-Hermes-Session-Key or requests a model lock; the D-11 request sends neither, and
+    both are UPDATE statements (no-op without a row).
+  - Auto-title generation: api_server.py never calls it.
+  - gateway_heartbeats and similar process-level tables: no task data.
+  The stray `api-...` rows written by the 2026-09-24 test are NOT deleted by this patch (kept as
+  pre-patch evidence).
+
+HOW TO APPLY (PowerShell, as the user who owns the Hermes installation; nothing below prints credentials).
+Stop the running gateway first.
+
+  # 1) Backup: one timestamped .bak next to each of the seven files
+  $root  = "$env:LOCALAPPDATA\hermes\hermes-agent"
+  $files = "agent\turn_usage.py","agent\codex_runtime.py","agent\session_persistence.py","agent\turn_facade.py","agent\conversation_loop.py","agent\agent_runtime_helpers.py","agent\background_review.py"
+  $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+  foreach ($f in $files) { Copy-Item "$root\$f" "$root\$f.vyron-pre-0005-$ts.bak" }
+
+  # 2) Dry run, then apply. Run from INSIDE the Hermes root (it is itself a git repository);
+  #    do not use --directory, it fails on Windows paths.
+  Set-Location $root
+  git apply --check "D:\Vyron Code\hermes-patches\0005-api-server-ephemeral-success-usage.patch"
+  if ($LASTEXITCODE -eq 0) { git apply "D:\Vyron Code\hermes-patches\0005-api-server-ephemeral-success-usage.patch" } else { Write-Warning "dry run failed - nothing applied" }
+
+HOW TO VERIFY IT ACTUALLY APPLIED (run BEFORE restarting Hermes):
+
+  $root = "$env:LOCALAPPDATA\hermes\hermes-agent"
+  $py   = "$root\venv\Scripts\python.exe"
+  $ok   = $true
+  # patch 0005: one marker + one distinctive code fragment per file
+  $p5 = @(
+    @("agent\turn_usage.py",              'and not getattr(agent, "_persist_disabled", False):'),
+    @("agent\codex_runtime.py",           'getattr(agent, "_persist_disabled", False) or not (agent._session_db'),
+    @("agent\session_persistence.py",     'not getattr(self, "_persist_disabled", False):'),
+    @("agent\turn_facade.py",             'None if getattr(self, "_persist_disabled", False) else getattr(self, "_session_db", None)'),
+    @("agent\conversation_loop.py",       'if not agent._session_db or getattr(agent, "_persist_disabled", False):'),
+    @("agent\agent_runtime_helpers.py",   'session_id or getattr(agent, "_persist_disabled", False):'),
+    @("agent\background_review.py",       'getattr(parent_agent, "_persist_disabled", False)')
+  )
+  foreach ($c in $p5) {
+    $m = @(Select-String -Path "$root\$($c[0])" -Pattern "VYRON_LOCAL_PATCH_0005" -SimpleMatch).Count
+    $h = Select-String -Path "$root\$($c[0])" -Pattern $c[1] -SimpleMatch -Quiet
+    if ($m -ne 1 -or -not $h) { $ok = $false }
+    "{0,-34} 0005 marker={1}/1 code={2}" -f $c[0], $m, $(if ($h) {"OK"} else {"MISSING"})
+  }
+  foreach ($c in $p5) { & $py -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read()); print('parse OK', sys.argv[1])" "$root\$($c[0])"; if ($LASTEXITCODE -ne 0) { $ok = $false } }
+  # patches 0001 / 0002 / 0004 must still be in place
+  $p4 = [ordered]@{ "hermes_logging.py"=2; "agent\turn_context.py"=2; "agent\chat_completion_helpers.py"=2; "agent\stream_diag.py"=1; "agent\turn_recovery.py"=3; "agent\turn_finalizer.py"=1; "agent\turn_usage.py"=1; "gateway\platforms\api_server.py"=1 }
+  foreach ($f in $p4.Keys) {
+    $n = @(Select-String -Path "$root\$f" -Pattern "VYRON_LOCAL_PATCH_0004" -SimpleMatch).Count
+    if ($n -ne $p4[$f]) { $ok = $false }
+    "{0,-34} 0004 markers={1}/{2}" -f $f, $n, $p4[$f]
+  }
+  $p12 = [ordered]@{ "gateway\platforms\api_server.py"=1; "agent\agent_runtime_helpers.py"=1; "agent\turn_context.py"=1; "agent\turn_recovery.py"=2 }
+  foreach ($f in $p12.Keys) {
+    $n = @(Select-String -Path "$root\$f" -Pattern "VYRON_LOCAL_PATCH:" -SimpleMatch).Count
+    if ($n -ne $p12[$f]) { $ok = $false }
+    "{0,-34} 0001/0002 markers={1}/{2}" -f $f, $n, $p12[$f]
+  }
+  $flag = Select-String -Path "$root\gateway\platforms\api_server.py" -Pattern "agent._persist_disabled = True" -SimpleMatch -Quiet
+  if (-not $flag) { $ok = $false }; "0001 persist flag line: $flag"
+  if ($ok) { "RESULT: patch 0005 present and parses; 0001/0002/0004 intact - now restart the gateway" } else { "RESULT: NOT APPLIED CORRECTLY - do not restart; roll back or re-apply" }
+
+  # After restarting, the running gateway must be newer than the newest patched file:
+  ($p5 | ForEach-Object { (Get-Item "$root\$($_[0])").LastWriteTime } | Measure-Object -Maximum).Maximum
+  (Get-Process -Id (Get-NetTCPConnection -LocalPort 8642 -State Listen).OwningProcess).StartTime
+
+HOW TO ROLL BACK (restores the newest 0005 backup of each file, then restart Hermes):
+
+  $root  = "$env:LOCALAPPDATA\hermes\hermes-agent"
+  $files = "agent\turn_usage.py","agent\codex_runtime.py","agent\session_persistence.py","agent\turn_facade.py","agent\conversation_loop.py","agent\agent_runtime_helpers.py","agent\background_review.py"
+  foreach ($f in $files) {
+    $dir = Split-Path "$root\$f"; $leaf = Split-Path $f -Leaf
+    $bak = Get-ChildItem $dir -Filter "$leaf.vyron-pre-0005-*.bak" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($bak) { Copy-Item $bak.FullName "$root\$f" -Force; "restored $f from $($bak.Name)" } else { Write-Warning "no 0005 backup found for $f" }
+  }
+
+##### diff follows #####
+--- a/agent/turn_usage.py
++++ b/agent/turn_usage.py
+@@ -248,7 +248,10 @@
+     # accounting; gateway/session-store writes use absolute totals and safely overwrite
+     # these deltas. Enqueued, not written (a cold state.db UPDATE here stalled the tool
+     # loop); drained at finalize via _persist_session.
+-    if agent._session_db and agent.session_id:
++    # VYRON_LOCAL_PATCH_0005: persistence-disabled (ephemeral) agents never write token/usage/billing/
++    # model/provider accounting into state.db - queue_token_counts upserts the sessions row and the
++    # session_model_usage row by itself, even though _ensure_db_session() is already suppressed.
++    if agent._session_db and agent.session_id and not getattr(agent, "_persist_disabled", False):
+         try:
+             # Ensure the row exists: under concurrent SQLite load the initial
+             # _ensure_db_session() may fail, and UPDATE on a missing row affects 0 rows.
+--- a/agent/codex_runtime.py
++++ b/agent/codex_runtime.py
+@@ -72,7 +72,8 @@
+ def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable[[], dict]) -> None:
+     """Enqueue per-call accounting for the SessionDB background writer. ``counts`` is built
+     lazily inside the guarded try so a stub agent without a session DB is never touched."""
+-    if not (agent._session_db and agent.session_id):
++    # VYRON_LOCAL_PATCH_0005: no usage accounting rows for persistence-disabled (ephemeral) agents.
++    if getattr(agent, "_persist_disabled", False) or not (agent._session_db and agent.session_id):
+         return
+     try:
+         if not agent._session_db_created:
+--- a/agent/session_persistence.py
++++ b/agent/session_persistence.py
+@@ -325,7 +325,8 @@
+             self._save_session_log(messages)
+             self._flush_messages_to_session_db(messages, conversation_history)
+             # Drain async token-accounting deltas at every persist point; cheap no-op when nothing queued.
+-            if self._session_db is not None:
++            # VYRON_LOCAL_PATCH_0005: nothing is ever queued for persistence-disabled (ephemeral) agents.
++            if self._session_db is not None and not getattr(self, "_persist_disabled", False):
+                 self._session_db.flush_token_counts()
+             note_turn_persisted(self)
+ 
+--- a/agent/turn_facade.py
++++ b/agent/turn_facade.py
+@@ -110,8 +110,11 @@
+             # Publish the session accounting handles the same way so auxiliary calls record their token
+             # usage into session_model_usage (task dimension) — the fix for aux spend being invisible in
+             # analytics (issue #23270).
++            # VYRON_LOCAL_PATCH_0005: a None handle clears the context, so auxiliary-call usage is never
++            # recorded against a persistence-disabled (ephemeral) agent's session.
+             acct_token = set_accounting_context(
+-                getattr(self, "_session_db", None), getattr(self, "session_id", None)
++                None if getattr(self, "_persist_disabled", False) else getattr(self, "_session_db", None),
++                getattr(self, "session_id", None),
+             )
+ 
+             # Keep the ContextVar scope local (agent tokens may be observed from another thread).
+--- a/agent/conversation_loop.py
++++ b/agent/conversation_loop.py
+@@ -626,7 +626,8 @@
+     """Persist ``agent._cached_system_prompt`` to the session row; failures log at WARNING
+     (with ``failure_message``) because the gateway path (fresh AIAgent per turn) reads
+     this row every turn, so a silent failure breaks prefix-cache reuse."""
+-    if not agent._session_db:
++    # VYRON_LOCAL_PATCH_0005: no system-prompt snapshot for persistence-disabled (ephemeral) agents.
++    if not agent._session_db or getattr(agent, "_persist_disabled", False):
+         return
+     try:
+         agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+--- a/agent/agent_runtime_helpers.py
++++ b/agent/agent_runtime_helpers.py
+@@ -2090,7 +2090,8 @@
+     # _session_db / session_id may be unset (tests, bare agents).
+     session_db = getattr(agent, "_session_db", None)
+     session_id = getattr(agent, "session_id", None)
+-    if session_db is None or not session_id:
++    # VYRON_LOCAL_PATCH_0005: no billing-route write for persistence-disabled (ephemeral) agents.
++    if session_db is None or not session_id or getattr(agent, "_persist_disabled", False):
+         return
+     try:
+         session_db.update_session_billing_route(
+--- a/agent/background_review.py
++++ b/agent/background_review.py
+@@ -705,8 +705,10 @@
+         session_db = getattr(parent_agent, "_session_db", None)
+         session_id = getattr(parent_agent, "session_id", None)
+         counts = {key: int(usage.get(key) or 0) for key in _USAGE_COUNTERS}
+-        if session_db is None or not session_id or not any(counts.values()):
+-            return  # no DB, or the fork made no successful API calls (e.g. failed at spawn)
++        # VYRON_LOCAL_PATCH_0005: never record review-fork usage against a persistence-disabled parent.
++        if (session_db is None or not session_id or getattr(parent_agent, "_persist_disabled", False)
++                or not any(counts.values())):
++            return  # no DB, ephemeral parent, or the fork made no successful API calls (e.g. failed at spawn)
+         session_db.record_auxiliary_usage(
+             session_id, task="background_review", model=usage.get("model"),
+             billing_provider=usage.get("provider"), billing_base_url=usage.get("base_url"),
