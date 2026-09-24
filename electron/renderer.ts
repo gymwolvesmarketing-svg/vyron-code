@@ -1,174 +1,31 @@
 /**
- * Local renderer script — VYRON_CODE_V02_D02D_MINIMAL_LOCAL_RENDERER_AUTHORIZATION, extended
- * by VYRON_CODE_V02_D03_NATIVE_FOLDER_PICKER_AND_WORKSPACE_GRANT_AUTHORIZATION,
- * VYRON_CODE_V02_D03_PRELOAD_IPC_WIRING_FIX_AUTHORIZATION,
- * VYRON_CODE_V02_D03_NATIVE_FOLDER_PICKER_REAL_RUNTIME_DEFECT_ANALYSIS_AND_FIX,
- * VYRON_CODE_V02_D03_PRELOAD_BRIDGE_INJECTION_DIAGNOSTIC_AND_FIX_AUTHORIZATION, and
- * VYRON_CODE_V02_MILESTONE_A_RUNTIME_STABILITY_AND_READONLY_WORKSPACE_AUTHORIZATION.
+ * Local renderer script - VYRON_CODE_ONE_CLICK_LOCAL_AI_STARTUP_AND_UX_DELIVERY.
  *
- * Reads the already-exposed, static `window.vyronDesktop` object (see electron/preload.ts)
- * and renders it via safe DOM construction (`createElement`/`textContent`, never
- * `innerHTML`). Every IPC call this file makes is one of the fixed
- * `window.vyronDesktop.workspace.*` methods, each triggered only by an explicit user action —
- * a button click, an Explorer row click, or a submitted Search query — never automatically,
- * and never with a user-typed absolute path (the Search box accepts only a query string, not
- * a path; the workspace root itself can only ever come from the native picker). No
- * `fetch`/network request (this page's own CSP forbids `connect-src` entirely), no direct
- * filesystem access, no write/save/terminal/Git-write control anywhere on this page.
+ * Shows the safe local AI state (starting / ready / unavailable) that the main process reports, and
+ * the reviewed-task flow: write a draft, review the exact immutable text, explicitly send it, read a
+ * bounded plain-text answer, clear it. The main process starts and verifies the local services on its
+ * own; nothing here starts, configures or addresses anything.
  *
- * This file must have NO top-level `import`/`export` statement of any kind, not even
- * `import type` — see the D-03 preload/renderer module-format fix reports for why (TypeScript
- * emits a CommonJS wrapper for any file with an import/export declaration, which breaks this
- * file's load as a classic, non-module `<script src="…">`). All contract types are declared
- * locally below, mirroring `shared-ipc-contract.ts`'s real, canonical declarations — keep the
- * two in sync by hand if the contract changes.
+ * Every IPC call is one of the fixed `window.vyronDesktop.localAi.*` / `window.vyronDesktop.hermes.*`
+ * methods (electron/preload.ts). No fetch/network request (this page's CSP forbids connect-src), no
+ * storage of any kind (a draft or answer exists only in this page's memory and the main process's
+ * memory, and is cleared on reload), no innerHTML (all text is set through textContent).
+ *
+ * This file must have NO top-level `import`/`export` statement of any kind - TypeScript would emit a
+ * CommonJS wrapper that breaks its load as a classic, non-module `<script src="...">`. Contract
+ * types are declared locally, mirroring `shared-ipc-contract.ts` - keep the two in sync by hand.
  */
-type WorkspaceGrantResultState = "no_workspace" | "granted" | "denied" | "cancelled" | "unavailable";
+type LocalAiStage = "checking" | "gateway" | "proxy" | "verifying";
+type SafeLocalAiFailureCategory = "hermes_start_failed" | "secure_connection_unverified" | "model_unresponsive" | "unavailable";
+type LocalAiState =
+  | { readonly state: "starting"; readonly stage: LocalAiStage }
+  | { readonly state: "ready" }
+  | { readonly state: "unavailable"; readonly category: SafeLocalAiFailureCategory };
 
-interface WorkspaceGrantState {
-  readonly state: WorkspaceGrantResultState;
-  readonly workspaceId: string | null;
-  readonly displayName: string | null;
-  readonly readOnly: true;
+interface SafeCopyResult {
+  readonly copied: boolean;
 }
 
-type ListEntriesResultState = "ok" | "no_workspace" | "invalid_path" | "not_a_directory" | "denied";
-
-interface WorkspaceExplorerEntry {
-  readonly name: string;
-  readonly relativePath: string;
-  readonly type: "dir" | "file";
-}
-
-interface ListEntriesResult {
-  readonly state: ListEntriesResultState;
-  readonly relativePath: string | null;
-  readonly entries: readonly WorkspaceExplorerEntry[];
-  readonly truncated: boolean;
-}
-
-type ReadTextFileResultState = "ok" | "no_workspace" | "invalid_path" | "not_a_file" | "binary" | "too_large" | "unreadable" | "denied";
-
-interface ReadTextFileResult {
-  readonly state: ReadTextFileResultState;
-  readonly relativePath: string | null;
-  readonly content: string | null;
-  readonly lineCount: number | null;
-  readonly truncated: boolean;
-}
-
-interface WorkspaceSearchMatch {
-  readonly relativePath: string;
-  readonly line: number;
-  readonly preview: string;
-}
-
-type SearchTextResultState = "ok" | "no_workspace" | "invalid_query";
-
-interface SearchTextResult {
-  readonly state: SearchTextResultState;
-  readonly query: string | null;
-  readonly matches: readonly WorkspaceSearchMatch[];
-  readonly truncated: boolean;
-}
-
-type GitSummaryResultState = "ok" | "no_workspace" | "not_a_repository" | "unavailable";
-
-interface GitSummaryResult {
-  readonly state: GitSummaryResultState;
-  readonly branch: string | null;
-  readonly detached: boolean;
-  readonly trackedChangesAvailable: boolean;
-  readonly modifiedCount: number | null;
-  readonly deletedCount: number | null;
-  readonly untrackedCount: number | null;
-  readonly truncated: boolean;
-}
-
-interface DesktopWorkspaceApi {
-  pickDirectory(): Promise<WorkspaceGrantState>;
-  getCurrent(): Promise<WorkspaceGrantState>;
-  clearCurrent(): Promise<WorkspaceGrantState>;
-  listEntries(relativePath: string): Promise<ListEntriesResult>;
-  readTextFile(relativePath: string): Promise<ReadTextFileResult>;
-  searchText(query: string): Promise<SearchTextResult>;
-  getGitSummary(): Promise<GitSummaryResult>;
-}
-
-// VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION — mirrors
-// shared-ipc-contract.ts's real, canonical declarations, per this file's own module-format
-// constraint (see file-header comment). Carries no endpoint/host/port/session field anywhere.
-type HermesAvailabilityState = "available" | "unavailable" | "not_configured";
-
-interface HermesAvailability {
-  readonly state: HermesAvailabilityState;
-}
-
-type HermesAuthorizationAmbientState = "not_authorized" | "authorized_memory_only";
-
-interface HermesAuthorizationState {
-  readonly state: HermesAuthorizationAmbientState;
-}
-
-interface HermesAuthorizationRequest {
-  readonly credential: string;
-}
-
-type HermesAuthorizationOutcomeState = "authorized_memory_only" | "revoked" | "not_authorized" | "safe_failure" | "unavailable";
-
-interface HermesAuthorizationResult {
-  readonly state: HermesAuthorizationOutcomeState;
-}
-
-// VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION, re-scoped by
-// VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION onto the Hermes API Server.
-type HermesEndpointAmbientState = "not_configured" | "configured_memory_only";
-
-interface HermesEndpointState {
-  readonly state: HermesEndpointAmbientState;
-}
-
-interface HermesEndpointConfigurationRequest {
-  readonly endpoint: string;
-}
-
-type HermesEndpointConfigurationOutcomeState =
-  | "configured_memory_only"
-  | "cleared"
-  | "not_configured"
-  | "policy_rejected"
-  | "invalid_configuration"
-  | "unavailable"
-  | "safe_failure";
-
-interface HermesEndpointConfigurationResult {
-  readonly state: HermesEndpointConfigurationOutcomeState;
-}
-
-// VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION — duplicated locally for the same
-// reason every other type here is. Carries no endpoint/API-key/raw HTTP status/headers/body
-// field anywhere.
-type HermesApiServerAmbientState =
-  | "not_authorized"
-  | "endpoint_not_configured"
-  | "ready_to_verify"
-  | "verifying"
-  | "reachable"
-  | "unavailable"
-  | "safe_failure";
-
-interface HermesApiServerState {
-  readonly state: HermesApiServerAmbientState;
-}
-
-interface HermesApiServerResult {
-  readonly state: HermesApiServerAmbientState;
-}
-
-// VYRON_CODE_COMPLETE_LOCAL_HERMES_D11_DELIVERY_AUTHORIZATION — duplicated locally for the
-// same reason every other type here is. Carries no endpoint/API-key/raw HTTP status/headers/
-// body/session-id field anywhere; `text` is populated only in the "completed" state and is
-// always the already-bounded, plain-text-only assistant response.
 type HermesTaskSubmissionAmbientState =
   | "idle"
   | "review_ready"
@@ -190,17 +47,13 @@ interface HermesTaskDraftReviewRequest {
   readonly draft: string;
 }
 
+interface DesktopLocalAiApi {
+  getLocalAiState(): Promise<LocalAiState>;
+  retryLocalAiStartup(): Promise<LocalAiState>;
+  copyLocalAiDiagnostics(): Promise<SafeCopyResult>;
+}
+
 interface DesktopHermesApi {
-  getAvailability(): Promise<HermesAvailability>;
-  getAuthorizationState(): Promise<HermesAuthorizationState>;
-  beginAuthorization(request: HermesAuthorizationRequest): Promise<HermesAuthorizationResult>;
-  clearAuthorization(): Promise<HermesAuthorizationResult>;
-  getEndpointConfigurationState(): Promise<HermesEndpointState>;
-  configureEndpoint(request: HermesEndpointConfigurationRequest): Promise<HermesEndpointConfigurationResult>;
-  clearEndpointConfiguration(): Promise<HermesEndpointConfigurationResult>;
-  getApiServerVerificationState(): Promise<HermesApiServerState>;
-  verifyApiServerConnection(): Promise<HermesApiServerResult>;
-  clearApiServerVerification(): Promise<HermesApiServerResult>;
   getTaskSubmissionState(): Promise<HermesTaskSubmissionState>;
   reviewTaskDraft(request: HermesTaskDraftReviewRequest): Promise<HermesTaskSubmissionState>;
   sendReviewedTask(): Promise<HermesTaskSubmissionState>;
@@ -208,24 +61,7 @@ interface DesktopHermesApi {
 }
 
 interface DesktopApi {
-  readonly platform: "desktop";
-  readonly capabilities: {
-    readonly workspacePicker: true;
-    readonly workspaceRead: true;
-    readonly workspaceSearch: true;
-    readonly gitSummary: true;
-    readonly terminal: false;
-    readonly fileWrite: false;
-    readonly gitWrite: false;
-    readonly multimodelStart: false;
-    readonly hermesTokenStorage: false;
-  };
-  readonly security: {
-    readonly contextIsolation: true;
-    readonly nodeIntegration: false;
-    readonly sandbox: true;
-  };
-  readonly workspace: DesktopWorkspaceApi;
+  readonly localAi: DesktopLocalAiApi;
   readonly hermes: DesktopHermesApi;
 }
 
@@ -233,2029 +69,362 @@ interface Window {
   vyronDesktop?: DesktopApi;
 }
 
-const WORKSPACE_STATUS_TEXT: Record<WorkspaceGrantState["state"], string> = {
-  no_workspace: "No workspace is selected.",
-  granted: "", // rendered separately below (display name + read-only badge), never plain text
-  denied: "That folder can't be used as a workspace.",
-  cancelled: "No workspace is selected.",
-  unavailable: "The folder picker is unavailable right now.",
+const MAX_DRAFT_LENGTH = 4000;
+const POLL_STARTING_MS = 600;
+const POLL_STEADY_MS = 3000;
+
+const STAGE_MESSAGES: Record<LocalAiStage, string> = {
+  checking: "Yerel AI bağlantısı kontrol ediliyor…",
+  gateway: "Yerel AI motoru başlatılıyor…",
+  proxy: "Güvenli bağlantı hazırlanıyor…",
+  verifying: "Güvenli bağlantı doğrulanıyor…",
 };
 
-type WorkspaceViewName = "explorer" | "search" | "git";
-
-/**
- * One directory's own load state — distinguishable in the UI per
- * VYRON_CODE_V02_MILESTONE_A_READONLY_WORKSPACE_COMPLETION_AUTHORIZATION (Explorer must show
- * loading/empty/expanded/collapsed/inaccessible/unavailable states, not silently render every
- * failure as an empty folder).
- */
-type ExplorerDirState =
-  | { readonly status: "loading" }
-  | { readonly status: "loaded"; readonly entries: readonly WorkspaceExplorerEntry[]; readonly truncated: boolean }
-  | { readonly status: "empty" }
-  | { readonly status: "inaccessible" }
-  | { readonly status: "unavailable" };
-
-// ---------------------------------------------------------------------------------------
-// Explorer state — a lazily-populated cache of one-level directory listings, plus which
-// directories are currently expanded. Reset on every new grant and on clear, so a prior
-// workspace's data never bleeds into a newly selected one.
-// ---------------------------------------------------------------------------------------
-let explorerState = new Map<string, ExplorerDirState>();
-let explorerExpanded = new Set<string>();
-let selectedFileRelativePath: string | null = null;
-let searchInFlight = false;
-
-function resetWorkspaceViewState(): void {
-  explorerState = new Map();
-  explorerExpanded = new Set();
-  selectedFileRelativePath = null;
-  resetTaskContextState();
-
-  const tree = document.getElementById("explorer-tree");
-  if (tree) tree.replaceChildren();
-
-  renderFileViewerPlaceholder("Select a file to preview its contents.");
-
-  searchInFlight = false;
-  const searchInput = document.getElementById("search-input");
-  if (searchInput instanceof HTMLInputElement) searchInput.value = "";
-  const searchStatus = document.getElementById("search-status");
-  if (searchStatus) searchStatus.textContent = "Enter a query and press Search.";
-  const searchResults = document.getElementById("search-results");
-  if (searchResults) searchResults.replaceChildren();
-  const searchBtn = document.getElementById("search-btn");
-  if (searchBtn instanceof HTMLButtonElement) searchBtn.disabled = false;
-
-  const gitSummary = document.getElementById("git-summary");
-  if (gitSummary) {
-    gitSummary.replaceChildren();
-    const p = document.createElement("p");
-    p.className = "muted";
-    p.textContent = "Open this tab to load the Git summary.";
-    gitSummary.append(p);
-  }
-
-  switchView("explorer");
-}
-
-function renderFileViewerPlaceholder(text: string): void {
-  const viewer = document.getElementById("file-viewer");
-  if (!viewer) return;
-  viewer.replaceChildren();
-  const p = document.createElement("p");
-  p.className = "muted";
-  p.textContent = text;
-  viewer.append(p);
-}
-
-function renderWorkspaceState(result: WorkspaceGrantState): void {
-  const statusEl = document.getElementById("workspace-status");
-  const clearBtn = document.getElementById("clear-workspace-btn");
-  const panel = document.getElementById("workspace-panel");
-  if (!(statusEl instanceof HTMLElement) || !(clearBtn instanceof HTMLButtonElement)) return;
-
-  statusEl.replaceChildren();
-  if (result.state === "granted" && result.displayName) {
-    currentWorkspaceDisplayName = result.displayName;
-    const nameEl = document.createElement("strong");
-    nameEl.textContent = result.displayName;
-    const badge = document.createElement("span");
-    badge.className = "badge";
-    badge.textContent = "read-only";
-    statusEl.append(nameEl, document.createTextNode(" "), badge);
-    clearBtn.hidden = false;
-    if (panel) panel.hidden = false;
-    resetWorkspaceViewState();
-    void loadDirectory(".");
-  } else {
-    currentWorkspaceDisplayName = null;
-    statusEl.textContent = WORKSPACE_STATUS_TEXT[result.state];
-    clearBtn.hidden = true;
-    if (panel) panel.hidden = true;
-    resetWorkspaceViewState();
-  }
-}
-
-/**
- * Renders a plain, safe status sentence for a condition outside the IPC contract's own known
- * `WorkspaceGrantState["state"]` values — the preload bridge being missing, or a
- * `workspace.*` call rejecting instead of resolving with a safe state. Never shows a raw
- * error message, stack trace, or path; both call sites below pass a fixed, hand-written
- * string.
- */
-function renderStatusMessage(text: string): void {
-  const statusEl = document.getElementById("workspace-status");
-  const clearBtn = document.getElementById("clear-workspace-btn");
-  if (!(statusEl instanceof HTMLElement) || !(clearBtn instanceof HTMLButtonElement)) return;
-  statusEl.replaceChildren();
-  statusEl.textContent = text;
-  clearBtn.hidden = true;
-}
-
-function setPickerPending(pending: boolean): void {
-  const pickBtn = document.getElementById("pick-directory-btn");
-  if (!(pickBtn instanceof HTMLButtonElement)) return;
-  pickBtn.disabled = pending;
-  pickBtn.textContent = pending ? "Opening folder picker…" : "Open folder…";
-}
-
-async function handlePickDirectory(): Promise<void> {
-  const api = window.vyronDesktop;
-  if (!api) {
-    renderStatusMessage("Desktop bridge unavailable. Restart Vyron Code Desktop.");
-    return;
-  }
-  setPickerPending(true);
-  try {
-    const result = await api.workspace.pickDirectory();
-    renderWorkspaceState(result);
-  } catch {
-    renderStatusMessage("Something went wrong opening the folder picker. Try again.");
-  } finally {
-    setPickerPending(false);
-  }
-}
-
-async function handleClearWorkspace(): Promise<void> {
-  const api = window.vyronDesktop;
-  if (!api) {
-    renderStatusMessage("Desktop bridge unavailable. Restart Vyron Code Desktop.");
-    return;
-  }
-  try {
-    const result = await api.workspace.clearCurrent();
-    renderWorkspaceState(result);
-  } catch {
-    renderStatusMessage("Something went wrong clearing the workspace. Try again.");
-  }
-}
-
-// ---------------------------------------------------------------------------------------
-// Workspace view switching (Explorer / Search / Git Summary)
-// ---------------------------------------------------------------------------------------
-function switchView(view: WorkspaceViewName): void {
-  const views: Record<WorkspaceViewName, string> = { explorer: "view-explorer", search: "view-search", git: "view-git" };
-  const buttons: Record<WorkspaceViewName, string> = { explorer: "nav-explorer-btn", search: "nav-search-btn", git: "nav-git-btn" };
-
-  for (const name of Object.keys(views) as WorkspaceViewName[]) {
-    const viewEl = document.getElementById(views[name]);
-    if (viewEl) viewEl.hidden = name !== view;
-    const btnEl = document.getElementById(buttons[name]);
-    if (btnEl) btnEl.setAttribute("aria-pressed", String(name === view));
-  }
-
-  if (view === "git") void loadGitSummary();
-}
-
-// ---------------------------------------------------------------------------------------
-// Explorer
-// ---------------------------------------------------------------------------------------
-const EXPLORER_INACCESSIBLE_STATES = new Set<ListEntriesResultState>(["denied", "not_a_directory", "invalid_path"]);
-
-async function loadDirectory(relativePath: string): Promise<void> {
-  const api = window.vyronDesktop;
-  if (!api) {
-    renderStatusMessage("Desktop bridge unavailable. Restart Vyron Code Desktop.");
-    return;
-  }
-  explorerState.set(relativePath, { status: "loading" });
-  renderExplorerTree();
-  try {
-    const result = await api.workspace.listEntries(relativePath);
-    const key = relativePath === "." ? "." : (result.relativePath ?? relativePath);
-    if (result.state === "ok") {
-      explorerState.set(key, result.entries.length === 0 ? { status: "empty" } : { status: "loaded", entries: result.entries, truncated: result.truncated });
-    } else if (result.state === "no_workspace") {
-      explorerState.set(relativePath, { status: "unavailable" });
-    } else if (EXPLORER_INACCESSIBLE_STATES.has(result.state)) {
-      explorerState.set(relativePath, { status: "inaccessible" });
-    } else {
-      explorerState.set(relativePath, { status: "unavailable" });
-    }
-  } catch {
-    explorerState.set(relativePath, { status: "unavailable" });
-  }
-  renderExplorerTree();
-}
-
-function renderExplorerTree(): void {
-  const tree = document.getElementById("explorer-tree");
-  if (!tree) return;
-  tree.replaceChildren();
-  const rootState = explorerState.get(".");
-  if (!rootState) return;
-  appendDirStateNode(tree, rootState);
-}
-
-/** Renders one directory's own state (loading/empty/inaccessible/unavailable text, or its
- * loaded entries) into the given container — shared by the root render and by each expanded
- * nested directory. */
-function appendDirStateNode(container: HTMLElement, state: ExplorerDirState): void {
-  if (state.status === "loading") {
-    const li = document.createElement("li");
-    li.className = "muted";
-    li.textContent = "Loading…";
-    container.append(li);
-    return;
-  }
-  if (state.status === "empty") {
-    const li = document.createElement("li");
-    li.className = "muted";
-    li.textContent = "Empty folder.";
-    container.append(li);
-    return;
-  }
-  if (state.status === "inaccessible") {
-    const li = document.createElement("li");
-    li.className = "muted";
-    li.textContent = "This folder can't be opened.";
-    container.append(li);
-    return;
-  }
-  if (state.status === "unavailable") {
-    const li = document.createElement("li");
-    li.className = "muted";
-    li.textContent = "Unable to load this folder right now.";
-    container.append(li);
-    return;
-  }
-  for (const entry of state.entries) {
-    container.append(buildExplorerNode(entry));
-  }
-  if (state.truncated) {
-    const li = document.createElement("li");
-    li.className = "muted";
-    li.textContent = "Some entries were omitted (bounded listing).";
-    container.append(li);
-  }
-}
-
-function buildExplorerNode(entry: WorkspaceExplorerEntry): HTMLLIElement {
-  const li = document.createElement("li");
-  const row = document.createElement("button");
-  row.type = "button";
-  row.className = "tree-row";
-  row.setAttribute("aria-selected", String(entry.type === "file" && selectedFileRelativePath === entry.relativePath));
-
-  const icon = document.createElement("span");
-  icon.className = "tree-icon";
-  icon.textContent = entry.type === "dir" ? (explorerExpanded.has(entry.relativePath) ? "▾" : "▸") : "";
-  const label = document.createElement("span");
-  label.textContent = entry.name;
-  row.append(icon, label);
-
-  row.addEventListener("click", () => {
-    if (entry.type === "dir") {
-      void toggleDirectory(entry.relativePath);
-    } else {
-      void openFile(entry.relativePath, "explorer");
-    }
-  });
-
-  li.append(row);
-
-  if (entry.type === "dir" && explorerExpanded.has(entry.relativePath)) {
-    const childState = explorerState.get(entry.relativePath);
-    if (childState) {
-      const childList = document.createElement("ul");
-      appendDirStateNode(childList, childState);
-      li.append(childList);
-    }
-  }
-
-  return li;
-}
-
-async function toggleDirectory(relativePath: string): Promise<void> {
-  if (explorerExpanded.has(relativePath)) {
-    explorerExpanded.delete(relativePath);
-    renderExplorerTree();
-    return;
-  }
-  explorerExpanded.add(relativePath);
-  if (!explorerState.has(relativePath)) {
-    await loadDirectory(relativePath);
-  } else {
-    renderExplorerTree();
-  }
-}
-
-// ---------------------------------------------------------------------------------------
-// File viewer — shared by Explorer row clicks and Search result clicks.
-// ---------------------------------------------------------------------------------------
-const FILE_VIEWER_STATUS_TEXT: Record<Exclude<ReadTextFileResultState, "ok">, string> = {
-  no_workspace: "No workspace is selected.",
-  invalid_path: "That file can't be opened.",
-  not_a_file: "That isn't a file.",
-  binary: "This file can't be previewed (binary content).",
-  too_large: "This file is too large to preview.",
-  unreadable: "This file couldn't be read.",
-  denied: "That file can't be opened.",
+const CATEGORY_MESSAGES: Record<SafeLocalAiFailureCategory, string> = {
+  hermes_start_failed: "Hermes başlatılamadı",
+  secure_connection_unverified: "Güvenli bağlantı doğrulanamadı",
+  model_unresponsive: "Yerel model yanıt vermiyor",
+  unavailable: "Yerel AI kullanılamıyor",
 };
 
-async function openFile(relativePath: string, fromView: "explorer" | "search"): Promise<void> {
+const STATUS_TEXT = {
+  starting: "Yerel AI başlatılıyor",
+  ready: "Yerel AI hazır",
+  unavailable: "Yerel AI kullanılamıyor",
+} as const;
+
+const SENDING_TEXT = "Yanıt hazırlanıyor…";
+const FAILURE_TEXT = "Yanıt alınamadı. Lütfen tekrar deneyin.";
+const NOT_READY_TEXT = "Yerel AI şu anda hazır değil.";
+const REVIEW_FAILURE_TEXT = "Taslak incelemeye alınamadı. Lütfen tekrar deneyin.";
+const DRAFT_TOO_LONG_TEXT = "Metin çok uzun. En fazla 4000 karakter yazabilirsin.";
+const DRAFT_INVALID_TEXT = "Metin desteklenmeyen karakterler içeriyor.";
+const COPY_OK_TEXT = "Tanılama bilgileri kopyalandı.";
+const COPY_FAIL_TEXT = "Tanılama bilgileri kopyalanamadı.";
+
+type ViewName = "startup" | "ready" | "review" | "unavailable";
+type AiPhase = "starting" | "ready" | "unavailable";
+
+let aiPhase: AiPhase = "starting";
+let pollTimer: number | undefined;
+let pollGeneration = 0;
+let taskRequestGeneration = 0;
+let reviewedDraft: string | null = null;
+let sendInFlight = false;
+let reviewInFlight = false;
+
+function el<T extends HTMLElement>(id: string): T | null {
+  return document.getElementById(id) as T | null;
+}
+
+function setText(id: string, text: string): void {
+  const node = el(id);
+  if (node) node.textContent = text;
+}
+
+function setHidden(id: string, hidden: boolean): void {
+  const node = el(id);
+  if (node) node.hidden = hidden;
+}
+
+function setDisabled(id: string, disabled: boolean): void {
+  const node = el<HTMLButtonElement>(id);
+  if (node) node.disabled = disabled;
+}
+
+function focusElement(id: string): void {
+  const node = el(id);
+  if (node) node.focus();
+}
+
+function showView(view: ViewName, focusId: string): void {
+  const views: ViewName[] = ["startup", "ready", "review", "unavailable"];
+  for (const name of views) setHidden(`view-${name}`, name !== view);
+  focusElement(focusId);
+}
+
+function currentView(): ViewName {
+  const views: ViewName[] = ["startup", "ready", "review", "unavailable"];
+  for (const name of views) {
+    const node = el(`view-${name}`);
+    if (node && !node.hidden) return name;
+  }
+  return "startup";
+}
+
+function draftProblem(draft: string): "empty" | "too_long" | "invalid" | null {
+  if (draft.trim().length === 0) return "empty";
+  if (draft.length > MAX_DRAFT_LENGTH) return "too_long";
+  for (let i = 0; i < draft.length; i += 1) {
+    const code = draft.charCodeAt(i);
+    if (code === 127 || (code < 32 && code !== 9 && code !== 10 && code !== 13)) return "invalid";
+  }
+  return null;
+}
+
+function draftValue(): string {
+  const input = el<HTMLTextAreaElement>("task-draft-input");
+  return input ? input.value : "";
+}
+
+function updateDraftControls(): void {
+  const problem = draftProblem(draftValue());
+  setDisabled("task-review-btn", problem !== null || aiPhase !== "ready" || reviewInFlight);
+  const message = problem === "too_long" ? DRAFT_TOO_LONG_TEXT : problem === "invalid" ? DRAFT_INVALID_TEXT : "";
+  setText("task-draft-error", message);
+  setHidden("task-draft-error", message === "");
+}
+
+function resetResponseArea(): void {
+  setText("task-response-text", "");
+  setHidden("task-response-truncated-note", true);
+  setHidden("task-response-section", true);
+  setText("task-send-status", "");
+  setHidden("task-send-status", true);
+}
+
+function bestEffortClearTask(): void {
   const api = window.vyronDesktop;
+  if (!api) return;
+  void api.hermes.clearTaskSubmission().catch(() => undefined);
+}
+
+function resetTaskFlow(): void {
+  taskRequestGeneration += 1;
+  reviewedDraft = null;
+  sendInFlight = false;
+  reviewInFlight = false;
+  setText("task-review-text", "");
+  resetResponseArea();
+  setDisabled("task-send-btn", false);
+  setDisabled("task-review-back-btn", false);
+  bestEffortClearTask();
+}
+
+function applyAiState(next: LocalAiState): void {
+  const previous = aiPhase;
+  aiPhase = next.state;
+  const pill = el("ai-status");
+  if (pill) pill.className = `ai-status ai-status-${next.state}`;
+  setText("ai-status-text", STATUS_TEXT[next.state]);
+
+  if (next.state === "starting") {
+    setText("startup-message", STAGE_MESSAGES[next.stage] ?? STAGE_MESSAGES.checking);
+    if (previous !== "starting") {
+      resetTaskFlow();
+      showView("startup", "startup-title");
+    }
+    return;
+  }
+
+  if (next.state === "ready") {
+    if (previous !== "ready") {
+      showView("ready", "task-draft-input");
+      updateDraftControls();
+    }
+    return;
+  }
+
+  setText("unavailable-category", CATEGORY_MESSAGES[next.category] ?? CATEGORY_MESSAGES.unavailable);
+  if (previous !== "unavailable") {
+    resetTaskFlow();
+    setText("ai-copy-status", "");
+    showView("unavailable", "unavailable-title");
+  }
+}
+
+function stopPolling(): void {
+  pollGeneration += 1;
+  if (pollTimer !== undefined) {
+    window.clearTimeout(pollTimer);
+    pollTimer = undefined;
+  }
+}
+
+function schedulePoll(): void {
+  const generation = pollGeneration;
+  const delay = aiPhase === "starting" ? POLL_STARTING_MS : POLL_STEADY_MS;
+  pollTimer = window.setTimeout(() => {
+    if (generation !== pollGeneration) return;
+    void pollOnce(generation);
+  }, delay);
+}
+
+async function pollOnce(generation: number): Promise<void> {
+  const api = window.vyronDesktop;
+  let next: LocalAiState;
   if (!api) {
-    renderStatusMessage("Desktop bridge unavailable. Restart Vyron Code Desktop.");
-    return;
-  }
-  selectedFileRelativePath = relativePath;
-  if (fromView === "search") switchView("explorer");
-  renderExplorerTree();
-  renderFileViewerPlaceholder("Loading…");
-  try {
-    const result = await api.workspace.readTextFile(relativePath);
-    renderFileViewerResult(result);
-  } catch {
-    renderFileViewerPlaceholder("Something went wrong opening this file. Try again.");
-  }
-}
-
-function renderFileViewerResult(result: ReadTextFileResult): void {
-  const viewer = document.getElementById("file-viewer");
-  if (!viewer) return;
-  viewer.replaceChildren();
-
-  if (result.state !== "ok" || result.content === null) {
-    lastFileViewerPreview = null;
-    const p = document.createElement("p");
-    p.className = "muted";
-    p.textContent = result.state === "ok" ? "This file has no content." : FILE_VIEWER_STATUS_TEXT[result.state];
-    viewer.append(p);
-    return;
-  }
-
-  lastFileViewerPreview = {
-    relativePath: result.relativePath ?? "",
-    content: result.content,
-    lineCount: result.lineCount ?? 0,
-    truncated: result.truncated,
-  };
-
-  const header = document.createElement("div");
-  header.className = "file-viewer-header";
-  const headerText = document.createElement("span");
-  headerText.textContent = `${result.relativePath ?? ""} — ${result.lineCount ?? 0} line${result.lineCount === 1 ? "" : "s"}${result.truncated ? " (truncated)" : ""}`;
-  const addContextBtn = document.createElement("button");
-  addContextBtn.type = "button";
-  addContextBtn.className = "file-viewer-add-context";
-  addContextBtn.textContent = "Add to context";
-  addContextBtn.addEventListener("click", () => handleAddFilePreviewToTaskContext());
-  const closeBtn = document.createElement("button");
-  closeBtn.type = "button";
-  closeBtn.className = "file-viewer-close";
-  closeBtn.textContent = "Close preview";
-  closeBtn.addEventListener("click", () => closeFilePreview());
-  header.append(headerText, addContextBtn, closeBtn);
-
-  const pre = document.createElement("pre");
-  pre.textContent = result.content;
-
-  viewer.append(header, pre);
-}
-
-/** Clears the current file selection without changing the workspace grant or Explorer/Search
- * state — required so the user can dismiss a preview independently of picking another file. */
-function closeFilePreview(): void {
-  selectedFileRelativePath = null;
-  lastFileViewerPreview = null;
-  renderExplorerTree();
-  renderFileViewerPlaceholder("Select a file to preview its contents.");
-}
-
-// ---------------------------------------------------------------------------------------
-// Search
-// ---------------------------------------------------------------------------------------
-const SEARCH_STATUS_TEXT: Record<Exclude<SearchTextResultState, "ok">, string> = {
-  no_workspace: "No workspace is selected.",
-  invalid_query: "Enter a query between 1 and 200 characters.",
-};
-
-async function handleSearchSubmit(event: SubmitEvent): Promise<void> {
-  event.preventDefault();
-  // Guards against rapid repeated submission (e.g. holding Enter) — only one search runs at
-  // a time; the button is also disabled for the same duration as a visible cue.
-  if (searchInFlight) return;
-
-  const api = window.vyronDesktop;
-  const input = document.getElementById("search-input");
-  const statusEl = document.getElementById("search-status");
-  const resultsEl = document.getElementById("search-results");
-  const searchBtn = document.getElementById("search-btn");
-  if (!api || !(input instanceof HTMLInputElement) || !statusEl || !resultsEl) return;
-
-  const query = input.value;
-  statusEl.textContent = "Searching…";
-  resultsEl.replaceChildren();
-  searchInFlight = true;
-  if (searchBtn instanceof HTMLButtonElement) searchBtn.disabled = true;
-
-  try {
-    const result = await api.workspace.searchText(query);
-    if (result.state !== "ok") {
-      statusEl.textContent = SEARCH_STATUS_TEXT[result.state];
-      return;
-    }
-    if (result.matches.length === 0) {
-      statusEl.textContent = "No matches found.";
-      return;
-    }
-    statusEl.textContent = `${result.matches.length} match${result.matches.length === 1 ? "" : "es"}${result.truncated ? " (truncated)" : ""}.`;
-    for (const match of result.matches) {
-      resultsEl.append(buildSearchResultRow(match));
-    }
-  } catch {
-    statusEl.textContent = "Something went wrong searching this workspace. Try again.";
-  } finally {
-    searchInFlight = false;
-    if (searchBtn instanceof HTMLButtonElement) searchBtn.disabled = false;
-  }
-}
-
-function buildSearchResultRow(match: WorkspaceSearchMatch): HTMLLIElement {
-  const li = document.createElement("li");
-  const row = document.createElement("button");
-  row.type = "button";
-  row.className = "search-result-row";
-
-  const pathEl = document.createElement("div");
-  pathEl.className = "search-result-path";
-  pathEl.textContent = `${match.relativePath}:${match.line}`;
-
-  const lineEl = document.createElement("div");
-  lineEl.className = "search-result-line";
-  lineEl.textContent = match.preview;
-
-  row.append(pathEl, lineEl);
-  row.addEventListener("click", () => void openFile(match.relativePath, "search"));
-
-  const addContextBtn = document.createElement("button");
-  addContextBtn.type = "button";
-  addContextBtn.className = "search-result-add-context";
-  addContextBtn.textContent = "Add to context";
-  addContextBtn.addEventListener("click", (event) => {
-    event.stopPropagation();
-    handleAddSearchResultToTaskContext({ relativePath: match.relativePath, line: match.line, preview: match.preview });
-  });
-
-  li.append(row, addContextBtn);
-  return li;
-}
-
-// ---------------------------------------------------------------------------------------
-// Git summary
-// ---------------------------------------------------------------------------------------
-async function loadGitSummary(): Promise<void> {
-  const api = window.vyronDesktop;
-  const container = document.getElementById("git-summary");
-  if (!api || !container) return;
-
-  container.replaceChildren();
-  const loading = document.createElement("p");
-  loading.className = "muted";
-  loading.textContent = "Loading…";
-  container.append(loading);
-
-  try {
-    const result = await api.workspace.getGitSummary();
-    renderGitSummary(result);
-  } catch {
-    container.replaceChildren();
-    const p = document.createElement("p");
-    p.className = "muted";
-    p.textContent = "Something went wrong loading the Git summary. Try again.";
-    container.append(p);
-  }
-}
-
-function renderGitSummary(result: GitSummaryResult): void {
-  const container = document.getElementById("git-summary");
-  if (!container) return;
-  container.replaceChildren();
-
-  if (result.state === "not_a_repository") {
-    lastGitSummaryForContext = null;
-    const p = document.createElement("p");
-    p.className = "muted";
-    p.textContent = "No Git repository detected in this workspace.";
-    container.append(p);
-    return;
-  }
-  if (result.state !== "ok") {
-    lastGitSummaryForContext = null;
-    const p = document.createElement("p");
-    p.className = "muted";
-    p.textContent = result.state === "no_workspace" ? "No workspace is selected." : "Git summary is unavailable for this workspace.";
-    container.append(p);
-    return;
-  }
-
-  lastGitSummaryForContext = {
-    branch: result.branch,
-    detached: result.detached,
-    trackedChangesAvailable: result.trackedChangesAvailable,
-    modifiedCount: result.modifiedCount,
-    deletedCount: result.deletedCount,
-    untrackedCount: result.untrackedCount,
-  };
-
-  const dl = document.createElement("dl");
-  const suffix = result.truncated ? "+ (bounded scan)" : "";
-
-  const branchTerm = document.createElement("dt");
-  branchTerm.textContent = "Branch";
-  const branchValue = document.createElement("dd");
-  branchValue.textContent = result.detached ? "detached HEAD" : (result.branch ?? "unknown");
-  dl.append(branchTerm, branchValue);
-
-  if (result.trackedChangesAvailable) {
-    const modifiedTerm = document.createElement("dt");
-    modifiedTerm.textContent = "Modified";
-    const modifiedValue = document.createElement("dd");
-    modifiedValue.textContent = `${result.modifiedCount ?? 0}${suffix}`;
-    dl.append(modifiedTerm, modifiedValue);
-
-    const deletedTerm = document.createElement("dt");
-    deletedTerm.textContent = "Deleted";
-    const deletedValue = document.createElement("dd");
-    deletedValue.textContent = `${result.deletedCount ?? 0}${suffix}`;
-    dl.append(deletedTerm, deletedValue);
-  }
-
-  const untrackedTerm = document.createElement("dt");
-  untrackedTerm.textContent = "Untracked files";
-  const untrackedValue = document.createElement("dd");
-  untrackedValue.textContent = `${result.untrackedCount ?? 0}${suffix}`;
-  dl.append(untrackedTerm, untrackedValue);
-
-  container.append(dl);
-
-  if (!result.trackedChangesAvailable) {
-    const note = document.createElement("p");
-    note.className = "muted";
-    note.textContent = "Modified/deleted counts are unavailable for this repository; showing untracked files only.";
-    container.append(note);
+    next = { state: "unavailable", category: "unavailable" };
   } else {
-    const note = document.createElement("p");
-    note.className = "muted";
-    note.textContent = "Staged-but-uncommitted and rename counts are not computed by this summary.";
-    container.append(note);
-  }
-
-  const addContextBtn = document.createElement("button");
-  addContextBtn.type = "button";
-  addContextBtn.className = "git-summary-add-context";
-  addContextBtn.textContent = "Add to context";
-  addContextBtn.addEventListener("click", () => handleAddGitSummaryToTaskContext());
-  container.append(addContextBtn);
-}
-
-// ---------------------------------------------------------------------------------------
-// Task composer — VYRON_CODE_V02_D09_TASK_FIRST_COMPOSER_AND_CONTEXT_REVIEW_AUTHORIZATION.
-// Entirely local, renderer-memory-only state: no IPC call exists anywhere in this section, no
-// network request (this page's own CSP already forbids connect-src entirely), no persistence
-// of any kind (no localStorage/sessionStorage/indexedDB/cookie/filesystem/registry use), and no
-// "send"/"submit"/"execute"/"start session" action of any kind — only draft composition,
-// explicit local context selection drawn from data already rendered on this page, and a
-// review-before-send preview. This section's types/constants/pure logic deliberately mirror
-// electron/taskComposer.ts's own real, exported, directly-unit-tested copies rule-for-rule —
-// they are NOT imported from there (this file's own header above explains why: any top-level
-// import/export here would break this file's classic-script load). tests/electronSecurityScaffold.test.ts
-// cross-checks the key constants/labels between the two files so they cannot silently drift.
-// Every context candidate builder below takes only data this page already has on screen (a
-// rendered file preview, a rendered search result row, the rendered Git summary, the granted
-// workspace's own display name, or the currently selected profile) — none of them read, list,
-// or search anything themselves.
-// ---------------------------------------------------------------------------------------
-type TaskProfile = "explain" | "review" | "plan" | "investigate" | "summarize_workspace" | "analyze_git_status";
-
-interface TaskProfileMeta {
-  readonly id: TaskProfile;
-  readonly label: string;
-  readonly draftPlaceholder: string;
-}
-
-const TASK_PROFILES: readonly TaskProfileMeta[] = [
-  { id: "explain", label: "Explain", draftPlaceholder: "Describe what you would like explained…" },
-  { id: "review", label: "Review", draftPlaceholder: "Describe what you would like reviewed…" },
-  { id: "plan", label: "Plan", draftPlaceholder: "Describe what you would like planned…" },
-  { id: "investigate", label: "Investigate", draftPlaceholder: "Describe what you would like investigated…" },
-  {
-    id: "summarize_workspace",
-    label: "Summarize workspace",
-    draftPlaceholder: "Describe the kind of workspace summary you want…",
-  },
-  {
-    id: "analyze_git_status",
-    label: "Analyze Git status",
-    draftPlaceholder: "Describe what you would like analyzed about Git status…",
-  },
-];
-
-function getTaskProfileMeta(profile: TaskProfile): TaskProfileMeta {
-  // TASK_PROFILES is a non-empty compile-time literal, so this fallback is always defined —
-  // the assertion exists only to satisfy `noUncheckedIndexedAccess`, not to bypass a real check.
-  return TASK_PROFILES.find((meta) => meta.id === profile) ?? TASK_PROFILES[0]!;
-}
-
-/** Independent, disclosed bound for this draft box specifically — far smaller than
- * electron/workspaceFileViewer.ts's own 200,000-char raw file-preview bound. */
-const MAX_DRAFT_LENGTH = 4_000;
-/** C0 control characters and DEL, excluding tab/newline/carriage-return. */
-const TASK_CONTROL_CHARACTER_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
-
-type DraftInvalidReason = "empty" | "too_long" | "control_characters" | "whitespace_only";
-
-function validateDraftText(raw: string): { readonly valid: boolean; readonly reason: DraftInvalidReason | null } {
-  if (raw.length === 0) return { valid: false, reason: "empty" };
-  if (raw.length > MAX_DRAFT_LENGTH) return { valid: false, reason: "too_long" };
-  if (TASK_CONTROL_CHARACTER_PATTERN.test(raw)) return { valid: false, reason: "control_characters" };
-  if (raw.trim().length === 0) return { valid: false, reason: "whitespace_only" };
-  return { valid: true, reason: null };
-}
-
-/** The sole gate for opening the review surface. */
-function canOpenTaskReview(draftText: string): boolean {
-  return validateDraftText(draftText).valid;
-}
-
-const MAX_CONTEXT_ITEMS = 12;
-/** Bounds any single context item's own excerpt/detail text — independent of, and far smaller
- * than, the underlying file-preview (200,000 chars) or search-result-preview (300 chars)
- * limits those features use for their own on-screen display. */
-const MAX_SINGLE_EXCERPT_CHARS = 4_000;
-const MAX_TOTAL_CONTEXT_CHARS = 20_000;
-/** Defensive display-only clamp; the real path-safety boundary is enforced main-process-side
- * (electron/workspaceExplorer.ts/workspaceFileViewer.ts/workspaceSearch.ts), not here. */
-const MAX_RELATIVE_PATH_LENGTH = 400;
-
-type TaskContextItemKind = "file_preview" | "search_result" | "git_summary" | "workspace_name" | "task_profile";
-
-interface TaskContextItem {
-  readonly id: string;
-  readonly kind: TaskContextItemKind;
-  readonly label: string;
-  readonly detail: string;
-  readonly relativePath: string | null;
-  readonly lineRange: string | null;
-  readonly charCount: number;
-  readonly truncated: boolean;
-}
-
-function isSafeTaskRelativePath(relativePath: string): boolean {
-  if (!relativePath || relativePath.length === 0) return false;
-  if (relativePath.startsWith("/") || relativePath.startsWith("\\")) return false;
-  if (/^[a-zA-Z]:[\\/]/.test(relativePath)) return false;
-  if (relativePath.split(/[\\/]/).some((segment) => segment === "..")) return false;
-  return true;
-}
-
-function clampTaskText(value: string, maxLength: number): { readonly text: string; readonly truncated: boolean } {
-  if (value.length <= maxLength) return { text: value, truncated: false };
-  return { text: value.slice(0, maxLength), truncated: true };
-}
-
-function buildFilePreviewContextItem(input: {
-  relativePath: string;
-  content: string;
-  lineCount: number;
-  truncated: boolean;
-}): TaskContextItem | null {
-  if (!isSafeTaskRelativePath(input.relativePath)) return null;
-  const path = clampTaskText(input.relativePath, MAX_RELATIVE_PATH_LENGTH).text;
-  const excerpt = clampTaskText(input.content, MAX_SINGLE_EXCERPT_CHARS);
-  return {
-    id: `file:${path}`,
-    kind: "file_preview",
-    label: path,
-    detail: excerpt.text,
-    relativePath: path,
-    lineRange: input.lineCount > 0 ? `1-${input.lineCount}` : null,
-    charCount: excerpt.text.length,
-    truncated: input.truncated || excerpt.truncated,
-  };
-}
-
-function buildSearchResultContextItem(input: { relativePath: string; line: number; preview: string }): TaskContextItem | null {
-  if (!isSafeTaskRelativePath(input.relativePath) || !Number.isInteger(input.line) || input.line <= 0) return null;
-  const path = clampTaskText(input.relativePath, MAX_RELATIVE_PATH_LENGTH).text;
-  const excerpt = clampTaskText(input.preview, MAX_SINGLE_EXCERPT_CHARS);
-  return {
-    id: `search:${path}:${input.line}`,
-    kind: "search_result",
-    label: `${path}:${input.line}`,
-    detail: excerpt.text,
-    relativePath: path,
-    lineRange: `line ${input.line}`,
-    charCount: excerpt.text.length,
-    truncated: excerpt.truncated,
-  };
-}
-
-function buildGitSummaryContextItem(input: {
-  branch: string | null;
-  detached: boolean;
-  trackedChangesAvailable: boolean;
-  modifiedCount: number | null;
-  deletedCount: number | null;
-  untrackedCount: number | null;
-}): TaskContextItem {
-  const branchLabel = input.detached ? "detached HEAD" : input.branch ?? "unknown";
-  const parts = [`branch ${branchLabel}`];
-  if (input.trackedChangesAvailable) {
-    parts.push(`${input.modifiedCount ?? 0} modified`, `${input.deletedCount ?? 0} deleted`);
-  }
-  parts.push(`${input.untrackedCount ?? 0} untracked`);
-  const excerpt = clampTaskText(parts.join(", "), MAX_SINGLE_EXCERPT_CHARS);
-  return {
-    id: "git_summary",
-    kind: "git_summary",
-    label: "Git summary",
-    detail: excerpt.text,
-    relativePath: null,
-    lineRange: null,
-    charCount: excerpt.text.length,
-    truncated: excerpt.truncated,
-  };
-}
-
-function buildWorkspaceNameContextItem(displayName: string): TaskContextItem | null {
-  const trimmed = displayName.trim();
-  if (trimmed.length === 0) return null;
-  const excerpt = clampTaskText(trimmed, MAX_SINGLE_EXCERPT_CHARS);
-  return {
-    id: "workspace_name",
-    kind: "workspace_name",
-    label: "Workspace name",
-    detail: excerpt.text,
-    relativePath: null,
-    lineRange: null,
-    charCount: excerpt.text.length,
-    truncated: excerpt.truncated,
-  };
-}
-
-function buildTaskProfileContextItem(profile: TaskProfile): TaskContextItem {
-  const meta = getTaskProfileMeta(profile);
-  const detail = `Task profile: ${meta.label}`;
-  return {
-    id: "task_profile",
-    kind: "task_profile",
-    label: "Task profile",
-    detail,
-    relativePath: null,
-    lineRange: null,
-    charCount: detail.length,
-    truncated: false,
-  };
-}
-
-type ContextAddOutcome = "added" | "merged_duplicate" | "rejected_item_limit" | "rejected_total_char_limit";
-
-function addTaskContextItem(
-  existing: readonly TaskContextItem[],
-  candidate: TaskContextItem,
-): { readonly items: readonly TaskContextItem[]; readonly outcome: ContextAddOutcome } {
-  const withoutDuplicate = existing.filter((item) => item.id !== candidate.id);
-  const isMerge = withoutDuplicate.length !== existing.length;
-  if (!isMerge && existing.length >= MAX_CONTEXT_ITEMS) {
-    return { items: existing, outcome: "rejected_item_limit" };
-  }
-  const projectedTotal = withoutDuplicate.reduce((sum, item) => sum + item.charCount, 0) + candidate.charCount;
-  if (projectedTotal > MAX_TOTAL_CONTEXT_CHARS) {
-    return { items: existing, outcome: "rejected_total_char_limit" };
-  }
-  return { items: [...withoutDuplicate, candidate], outcome: isMerge ? "merged_duplicate" : "added" };
-}
-
-// ---------------------------------------------------------------------------------------
-// Task composer — mutable renderer-memory state (never persisted, never sent over IPC). Does
-// not depend on window.vyronDesktop at all — the composer itself works even if the desktop
-// bridge is unavailable ("safe unavailable" state); only the quick-add-from-workspace buttons
-// have anything to add once a workspace/file/search/Git view has actually been used.
-// ---------------------------------------------------------------------------------------
-let taskSelectedProfile: TaskProfile = "explain";
-let taskDraftText = "";
-let taskDraftJustCleared = false;
-let taskContextItems: readonly TaskContextItem[] = [];
-let taskReviewOpen = false;
-let currentWorkspaceDisplayName: string | null = null;
-let lastFileViewerPreview: { relativePath: string; content: string; lineCount: number; truncated: boolean } | null = null;
-let lastGitSummaryForContext: {
-  branch: string | null;
-  detached: boolean;
-  trackedChangesAvailable: boolean;
-  modifiedCount: number | null;
-  deletedCount: number | null;
-  untrackedCount: number | null;
-} | null = null;
-
-/** Required by D-09: workspace clear/revoke must immediately clear selected context, the
- * review state, and any local excerpt snapshot. The draft text and selected profile are
- * intentionally left untouched — composing a task is independent of any particular workspace. */
-function resetTaskContextState(): void {
-  taskContextItems = [];
-  taskReviewOpen = false;
-  lastFileViewerPreview = null;
-  lastGitSummaryForContext = null;
-  renderTaskContext();
-  renderTaskReview();
-}
-
-function renderTaskProfiles(): void {
-  const container = document.getElementById("task-profiles");
-  if (!container) return;
-  container.replaceChildren();
-  for (const meta of TASK_PROFILES) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "task-profile-chip";
-    btn.textContent = meta.label;
-    btn.setAttribute("aria-pressed", String(meta.id === taskSelectedProfile));
-    btn.addEventListener("click", () => handleSelectTaskProfile(meta.id));
-    container.append(btn);
-  }
-}
-
-function handleSelectTaskProfile(profile: TaskProfile): void {
-  taskSelectedProfile = profile;
-  renderTaskProfiles();
-  const input = document.getElementById("task-draft-input");
-  if (input instanceof HTMLTextAreaElement) {
-    input.placeholder = getTaskProfileMeta(profile).draftPlaceholder;
-  }
-}
-
-function renderTaskDraftStatus(): void {
-  const statusEl = document.getElementById("task-draft-status");
-  const reviewBtn = document.getElementById("task-review-btn");
-  if (!statusEl || !(reviewBtn instanceof HTMLButtonElement)) return;
-
-  const validation = validateDraftText(taskDraftText);
-  reviewBtn.disabled = !validation.valid;
-
-  if (taskDraftJustCleared && taskDraftText.length === 0) {
-    statusEl.textContent = "Draft cleared. This is a local draft — nothing is sent.";
-    return;
-  }
-  if (taskDraftText.length === 0) {
-    statusEl.textContent = "This is a local draft. Nothing is sent.";
-    return;
-  }
-  switch (validation.reason) {
-    case "too_long":
-      statusEl.textContent = `Draft is too long (maximum ${MAX_DRAFT_LENGTH} characters).`;
-      return;
-    case "control_characters":
-      statusEl.textContent = "Draft contains unsupported characters.";
-      return;
-    case "whitespace_only":
-      statusEl.textContent = "Draft cannot be only whitespace.";
-      return;
-    default:
-      statusEl.textContent = "This is a local draft. Nothing is sent. Ready to review.";
-  }
-}
-
-function handleTaskDraftInput(event: Event): void {
-  const target = event.target;
-  if (!(target instanceof HTMLTextAreaElement)) return;
-  taskDraftText = target.value;
-  taskDraftJustCleared = false;
-  renderTaskDraftStatus();
-}
-
-function handleClearTaskDraft(): void {
-  taskDraftText = "";
-  taskDraftJustCleared = true;
-  const input = document.getElementById("task-draft-input");
-  if (input instanceof HTMLTextAreaElement) input.value = "";
-  renderTaskDraftStatus();
-}
-
-function renderTaskContextItemRow(item: TaskContextItem, onRemove: (id: string) => void): HTMLLIElement {
-  const li = document.createElement("li");
-  li.className = "task-context-item";
-
-  const meta = document.createElement("div");
-  meta.className = "task-context-item-meta";
-  const kindEl = document.createElement("span");
-  kindEl.className = "task-context-item-kind";
-  kindEl.textContent = item.kind.replace(/_/g, " ");
-  const labelEl = document.createElement("span");
-  labelEl.className = "task-context-item-label";
-  labelEl.textContent = item.lineRange ? `${item.label} (${item.lineRange})` : item.label;
-  meta.append(kindEl, labelEl);
-
-  const sizeEl = document.createElement("span");
-  sizeEl.className = "task-context-item-size muted";
-  sizeEl.textContent = `${item.charCount} chars${item.truncated ? ", truncated" : ""}`;
-
-  const removeBtn = document.createElement("button");
-  removeBtn.type = "button";
-  removeBtn.className = "task-context-item-remove";
-  removeBtn.textContent = "Remove";
-  removeBtn.setAttribute("aria-label", `Remove ${item.label} from selected context`);
-  removeBtn.addEventListener("click", () => onRemove(item.id));
-
-  li.append(meta, sizeEl, removeBtn);
-  return li;
-}
-
-function renderTaskContext(): void {
-  const countEl = document.getElementById("task-context-count");
-  const clearBtn = document.getElementById("task-clear-context-btn");
-  const listEl = document.getElementById("task-context-list");
-  if (!countEl || !(clearBtn instanceof HTMLButtonElement) || !listEl) return;
-
-  countEl.textContent =
-    taskContextItems.length === 0
-      ? "No workspace context selected."
-      : `${taskContextItems.length} context item${taskContextItems.length === 1 ? "" : "s"} selected.`;
-  clearBtn.hidden = taskContextItems.length === 0;
-
-  listEl.replaceChildren();
-  for (const item of taskContextItems) {
-    listEl.append(renderTaskContextItemRow(item, handleRemoveTaskContextItem));
-  }
-}
-
-function handleAddTaskContextItem(candidate: TaskContextItem | null): void {
-  if (!candidate) return;
-  const result = addTaskContextItem(taskContextItems, candidate);
-  taskContextItems = result.items;
-  renderTaskContext();
-  renderTaskReview();
-}
-
-function handleRemoveTaskContextItem(id: string): void {
-  taskContextItems = taskContextItems.filter((item) => item.id !== id);
-  renderTaskContext();
-  renderTaskReview();
-}
-
-function handleClearAllTaskContext(): void {
-  taskContextItems = [];
-  renderTaskContext();
-  renderTaskReview();
-}
-
-function handleAddFilePreviewToTaskContext(): void {
-  if (!lastFileViewerPreview) return;
-  handleAddTaskContextItem(buildFilePreviewContextItem(lastFileViewerPreview));
-}
-
-function handleAddSearchResultToTaskContext(match: { relativePath: string; line: number; preview: string }): void {
-  handleAddTaskContextItem(buildSearchResultContextItem(match));
-}
-
-function handleAddGitSummaryToTaskContext(): void {
-  if (!lastGitSummaryForContext) return;
-  handleAddTaskContextItem(buildGitSummaryContextItem(lastGitSummaryForContext));
-}
-
-function handleAddWorkspaceNameToTaskContext(): void {
-  if (!currentWorkspaceDisplayName) return;
-  handleAddTaskContextItem(buildWorkspaceNameContextItem(currentWorkspaceDisplayName));
-}
-
-function handleAddTaskProfileToTaskContext(): void {
-  handleAddTaskContextItem(buildTaskProfileContextItem(taskSelectedProfile));
-}
-
-/** While review is open, the draft textarea is locked read-only — this is what guarantees the
- * review's displayed draft text can never go stale relative to what `taskDraftText` holds
- * (rather than needing every context-mutation call site to also re-render the review). */
-function setTaskDraftInputLocked(locked: boolean): void {
-  const input = document.getElementById("task-draft-input");
-  if (input instanceof HTMLTextAreaElement) input.disabled = locked;
-  const clearBtn = document.getElementById("task-clear-draft-btn");
-  if (clearBtn instanceof HTMLButtonElement) clearBtn.disabled = locked;
-}
-
-function handleOpenTaskReview(): void {
-  if (!canOpenTaskReview(taskDraftText)) return;
-  taskReviewOpen = true;
-  setTaskDraftInputLocked(true);
-  renderTaskDraftStatus();
-  renderTaskReview();
-  void handleReviewTaskDraft();
-}
-
-function handleCloseTaskReview(): void {
-  taskReviewOpen = false;
-  setTaskDraftInputLocked(false);
-  renderTaskDraftStatus();
-  renderTaskReview();
-  void handleClearTaskSubmission();
-}
-
-/**
- * D-10 (remediated) — a purely informational, always-safe reflection of the Hermes API Server
- * verification sub-panel's own already-fetched state (see
- * `lastKnownApiServerAmbientState`'s own doc comment). Never triggers an IPC call of its own —
- * reads only the cache the verification sub-panel already maintains — and never enables any
- * send/attach/run action; "Task sending" always reads as unavailable in this build, regardless
- * of verification state.
- */
-function renderTaskApiVerificationInfo(): void {
-  const verificationEl = document.getElementById("task-review-hermes-verification");
-  if (!verificationEl) return;
-  verificationEl.textContent = lastKnownApiServerAmbientState === "reachable" ? "Verified" : "Not verified";
-  // D-11 — task-review-task-sending is owned entirely by renderHermesTaskSubmission() now;
-  // this function must never write to it (that was the pre-D-11 "always unavailable" stub).
-}
-
-function renderTaskReview(): void {
-  const panel = document.getElementById("task-review");
-  if (!panel) return;
-  panel.hidden = !taskReviewOpen;
-  if (!taskReviewOpen) return;
-
-  const profileEl = document.getElementById("task-review-profile");
-  const draftEl = document.getElementById("task-review-draft");
-  const listEl = document.getElementById("task-review-context-list");
-  if (!profileEl || !draftEl || !listEl) return;
-
-  profileEl.textContent = getTaskProfileMeta(taskSelectedProfile).label;
-  draftEl.textContent = taskDraftText;
-  // task-review-send-scope / task-review-no-context / task-review-tool-history-disclosure are
-  // fixed, static declaration text in renderer.html — never reassigned here.
-  renderTaskApiVerificationInfo();
-  // D-11 — redraws the task-submission sub-section from the last known cached state (never a
-  // fresh IPC call from here) so an in-progress review/send/completed state survives an
-  // unrelated re-render (e.g. adding a context item while review is open) instead of being
-  // stomped back to a stale default.
-  renderHermesTaskSubmission(lastKnownTaskSubmissionState.state, lastKnownTaskSubmissionState.text, lastKnownTaskSubmissionState.truncated);
-
-  listEl.replaceChildren();
-  if (taskContextItems.length === 0) {
-    const li = document.createElement("li");
-    li.className = "muted";
-    li.textContent = "No workspace context selected.";
-    listEl.append(li);
-  } else {
-    for (const item of taskContextItems) {
-      listEl.append(renderTaskContextItemRow(item, handleRemoveTaskContextItem));
+    try {
+      next = await api.localAi.getLocalAiState();
+    } catch {
+      next = { state: "unavailable", category: "unavailable" };
     }
   }
+  if (generation !== pollGeneration) return;
+  applyAiState(next);
+  schedulePoll();
 }
 
-// ---------------------------------------------------------------------------------------
-// D-11 explicit reviewed task submission — VYRON_CODE_COMPLETE_LOCAL_HERMES_D11_DELIVERY_AUTHORIZATION.
-// Lives entirely inside the existing D-09 review surface (task-review), which is the only
-// place the exact outbound text is ever displayed. reviewTaskDraft()/sendReviewedTask()/
-// clearTaskSubmission() never take an endpoint/API-key/path/method/header/body/options/model/
-// provider/workspace/context argument of any kind — the main process alone resolves the
-// already-configured endpoint/credential and owns the one bounded, non-streaming
-// `POST /v1/chat/completions` request; see electron/hermesTaskSubmission.ts's own header for
-// the full evidence trail behind exactly what "completed" now means and what this build still
-// never does (no session/event-stream/provider/model-picker capability of any kind).
-// ---------------------------------------------------------------------------------------
-
-/** Monotonic request generation — the same T-17-style guard every other Hermes sub-panel in
- * this file uses, applied independently to task submission. */
-let hermesTaskSubmissionRequestGeneration = 0;
-
-/** Read-only cache of the last known task-submission state, so renderTaskReview() (called from
- * several context-mutation sites while review is open, none of which know anything about task
- * submission) can safely redraw this sub-section without either stomping it back to a stale
- * default or issuing its own extra IPC call. Mirrors the established
- * `lastKnownApiServerAmbientState`/`lastKnownHermesSessionAmbientState`-style cache pattern
- * already used elsewhere in this file. */
-let lastKnownTaskSubmissionState: HermesTaskSubmissionState = { state: "idle", draftLength: null, text: null, truncated: false };
-
-interface HermesTaskSubmissionElements {
-  readonly statusEl: HTMLElement;
-  readonly sendBtn: HTMLButtonElement;
-  readonly errorEl: HTMLElement;
-  readonly responseSection: HTMLElement;
-  readonly responseTextEl: HTMLElement;
-  readonly truncatedNoteEl: HTMLElement;
+function startPolling(): void {
+  stopPolling();
+  void pollOnce(pollGeneration);
 }
 
-function getHermesTaskSubmissionElements(): HermesTaskSubmissionElements | null {
-  const statusEl = document.getElementById("task-review-task-sending");
-  const sendBtn = document.getElementById("task-send-btn");
-  const errorEl = document.getElementById("task-send-error");
-  const responseSection = document.getElementById("task-response-section");
-  const responseTextEl = document.getElementById("task-response-text");
-  const truncatedNoteEl = document.getElementById("task-response-truncated-note");
-  if (
-    !(statusEl instanceof HTMLElement) ||
-    !(sendBtn instanceof HTMLButtonElement) ||
-    !(errorEl instanceof HTMLElement) ||
-    !(responseSection instanceof HTMLElement) ||
-    !(responseTextEl instanceof HTMLElement) ||
-    !(truncatedNoteEl instanceof HTMLElement)
-  ) {
-    return null;
-  }
-  return { statusEl, sendBtn, errorEl, responseSection, responseTextEl, truncatedNoteEl };
-}
-
-/**
- * Renders one of the required D-11 task-submission states using only fixed, safe,
- * hand-written string literals plus the one bounded, already-safe response text field — never
- * an endpoint, API key, raw HTTP status/headers/body, or session id. No state here ever
- * mentions a network address, port, or protocol detail.
- */
-function renderHermesTaskSubmission(view: HermesTaskSubmissionAmbientState, text: string | null, truncated: boolean): void {
-  lastKnownTaskSubmissionState = { state: view, draftLength: null, text, truncated };
-  const els = getHermesTaskSubmissionElements();
-  if (!els) return;
-  const { statusEl, sendBtn, errorEl, responseSection, responseTextEl, truncatedNoteEl } = els;
-
-  errorEl.hidden = true;
-  errorEl.textContent = "";
-  responseSection.hidden = true;
-  responseTextEl.textContent = "";
-  truncatedNoteEl.hidden = true;
-  sendBtn.disabled = false;
-  sendBtn.textContent = "Send reviewed task";
-
-  switch (view) {
-    case "idle":
-      statusEl.textContent = "Not available in this build.";
-      sendBtn.hidden = true;
-      break;
-    case "review_ready":
-      statusEl.textContent = "Ready to send.";
-      sendBtn.hidden = false;
-      break;
-    case "sending":
-      statusEl.textContent = "Sending…";
-      sendBtn.hidden = false;
-      sendBtn.disabled = true;
-      sendBtn.textContent = "Sending…";
-      break;
-    case "completed":
-      statusEl.textContent = "Completed.";
-      sendBtn.hidden = false;
-      if (text !== null) {
-        responseSection.hidden = false;
-        // Plain-text assignment only — never innerHTML — so the assistant's own response text
-        // can never be interpreted as markup, an active link, or executable content.
-        responseTextEl.textContent = text;
-        truncatedNoteEl.hidden = !truncated;
-      }
-      break;
-    case "unavailable":
-      statusEl.textContent = "Not available in this build.";
-      sendBtn.hidden = true;
-      break;
-    case "unauthorized":
-      statusEl.textContent = "Authorize Hermes before sending a task.";
-      sendBtn.hidden = true;
-      break;
-    case "safe_failure":
-      statusEl.textContent = "Ready to send.";
-      sendBtn.hidden = false;
-      errorEl.hidden = false;
-      errorEl.textContent = "The task could not be completed. Please try again.";
-      break;
-    case "cancelled":
-      statusEl.textContent = "Ready to send.";
-      sendBtn.hidden = false;
-      break;
-  }
-}
-
-async function handleReviewTaskDraft(): Promise<void> {
+async function handleRetry(): Promise<void> {
   const api = window.vyronDesktop;
-  if (!api) {
-    renderHermesTaskSubmission("unavailable", null, false);
-    return;
-  }
-  const requestId = ++hermesTaskSubmissionRequestGeneration;
+  if (!api) return;
+  setDisabled("ai-retry-btn", true);
   try {
-    const result = await api.hermes.reviewTaskDraft({ draft: taskDraftText });
-    if (requestId !== hermesTaskSubmissionRequestGeneration) return;
-    renderHermesTaskSubmission(result.state, result.text, result.truncated);
+    const next = await api.localAi.retryLocalAiStartup();
+    applyAiState(next);
   } catch {
-    if (requestId !== hermesTaskSubmissionRequestGeneration) return;
-    renderHermesTaskSubmission("safe_failure", null, false);
-  }
-}
-
-async function handleSendReviewedTask(): Promise<void> {
-  const api = window.vyronDesktop;
-  if (!api) {
-    renderHermesTaskSubmission("unavailable", null, false);
-    return;
-  }
-  const requestId = ++hermesTaskSubmissionRequestGeneration;
-  renderHermesTaskSubmission("sending", null, false);
-  try {
-    const result = await api.hermes.sendReviewedTask();
-    // Superseded by a later send/clear while this call was in flight — never render a result
-    // that is no longer current.
-    if (requestId !== hermesTaskSubmissionRequestGeneration) return;
-    renderHermesTaskSubmission(result.state, result.text, result.truncated);
-  } catch {
-    if (requestId !== hermesTaskSubmissionRequestGeneration) return;
-    renderHermesTaskSubmission("safe_failure", null, false);
-  }
-}
-
-async function handleClearTaskSubmission(): Promise<void> {
-  const api = window.vyronDesktop;
-  if (!api) {
-    renderHermesTaskSubmission("idle", null, false);
-    return;
-  }
-  // Supersedes any in-flight review/send immediately, before the IPC call even starts.
-  hermesTaskSubmissionRequestGeneration++;
-  try {
-    await api.hermes.clearTaskSubmission();
-  } catch {
-    // Clearing must always leave the UI in a safe, idle-looking state, even if the IPC call
-    // itself rejected.
-  }
-  renderHermesTaskSubmission("idle", null, false);
-}
-
-function wireTaskControls(): void {
-  document.getElementById("task-clear-draft-btn")?.addEventListener("click", () => handleClearTaskDraft());
-  document.getElementById("task-review-btn")?.addEventListener("click", () => handleOpenTaskReview());
-  document.getElementById("task-clear-context-btn")?.addEventListener("click", () => handleClearAllTaskContext());
-  document.getElementById("task-add-workspace-name-btn")?.addEventListener("click", () => handleAddWorkspaceNameToTaskContext());
-  document.getElementById("task-add-git-summary-btn")?.addEventListener("click", () => handleAddGitSummaryToTaskContext());
-  document.getElementById("task-add-profile-btn")?.addEventListener("click", () => handleAddTaskProfileToTaskContext());
-  document.getElementById("task-review-back-btn")?.addEventListener("click", () => handleCloseTaskReview());
-  document.getElementById("task-review-close-btn")?.addEventListener("click", () => handleCloseTaskReview());
-  document.getElementById("task-review-clear-context-btn")?.addEventListener("click", () => handleClearAllTaskContext());
-  document.getElementById("task-send-btn")?.addEventListener("click", () => void handleSendReviewedTask());
-
-  const input = document.getElementById("task-draft-input");
-  if (input instanceof HTMLTextAreaElement) {
-    input.addEventListener("input", handleTaskDraftInput);
-    input.placeholder = getTaskProfileMeta(taskSelectedProfile).draftPlaceholder;
-  }
-}
-
-function initTaskState(): void {
-  renderTaskProfiles();
-  renderTaskDraftStatus();
-  renderTaskContext();
-  renderTaskApiVerificationInfo();
-  renderTaskReview();
-}
-
-// ---------------------------------------------------------------------------------------
-// Hermes authorization panel — VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION.
-// Entirely independent of the workspace grant above: clearing one never touches the other
-// (see electron/hermesAuthorization.ts's own "independent-lifetime policy" note). No Hermes
-// network/health/session/prompt/event call exists anywhere in this file — only the four
-// window.vyronDesktop.hermes.* authorization-state methods, each triggered only by an
-// explicit user action (opening the panel, submitting the form, or clicking Clear).
-// ---------------------------------------------------------------------------------------
-type HermesViewState = "not_authorized" | "panel_open" | "submitting" | "authorized" | "revoking" | "unavailable" | "safe_failure";
-
-/** Monotonic request generation — T-17 stale-authorization race protection, renderer side.
- * `handleClearHermesAuthorization` increments this immediately (before its own IPC call even
- * resolves), so a `beginAuthorization` call already awaiting a response detects the change
- * once it resolves and discards its own result instead of rendering a now-stale "authorized"
- * state after the user has already revoked. */
-let hermesRequestGeneration = 0;
-
-interface HermesPanelElements {
-  readonly statusEl: HTMLElement;
-  readonly explanationEl: HTMLElement;
-  readonly authorizeBtn: HTMLButtonElement;
-  readonly clearBtn: HTMLButtonElement;
-  readonly form: HTMLFormElement;
-  readonly credentialInput: HTMLInputElement;
-  readonly submitBtn: HTMLButtonElement;
-  readonly cancelBtn: HTMLButtonElement;
-  readonly errorEl: HTMLElement;
-}
-
-function getHermesElements(): HermesPanelElements | null {
-  const statusEl = document.getElementById("hermes-status");
-  const explanationEl = document.getElementById("hermes-explanation");
-  const authorizeBtn = document.getElementById("hermes-authorize-btn");
-  const clearBtn = document.getElementById("hermes-clear-btn");
-  const form = document.getElementById("hermes-authorization-form");
-  const credentialInput = document.getElementById("hermes-credential-input");
-  const submitBtn = document.getElementById("hermes-submit-btn");
-  const cancelBtn = document.getElementById("hermes-cancel-btn");
-  const errorEl = document.getElementById("hermes-error");
-  if (
-    !(statusEl instanceof HTMLElement) ||
-    !(explanationEl instanceof HTMLElement) ||
-    !(authorizeBtn instanceof HTMLButtonElement) ||
-    !(clearBtn instanceof HTMLButtonElement) ||
-    !(form instanceof HTMLFormElement) ||
-    !(credentialInput instanceof HTMLInputElement) ||
-    !(submitBtn instanceof HTMLButtonElement) ||
-    !(cancelBtn instanceof HTMLButtonElement) ||
-    !(errorEl instanceof HTMLElement)
-  ) {
-    return null;
-  }
-  return { statusEl, explanationEl, authorizeBtn, clearBtn, form, credentialInput, submitBtn, cancelBtn, errorEl };
-}
-
-/**
- * Renders one of the required D-08B UI states using only fixed, safe, hand-written string
- * literals — never a value derived from the credential, an IPC response's raw content, or an
- * error message/stack. `credentialInput.value` is reset to `""` on every render that is not
- * mid-submission, so the credential never lingers in the DOM/renderer state longer than the
- * one in-flight IPC call that needs it.
- */
-function renderHermesPanel(view: HermesViewState): void {
-  const els = getHermesElements();
-  if (!els) return;
-  const { statusEl, explanationEl, authorizeBtn, clearBtn, form, credentialInput, submitBtn, errorEl } = els;
-
-  errorEl.hidden = true;
-  errorEl.textContent = "";
-  clearBtn.textContent = "Clear Hermes authorization";
-  submitBtn.textContent = "Authorize";
-
-  if (view === "not_authorized" || view === "unavailable") {
-    statusEl.textContent = "Hermes: Not authorized";
-    explanationEl.textContent =
-      view === "unavailable"
-        ? "Authorization is unavailable in this build."
-        : "Hermes is disabled until you explicitly authorize it for this app session.";
-    authorizeBtn.hidden = view === "unavailable";
-    authorizeBtn.disabled = false;
-    clearBtn.hidden = true;
-    form.hidden = true;
-    credentialInput.value = "";
-    credentialInput.disabled = false;
-    submitBtn.disabled = false;
-    return;
-  }
-
-  if (view === "panel_open" || view === "submitting" || view === "safe_failure") {
-    statusEl.textContent = "Hermes: Not authorized";
-    explanationEl.textContent = "Hermes is disabled until you explicitly authorize it for this app session.";
-    authorizeBtn.hidden = true;
-    clearBtn.hidden = true;
-    form.hidden = false;
-    const submitting = view === "submitting";
-    credentialInput.disabled = submitting;
-    submitBtn.textContent = submitting ? "Authorizing…" : "Authorize";
-    if (view === "safe_failure") {
-      credentialInput.value = "";
-      errorEl.hidden = false;
-      errorEl.textContent = "Authorization could not be stored for this app session. Please try again.";
-    }
-    // Never enabled while empty/whitespace-only or submitting — mirrors the endpoint form's
-    // own submitBtn.disabled gating (updateHermesEndpointSubmitEnabled). Closes the gap where a
-    // user could previously click Authorize with an empty credential field and reach the
-    // generic safe_failure state instead of being blocked from submitting at all.
-    submitBtn.disabled = submitting || credentialInput.value.trim().length === 0;
-    return;
-  }
-
-  // view === "authorized" || view === "revoking"
-  statusEl.textContent = "Hermes: Authorized for this app session only";
-  explanationEl.textContent = "Your credential is held only in this running desktop app and is not saved.";
-  authorizeBtn.hidden = true;
-  clearBtn.hidden = false;
-  form.hidden = true;
-  credentialInput.value = "";
-  const revoking = view === "revoking";
-  clearBtn.disabled = revoking;
-  clearBtn.textContent = revoking ? "Revoking…" : "Clear Hermes authorization";
-
-  // D-10 (remediated) API Server verification sub-panel is only ever visible while
-  // authorized — hidden again on "revoking" (about to leave). Its own CONTENT is deliberately
-  // never set here: each caller of renderHermesPanel("authorized") (a fresh beginAuthorization
-  // success, or initHermesState restoring real state on startup) decides what the verification
-  // section should show next, rather than this function assuming a value and possibly
-  // stomping a real one.
-  const apiServerSection = document.getElementById("hermes-api-server-section");
-  if (apiServerSection) apiServerSection.hidden = revoking;
-}
-
-function handleOpenHermesPanel(): void {
-  renderHermesPanel("panel_open");
-}
-
-function handleCancelHermesAuthorization(): void {
-  renderHermesPanel("not_authorized");
-}
-
-async function handleBeginHermesAuthorization(event: SubmitEvent): Promise<void> {
-  event.preventDefault();
-  const api = window.vyronDesktop;
-  const els = getHermesElements();
-  if (!els) return;
-  if (!api) {
-    renderHermesPanel("unavailable");
-    return;
-  }
-
-  const credential = els.credentialInput.value;
-  const requestId = ++hermesRequestGeneration;
-  renderHermesPanel("submitting");
-  try {
-    const result = await api.hermes.beginAuthorization({ credential });
-    // Superseded by a later clear or another submit while this call was in flight — never
-    // render a result that is no longer current.
-    if (requestId !== hermesRequestGeneration) return;
-    if (result.state === "authorized_memory_only") {
-      renderHermesPanel("authorized");
-      // A freshly successful authorization is always verify-ready if an endpoint is already
-      // configured, or endpoint-not-configured otherwise — never assumed, always asked.
-      try {
-        const endpointState = await api.hermes.getEndpointConfigurationState();
-        renderHermesApiServer(endpointState.state === "configured_memory_only" ? "ready_to_verify" : "endpoint_not_configured");
-      } catch {
-        renderHermesApiServer("endpoint_not_configured");
-      }
-    } else if (result.state === "revoked" || result.state === "not_authorized") {
-      renderHermesPanel("not_authorized");
-    } else if (result.state === "unavailable") {
-      renderHermesPanel("unavailable");
-    } else {
-      renderHermesPanel("safe_failure");
-    }
-  } catch {
-    if (requestId !== hermesRequestGeneration) return;
-    renderHermesPanel("safe_failure");
+    applyAiState({ state: "unavailable", category: "unavailable" });
   } finally {
-    els.credentialInput.value = "";
+    setDisabled("ai-retry-btn", false);
   }
+  startPolling();
 }
 
-async function handleClearHermesAuthorization(): Promise<void> {
+async function handleCopyDiagnostics(): Promise<void> {
   const api = window.vyronDesktop;
-  if (!api) {
-    renderHermesPanel("unavailable");
-    return;
-  }
-  // Increment first, synchronously, before the IPC call even starts — supersedes any
-  // beginAuthorization call already in flight immediately, not only after this call resolves.
-  hermesRequestGeneration++;
-  // Also supersedes any in-flight verifyApiServerConnection() and resets the main process's
-  // own verification state — clearing authorization must always leave verification inactive
-  // too (getApiServerVerificationState() would already report "not_authorized" once cleared
-  // regardless, but this keeps electron/hermesApiServer.ts's own internal state hygienic
-  // rather than stale).
-  hermesApiServerRequestGeneration++;
-  // D-11 — also supersedes any in-flight review/send and resets the main process's own task
-  // submission state, for the same reason as clearApiServerVerification() above.
-  hermesTaskSubmissionRequestGeneration++;
-  renderHermesPanel("revoking");
+  if (!api) return;
   try {
-    await api.hermes.clearAuthorization();
+    const result = await api.localAi.copyLocalAiDiagnostics();
+    setText("ai-copy-status", result.copied ? COPY_OK_TEXT : COPY_FAIL_TEXT);
   } catch {
-    // Clear must always leave the UI in a safe, non-authorized state, even if the IPC call
-    // itself rejected — never leave the user looking at a stale "authorized" panel.
+    setText("ai-copy-status", COPY_FAIL_TEXT);
   }
-  try {
-    await api.hermes.clearApiServerVerification();
-  } catch {
-    // Best-effort only — clearAuthorization() above already makes
-    // getApiServerVerificationState() report "not_authorized" regardless of whether this call
-    // itself succeeds.
-  }
-  try {
-    await api.hermes.clearTaskSubmission();
-  } catch {
-    // Best-effort only, same reason.
-  }
-  renderHermesPanel("not_authorized");
-  renderHermesTaskSubmission("idle", null, false);
 }
 
-// ---------------------------------------------------------------------------------------
-// D-08E endpoint setup panel — VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION.
-// Entirely independent of D-08B authorization: a user may configure an endpoint before,
-// after, or without ever authorizing, and vice versa (see electron/hermesEndpointSetup.ts's
-// own "independent-lifetime policy" note). configureEndpoint()/clearEndpointConfiguration()
-// never take an endpoint's individual host/port/protocol as separate fields — only the one
-// raw URL string the user typed, forwarded verbatim to the main process, which alone decides
-// whether it is safe. This panel never renders that string, or any part of it, back — only
-// the fixed, safe state enum.
-// ---------------------------------------------------------------------------------------
-type HermesEndpointViewState =
-  | "not_configured"
-  | "setup_open"
-  | "configuring"
-  | "configured"
-  | "clearing"
-  | "policy_rejected"
-  | "invalid_configuration"
-  | "unavailable"
-  | "safe_failure";
-
-/** Monotonic request generation — the same T-17-style guard the authorization and connection
- * panels above use, applied independently to the endpoint setup panel. */
-let hermesEndpointRequestGeneration = 0;
-
-interface HermesEndpointElements {
-  readonly statusEl: HTMLElement;
-  readonly setupBtn: HTMLButtonElement;
-  readonly clearBtn: HTMLButtonElement;
-  readonly form: HTMLFormElement;
-  readonly endpointInput: HTMLInputElement;
-  readonly riskCheckbox: HTMLInputElement;
-  readonly submitBtn: HTMLButtonElement;
-  readonly cancelBtn: HTMLButtonElement;
-  readonly errorEl: HTMLElement;
-}
-
-function getHermesEndpointElements(): HermesEndpointElements | null {
-  const statusEl = document.getElementById("hermes-endpoint-status");
-  const setupBtn = document.getElementById("hermes-endpoint-setup-btn");
-  const clearBtn = document.getElementById("hermes-endpoint-clear-btn");
-  const form = document.getElementById("hermes-endpoint-form");
-  const endpointInput = document.getElementById("hermes-endpoint-input");
-  const riskCheckbox = document.getElementById("hermes-endpoint-risk-checkbox");
-  const submitBtn = document.getElementById("hermes-endpoint-submit-btn");
-  const cancelBtn = document.getElementById("hermes-endpoint-cancel-btn");
-  const errorEl = document.getElementById("hermes-endpoint-error");
-  if (
-    !(statusEl instanceof HTMLElement) ||
-    !(setupBtn instanceof HTMLButtonElement) ||
-    !(clearBtn instanceof HTMLButtonElement) ||
-    !(form instanceof HTMLFormElement) ||
-    !(endpointInput instanceof HTMLInputElement) ||
-    !(riskCheckbox instanceof HTMLInputElement) ||
-    !(submitBtn instanceof HTMLButtonElement) ||
-    !(cancelBtn instanceof HTMLButtonElement) ||
-    !(errorEl instanceof HTMLElement)
-  ) {
-    return null;
-  }
-  return { statusEl, setupBtn, clearBtn, form, endpointInput, riskCheckbox, submitBtn, cancelBtn, errorEl };
-}
-
-/** Superficial, non-sensitive, client-side-only format gate — never the real validation
- * (that happens exclusively in the main process via the unchanged `validateEndpointCandidate`
- * policy engine). Exists only to keep the submit action disabled for an obviously-incomplete
- * entry; passing this check guarantees nothing about whether the main process will accept it. */
-function looksLikeSuperficiallyValidEndpoint(value: string): boolean {
-  // D-10 (remediated): re-scoped from the retired ws:/wss: dashboard scheme onto http: — the
-  // only scheme electron/hermesEndpoint.ts's validateEndpointCandidate ever accepts now. This
-  // is a superficial UX gate only (the main process alone performs the real, authoritative
-  // validation); before this fix it still matched the OLD ws:/wss: prefix, meaning no
-  // http://<host>:<port> value the backend could ever accept would enable this button at all.
-  const trimmed = value.trim();
-  return trimmed.length > 0 && /^http:\/\//i.test(trimmed);
-}
-
-function updateHermesEndpointSubmitEnabled(): void {
-  const els = getHermesEndpointElements();
-  if (!els) return;
-  els.submitBtn.disabled = !(looksLikeSuperficiallyValidEndpoint(els.endpointInput.value) && els.riskCheckbox.checked);
-}
-
-/**
- * Renders one of the required D-08E endpoint-setup states using only fixed, safe,
- * hand-written string literals — never the submitted URL or any component of it.
- */
-function renderHermesEndpointPanel(view: HermesEndpointViewState): void {
-  const els = getHermesEndpointElements();
-  if (!els) return;
-  const { statusEl, setupBtn, clearBtn, form, endpointInput, riskCheckbox, submitBtn, errorEl } = els;
-
-  errorEl.hidden = true;
-  errorEl.textContent = "";
-  clearBtn.textContent = "Clear local Hermes connection setup";
-
-  if (view === "not_configured" || view === "unavailable") {
-    statusEl.textContent = "No local companion endpoint configured";
-    setupBtn.hidden = view === "unavailable";
-    setupBtn.disabled = false;
-    clearBtn.hidden = true;
-    form.hidden = true;
-    endpointInput.value = "";
-    riskCheckbox.checked = false;
-    return;
-  }
-
-  if (view === "setup_open" || view === "configuring" || view === "policy_rejected" || view === "invalid_configuration" || view === "safe_failure") {
-    statusEl.textContent = "No local companion endpoint configured";
-    setupBtn.hidden = true;
-    clearBtn.hidden = true;
-    form.hidden = false;
-    const configuring = view === "configuring";
-    endpointInput.disabled = configuring;
-    riskCheckbox.disabled = configuring;
-    submitBtn.textContent = configuring ? "Configuring…" : "Configure";
-    if (configuring) {
-      submitBtn.disabled = true;
-    } else {
-      updateHermesEndpointSubmitEnabled();
-    }
-    if (view === "policy_rejected" || view === "invalid_configuration" || view === "safe_failure") {
-      endpointInput.value = "";
-      riskCheckbox.checked = false;
-      errorEl.hidden = false;
-      errorEl.textContent =
-        view === "safe_failure"
-          ? "Endpoint could not be configured for this app session. Please try again."
-          : "That endpoint can't be used. Configure only a local Hermes companion service you trust.";
-    }
-    return;
-  }
-
-  // view === "configured" || view === "clearing"
-  statusEl.textContent = "Local companion endpoint configured for this app session only";
-  setupBtn.hidden = true;
-  clearBtn.hidden = false;
-  form.hidden = true;
-  endpointInput.value = "";
-  riskCheckbox.checked = false;
-  const clearing = view === "clearing";
-  clearBtn.disabled = clearing;
-  clearBtn.textContent = clearing ? "Clearing…" : "Clear local Hermes connection setup";
-}
-
-function handleOpenHermesEndpointSetup(): void {
-  renderHermesEndpointPanel("setup_open");
-}
-
-function handleCancelHermesEndpointSetup(): void {
-  renderHermesEndpointPanel("not_configured");
-}
-
-async function handleConfigureHermesEndpoint(event: SubmitEvent): Promise<void> {
-  event.preventDefault();
+async function handleReview(): Promise<void> {
   const api = window.vyronDesktop;
-  const els = getHermesEndpointElements();
-  if (!els) return;
-  if (!api) {
-    renderHermesEndpointPanel("unavailable");
+  const draft = draftValue();
+  if (!api || aiPhase !== "ready" || reviewInFlight || draftProblem(draft) !== null) return;
+  reviewInFlight = true;
+  updateDraftControls();
+  const generation = (taskRequestGeneration += 1);
+  let result: HermesTaskSubmissionState | null = null;
+  try {
+    result = await api.hermes.reviewTaskDraft({ draft });
+  } catch {
+    result = null;
+  }
+  if (generation !== taskRequestGeneration) return;
+  reviewInFlight = false;
+  if (result && result.state === "review_ready" && result.draftLength === draft.length) {
+    reviewedDraft = draft;
+    setText("task-review-text", draft);
+    resetResponseArea();
+    setDisabled("task-send-btn", false);
+    setDisabled("task-review-back-btn", false);
+    showView("review", "review-title");
     return;
   }
-  if (!looksLikeSuperficiallyValidEndpoint(els.endpointInput.value) || !els.riskCheckbox.checked) return;
-
-  const endpoint = els.endpointInput.value;
-  const requestId = ++hermesEndpointRequestGeneration;
-  renderHermesEndpointPanel("configuring");
-  try {
-    const result = await api.hermes.configureEndpoint({ endpoint });
-    if (requestId !== hermesEndpointRequestGeneration) return;
-    if (result.state === "configured_memory_only") {
-      renderHermesEndpointPanel("configured");
-      // Keeps the verification sub-panel in sync — it was showing "endpoint not configured"
-      // (or was hidden while unauthorized) and should now offer verification if authorized.
-      renderHermesApiServer("ready_to_verify");
-    } else if (result.state === "policy_rejected") {
-      renderHermesEndpointPanel("policy_rejected");
-    } else if (result.state === "invalid_configuration") {
-      renderHermesEndpointPanel("invalid_configuration");
-    } else if (result.state === "cleared" || result.state === "not_configured") {
-      renderHermesEndpointPanel("not_configured");
-    } else if (result.state === "unavailable") {
-      renderHermesEndpointPanel("unavailable");
-    } else {
-      renderHermesEndpointPanel("safe_failure");
-    }
-  } catch {
-    if (requestId !== hermesEndpointRequestGeneration) return;
-    renderHermesEndpointPanel("safe_failure");
-  } finally {
-    els.endpointInput.value = "";
-  }
+  reviewedDraft = null;
+  updateDraftControls();
+  setText("task-draft-error", result && (result.state === "unauthorized" || result.state === "unavailable") ? NOT_READY_TEXT : REVIEW_FAILURE_TEXT);
+  setHidden("task-draft-error", false);
 }
 
-async function handleClearHermesEndpointConfiguration(): Promise<void> {
+async function handleSend(): Promise<void> {
   const api = window.vyronDesktop;
-  if (!api) {
-    renderHermesEndpointPanel("unavailable");
+  if (!api || reviewedDraft === null || sendInFlight || aiPhase !== "ready") return;
+  sendInFlight = true;
+  setDisabled("task-send-btn", true);
+  setDisabled("task-review-back-btn", true);
+  setText("task-send-status", SENDING_TEXT);
+  setHidden("task-send-status", false);
+  const generation = taskRequestGeneration;
+  let result: HermesTaskSubmissionState | null = null;
+  try {
+    result = await api.hermes.sendReviewedTask();
+  } catch {
+    result = null;
+  }
+  if (generation !== taskRequestGeneration) return;
+  sendInFlight = false;
+  if (result && result.state === "completed" && typeof result.text === "string") {
+    setText("task-send-status", "");
+    setHidden("task-send-status", true);
+    setText("task-response-text", result.text);
+    setHidden("task-response-truncated-note", !result.truncated);
+    setHidden("task-response-section", false);
+    setDisabled("task-review-back-btn", true);
+    focusElement("task-response-title");
     return;
   }
-  // Supersedes any in-flight configureEndpoint() immediately, before the IPC call even starts.
-  hermesEndpointRequestGeneration++;
-  renderHermesEndpointPanel("clearing");
-  try {
-    await api.hermes.clearEndpointConfiguration();
-  } catch {
-    // Clear must always leave the UI in a safe, not-configured-looking state, even if the IPC
-    // call itself rejected.
-  }
-  // Also resets D-10 (remediated) API Server verification state hygiene, mirroring
-  // handleClearHermesAuthorization's own best-effort clearApiServerVerification() call —
-  // getApiServerVerificationState() would already report correctly without this once the
-  // endpoint is gone, but this keeps hermesApiServer.ts's own internal state tidy rather than
-  // stale, and visibly resets the verification sub-panel's own displayed text.
-  try {
-    await api.hermes.clearApiServerVerification();
-  } catch {
-    // Best-effort only.
-  }
-  // D-11 — same reset-hygiene reason as clearApiServerVerification() above: a reviewed/sent
-  // task snapshot cannot outlive the endpoint it was reviewed against.
-  hermesTaskSubmissionRequestGeneration++;
-  try {
-    await api.hermes.clearTaskSubmission();
-  } catch {
-    // Best-effort only.
-  }
-  renderHermesApiServer("endpoint_not_configured");
-  renderHermesEndpointPanel("not_configured");
-  renderHermesTaskSubmission("idle", null, false);
+  const notReady = result !== null && (result.state === "unauthorized" || result.state === "unavailable");
+  setText("task-send-status", notReady ? NOT_READY_TEXT : FAILURE_TEXT);
+  setHidden("task-send-status", false);
+  setDisabled("task-review-back-btn", false);
+  if (notReady) startPolling();
 }
 
-async function initHermesEndpointState(api: DesktopApi): Promise<void> {
-  try {
-    const state = await api.hermes.getEndpointConfigurationState();
-    renderHermesEndpointPanel(state.state === "configured_memory_only" ? "configured" : "not_configured");
-  } catch {
-    renderHermesEndpointPanel("unavailable");
-  }
+function handleBack(): void {
+  if (sendInFlight) return;
+  taskRequestGeneration += 1;
+  reviewedDraft = null;
+  setText("task-review-text", "");
+  resetResponseArea();
+  bestEffortClearTask();
+  showView("ready", "task-draft-input");
+  updateDraftControls();
 }
 
-function wireHermesEndpointControls(): void {
-  document.getElementById("hermes-endpoint-setup-btn")?.addEventListener("click", handleOpenHermesEndpointSetup);
-  document.getElementById("hermes-endpoint-cancel-btn")?.addEventListener("click", handleCancelHermesEndpointSetup);
-  document.getElementById("hermes-endpoint-clear-btn")?.addEventListener("click", () => void handleClearHermesEndpointConfiguration());
-  document.getElementById("hermes-endpoint-input")?.addEventListener("input", updateHermesEndpointSubmitEnabled);
-  document.getElementById("hermes-endpoint-risk-checkbox")?.addEventListener("change", updateHermesEndpointSubmitEnabled);
-  const form = document.getElementById("hermes-endpoint-form");
-  if (form instanceof HTMLFormElement) {
-    form.addEventListener("submit", (event) => void handleConfigureHermesEndpoint(event));
+function handleClearResponse(): void {
+  if (sendInFlight) return;
+  taskRequestGeneration += 1;
+  reviewedDraft = null;
+  const input = el<HTMLTextAreaElement>("task-draft-input");
+  if (input) input.value = "";
+  setText("task-review-text", "");
+  resetResponseArea();
+  bestEffortClearTask();
+  showView("ready", "task-draft-input");
+  updateDraftControls();
+}
+
+function onDraftInput(): void {
+  updateDraftControls();
+}
+
+function onDraftKeydown(event: KeyboardEvent): void {
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    void handleReview();
   }
 }
 
-// ---------------------------------------------------------------------------------------
-// D-10 (remediated) API Server verification sub-panel —
-// VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION. Visible only while the outer
-// Hermes panel is in its "authorized" view (see renderHermesPanel above).
-// verifyApiServerConnection()/clearApiServerVerification() never take an endpoint/API-key/
-// path/method/header/body/options argument of any kind — the main process alone resolves the
-// already-configured endpoint and owns the one bounded `GET /health` request; see
-// electron/hermesApiServer.ts's own header for the full evidence trail behind exactly what
-// "reachable" now means and what this build still never does (no prompt/context/event
-// capability of any kind, and no JSON-RPC transport of any kind either — the prior socket-
-// based connectivity/lifecycle capability this authorization retires is described only in
-// this authorization's own remediation discovery report, not here).
-// ---------------------------------------------------------------------------------------
-type HermesApiServerViewState =
-  | "endpoint_not_configured"
-  | "ready_to_verify"
-  | "verifying"
-  | "reachable"
-  | "unavailable"
-  | "safe_failure";
-
-/** Monotonic request generation — the same T-17-style guard the authorization panel above
- * uses, applied independently to the API Server verification sub-panel. */
-let hermesApiServerRequestGeneration = 0;
-
-/** Read-only cache of the last known verification ambient state, for the Task section's own
- * informational display only (see `renderTaskApiVerificationInfo`) — mirrors the established
- * `currentWorkspaceDisplayName`/`lastGitSummaryForContext` read-only-cache pattern. Never used
- * to gate, enable, or drive any task-composer action, and never sent anywhere. */
-let lastKnownApiServerAmbientState: HermesApiServerAmbientState = "unavailable";
-
-interface HermesApiServerElements {
-  readonly statusEl: HTMLElement;
-  readonly verifyBtn: HTMLButtonElement;
-  readonly noteEl: HTMLElement;
-  readonly errorEl: HTMLElement;
-}
-
-function getHermesApiServerElements(): HermesApiServerElements | null {
-  const statusEl = document.getElementById("hermes-api-server-status");
-  const verifyBtn = document.getElementById("hermes-api-server-verify-btn");
-  const noteEl = document.getElementById("hermes-api-server-note");
-  const errorEl = document.getElementById("hermes-api-server-error");
-  if (
-    !(statusEl instanceof HTMLElement) ||
-    !(verifyBtn instanceof HTMLButtonElement) ||
-    !(noteEl instanceof HTMLElement) ||
-    !(errorEl instanceof HTMLElement)
-  ) {
-    return null;
-  }
-  return { statusEl, verifyBtn, noteEl, errorEl };
-}
-
-/**
- * Renders one of the required D-10 (remediated) verification states using only fixed, safe,
- * hand-written string literals — never an endpoint, API key, raw HTTP status/headers/body, or
- * anything beyond this file's own required copy. No state here ever mentions a network
- * address, port, or protocol detail.
- */
-function renderHermesApiServer(view: HermesApiServerViewState): void {
-  const els = getHermesApiServerElements();
-  if (!els) return;
-  const { statusEl, verifyBtn, noteEl, errorEl } = els;
-
-  errorEl.hidden = true;
-  errorEl.textContent = "";
-  noteEl.hidden = true;
-  noteEl.textContent = "";
-  verifyBtn.disabled = false;
-  verifyBtn.textContent = "Verify local Hermes connection";
-
-  lastKnownApiServerAmbientState = view === "endpoint_not_configured" ? "unavailable" : view;
-  renderTaskApiVerificationInfo();
-
-  switch (view) {
-    case "endpoint_not_configured":
-      statusEl.textContent = "No local Hermes API Server endpoint configured.";
-      verifyBtn.hidden = true;
-      break;
-    case "ready_to_verify":
-      statusEl.textContent = "Ready to verify local Hermes API Server.";
-      verifyBtn.hidden = false;
-      noteEl.hidden = false;
-      noteEl.textContent = "Verification does not send a task, workspace or context.";
-      break;
-    case "verifying":
-      statusEl.textContent = "Verifying local Hermes connection…";
-      verifyBtn.hidden = false;
-      verifyBtn.disabled = true;
-      verifyBtn.textContent = "Verifying…";
-      break;
-    case "reachable":
-      statusEl.textContent = "Local Hermes API Server reachable.";
-      verifyBtn.hidden = false;
-      noteEl.hidden = false;
-      noteEl.textContent = "Task sending is not available in this build.";
-      break;
-    case "unavailable":
-      statusEl.textContent = "Local Hermes API Server verification is unavailable in this build.";
-      verifyBtn.hidden = true;
-      break;
-    case "safe_failure":
-      statusEl.textContent = "Ready to verify local Hermes API Server.";
-      verifyBtn.hidden = false;
-      errorEl.hidden = false;
-      errorEl.textContent = "Verification could not be completed. Please try again.";
-      break;
+function onDocumentKeydown(event: KeyboardEvent): void {
+  if (event.key === "Escape" && currentView() === "review" && !sendInFlight) {
+    event.preventDefault();
+    handleBack();
   }
 }
 
-async function handleVerifyApiServerConnection(): Promise<void> {
-  const api = window.vyronDesktop;
-  if (!api) {
-    renderHermesApiServer("unavailable");
-    return;
-  }
-  const requestId = ++hermesApiServerRequestGeneration;
-  renderHermesApiServer("verifying");
-  try {
-    const result = await api.hermes.verifyApiServerConnection();
-    // Superseded by a later verify/clear while this call was in flight — never render a
-    // result that is no longer current.
-    if (requestId !== hermesApiServerRequestGeneration) return;
-    if (result.state === "reachable") {
-      renderHermesApiServer("reachable");
-    } else if (result.state === "verifying") {
-      renderHermesApiServer("verifying");
-    } else if (result.state === "unavailable") {
-      renderHermesApiServer("unavailable");
-    } else if (result.state === "endpoint_not_configured") {
-      renderHermesApiServer("endpoint_not_configured");
-    } else if (result.state === "not_authorized") {
-      // Authorization must have been cleared elsewhere while this call was in flight.
-      renderHermesPanel("not_authorized");
-    } else {
-      renderHermesApiServer("safe_failure");
-    }
-  } catch {
-    if (requestId !== hermesApiServerRequestGeneration) return;
-    renderHermesApiServer("safe_failure");
-  }
-}
-
-async function handleClearApiServerVerification(): Promise<void> {
-  const api = window.vyronDesktop;
-  if (!api) {
-    renderHermesApiServer("unavailable");
-    return;
-  }
-  // Supersedes any in-flight verify immediately, before the IPC call even starts.
-  hermesApiServerRequestGeneration++;
-  try {
-    await api.hermes.clearApiServerVerification();
-  } catch {
-    // Clearing must always leave the UI in a safe, ready-to-verify-looking state, even if the
-    // IPC call itself rejected.
-  }
-  renderHermesApiServer("ready_to_verify");
-}
-
-async function initHermesState(api: DesktopApi): Promise<void> {
-  try {
-    const availability = await api.hermes.getAvailability();
-    if (availability.state !== "available") {
-      renderHermesPanel("unavailable");
-      return;
-    }
-    const state = await api.hermes.getAuthorizationState();
-    if (state.state === "authorized_memory_only") {
-      renderHermesPanel("authorized");
-      // Restore the real ambient verification state rather than assuming "ready_to_verify" —
-      // an app restart always begins with a fresh, never-verified state in this build (no
-      // cross-restart persistence of any kind), but this still asks rather than assumes. This
-      // is a safe, side-effect-free state READ — never a network probe; D-10's own "no
-      // auto-verify at startup" rule means verifyApiServerConnection() is never called here.
-      try {
-        const verificationState = await api.hermes.getApiServerVerificationState();
-        renderHermesApiServer(verificationState.state === "not_authorized" ? "ready_to_verify" : verificationState.state);
-      } catch {
-        renderHermesApiServer("ready_to_verify");
-      }
-    } else {
-      renderHermesPanel("not_authorized");
-    }
-  } catch {
-    renderHermesPanel("unavailable");
-  }
-}
-
-/** Live-updates the Authorize submit button's disabled state as the user types, mirroring
- * updateHermesEndpointSubmitEnabled's own pattern for the endpoint form. */
-function updateHermesAuthorizeSubmitEnabled(): void {
-  const els = getHermesElements();
-  if (!els) return;
-  if (els.submitBtn.disabled && els.credentialInput.disabled) return; // currently submitting; renderHermesPanel owns this state
-  els.submitBtn.disabled = els.credentialInput.value.trim().length === 0;
-}
-
-function wireHermesControls(): void {
-  document.getElementById("hermes-authorize-btn")?.addEventListener("click", handleOpenHermesPanel);
-  document.getElementById("hermes-cancel-btn")?.addEventListener("click", handleCancelHermesAuthorization);
-  document.getElementById("hermes-clear-btn")?.addEventListener("click", () => void handleClearHermesAuthorization());
-  document.getElementById("hermes-credential-input")?.addEventListener("input", updateHermesAuthorizeSubmitEnabled);
-  const form = document.getElementById("hermes-authorization-form");
-  if (form instanceof HTMLFormElement) {
-    form.addEventListener("submit", (event) => void handleBeginHermesAuthorization(event));
-  }
-  document.getElementById("hermes-api-server-verify-btn")?.addEventListener("click", () => void handleVerifyApiServerConnection());
-}
-
-// ---------------------------------------------------------------------------------------
-// Wiring and static content
-// ---------------------------------------------------------------------------------------
-function wireWorkspaceControls(): void {
-  document.getElementById("pick-directory-btn")?.addEventListener("click", () => void handlePickDirectory());
-  document.getElementById("clear-workspace-btn")?.addEventListener("click", () => void handleClearWorkspace());
-  document.getElementById("nav-explorer-btn")?.addEventListener("click", () => switchView("explorer"));
-  document.getElementById("nav-search-btn")?.addEventListener("click", () => switchView("search"));
-  document.getElementById("nav-git-btn")?.addEventListener("click", () => switchView("git"));
-  const searchForm = document.getElementById("search-form");
-  if (searchForm instanceof HTMLFormElement) {
-    searchForm.addEventListener("submit", (event) => void handleSearchSubmit(event));
-  }
-}
-
-async function initWorkspaceState(api: DesktopApi): Promise<void> {
-  const result = await api.workspace.getCurrent();
-  renderWorkspaceState(result);
-}
-
-function renderCapabilities(api: DesktopApi): void {
-  const list = document.getElementById("capabilities");
-  if (!list) return;
-  for (const [name, available] of Object.entries(api.capabilities)) {
-    const item = document.createElement("li");
-
-    const nameEl = document.createElement("span");
-    nameEl.className = "cap-name";
-    nameEl.textContent = name;
-
-    const valueEl = document.createElement("span");
-    valueEl.className = "cap-value";
-    valueEl.textContent = available ? "available" : "not available";
-
-    item.append(nameEl, valueEl);
-    list.append(item);
-  }
-}
-
-function renderPlatform(api: DesktopApi): void {
-  const platformEl = document.getElementById("platform-value");
-  if (platformEl) platformEl.textContent = api.platform;
+function on(id: string, type: string, listener: (event: Event) => void): void {
+  const node = el(id);
+  if (node) node.addEventListener(type, listener);
 }
 
 function main(): void {
-  wireWorkspaceControls();
-  wireHermesControls();
-  wireHermesEndpointControls();
-  wireTaskControls();
-  initTaskState();
-  const api = window.vyronDesktop;
-  if (!api) {
-    // Preload bridge unavailable. Electron guarantees preload finishes before this script
-    // runs, so this should not happen in normal operation — but if it ever does, say so
-    // visibly instead of silently leaving the default "No workspace is selected." text, which
-    // would misleadingly imply the bridge works and nothing has been picked yet.
-    renderStatusMessage("Desktop bridge unavailable. Restart Vyron Code Desktop.");
-    renderHermesPanel("unavailable");
-    renderHermesEndpointPanel("unavailable");
-    return;
-  }
-  renderCapabilities(api);
-  renderPlatform(api);
-  void initWorkspaceState(api);
-  void initHermesState(api);
-  void initHermesEndpointState(api);
+  on("task-draft-input", "input", onDraftInput);
+  on("task-draft-input", "keydown", (event) => onDraftKeydown(event as KeyboardEvent));
+  on("task-review-btn", "click", () => void handleReview());
+  on("task-review-back-btn", "click", () => handleBack());
+  on("task-send-btn", "click", () => void handleSend());
+  on("task-clear-response-btn", "click", () => handleClearResponse());
+  on("ai-retry-btn", "click", () => void handleRetry());
+  on("ai-copy-diagnostics-btn", "click", () => void handleCopyDiagnostics());
+  document.addEventListener("keydown", (event) => onDocumentKeydown(event as KeyboardEvent));
+
+  // A page load always starts with nothing: clear any task state a previous page load left in the
+  // main process, so a draft, reviewed snapshot or answer never survives a reload.
+  bestEffortClearTask();
+  updateDraftControls();
+  startPolling();
 }
 
 main();

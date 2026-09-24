@@ -1,264 +1,91 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="tr">
 <head>
 <meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';" />
-<title>Vyron Code Desktop</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vyron Code</title>
 <link rel="stylesheet" href="renderer.css" />
 </head>
 <body>
   <!--
-    Local renderer — VYRON_CODE_V02_D02D_MINIMAL_LOCAL_RENDERER_AUTHORIZATION, extended by
-    VYRON_CODE_V02_D03_NATIVE_FOLDER_PICKER_AND_WORKSPACE_GRANT_AUTHORIZATION and
-    VYRON_CODE_V02_MILESTONE_A_RUNTIME_STABILITY_AND_READONLY_WORKSPACE_AUTHORIZATION.
-    No file-write, save, terminal, Git-write, or multimodel control exists anywhere on this
-    page. Every IPC call made from here is one of the fixed
-    window.vyronDesktop.workspace.* methods, each triggered only by an explicit user action —
-    a button click, an Explorer row click, or a submitted Search query. The only text input on
-    this page is the Search query box; it can never select or type an absolute workspace path
-    — that remains possible only through the native "Open folder…" picker. No fetch/network
-    request (this page's own CSP forbids connect-src).
+    Local renderer - VYRON_CODE_ONE_CLICK_LOCAL_AI_STARTUP_AND_UX_DELIVERY. The main process starts and
+    verifies the local AI services on its own; this page only shows their safe state and the
+    reviewed-task flow. The only text input is the task textarea. No fetch/network request is
+    possible from this page (its own CSP forbids connect-src).
   -->
-  <header>
-    <h1>Vyron Code Desktop</h1>
-    <span class="badge">local-only desktop scaffold</span>
-    <span class="badge">read-only architecture</span>
+  <header class="app-header">
+    <h1>Vyron Code</h1>
+    <p id="ai-status" class="ai-status ai-status-starting" role="status" aria-live="polite">
+      <span class="ai-status-dot" aria-hidden="true"></span>
+      <span id="ai-status-text">Yerel AI başlatılıyor</span>
+    </p>
   </header>
 
   <main>
-    <section id="hermes-panel">
-      <!--
-        Hermes authorization panel — VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION.
-        No network request is possible from this page (connect-src 'none' above). This panel
-        only lets the user submit a credential to the main process, where it is held in memory
-        for this app session only — never saved, never displayed again after submission, and
-        never used here to open a Hermes connection, session, or any other capability.
-      -->
-      <h2>Hermes</h2>
-      <p id="hermes-status">Hermes: Not authorized</p>
-      <p class="muted" id="hermes-explanation">Hermes is disabled until you explicitly authorize it for this app session.</p>
-      <p class="muted">Your credential is held only in this running desktop app and is not saved.</p>
-      <div class="hermes-actions">
-        <button id="hermes-authorize-btn" type="button">Authorize Hermes for this session</button>
-        <button id="hermes-clear-btn" type="button" hidden>Clear Hermes authorization</button>
-      </div>
-      <form id="hermes-authorization-form" class="hermes-form" hidden>
-        <label for="hermes-credential-input" class="visually-hidden">Hermes authorization credential</label>
-        <input id="hermes-credential-input" type="password" autocomplete="off" maxlength="4096" />
-        <button id="hermes-submit-btn" type="submit">Authorize</button>
-        <button id="hermes-cancel-btn" type="button">Cancel</button>
-      </form>
-      <p id="hermes-error" class="muted" hidden></p>
-
-      <!--
-        Hermes API Server endpoint setup panel — originally VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION,
-        re-scoped by VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION from the Hermes
-        dashboard's internal socket surface onto the officially documented Hermes API Server.
-        Independent of authorization above — a user may configure this before, after, or
-        without ever authorizing. The endpoint is held only in main-process memory for this app
-        session, never saved, and never used here to open any connection itself (see
-        electron/hermesEndpointSetup.ts and electron/hermesApiServer.ts). The one input field
-        accepts only a full endpoint URL; the main process alone decides whether it is safe
-        (loopback-only, explicit port required) — this page never validates or interprets it
-        beyond a superficial, non-sensitive format check that gates the Configure button.
-      -->
-      <div id="hermes-endpoint-section">
-        <p id="hermes-endpoint-status">No local companion endpoint configured</p>
-        <p class="muted" id="hermes-endpoint-explanation">Configure the local Hermes API Server endpoint only if you operate or trust that local service.</p>
-        <p class="muted">The endpoint is used only for this running desktop app and is not saved.</p>
-        <p class="muted" id="hermes-endpoint-risk-notice">This app cannot verify the identity of the service at the endpoint you configure. Configure only a local companion service you trust.</p>
-        <div class="hermes-actions">
-          <button id="hermes-endpoint-setup-btn" type="button">Configure local Hermes connection</button>
-          <button id="hermes-endpoint-clear-btn" type="button" hidden>Clear local Hermes connection setup</button>
-        </div>
-        <form id="hermes-endpoint-form" class="hermes-form" hidden>
-          <label for="hermes-endpoint-input" class="visually-hidden">Hermes API Server endpoint URL</label>
-          <input id="hermes-endpoint-input" type="text" autocomplete="off" maxlength="2048" placeholder="http://127.0.0.1:&lt;port&gt;" />
-          <label class="hermes-risk-label">
-            <input id="hermes-endpoint-risk-checkbox" type="checkbox" />
-            I trust this local Hermes companion service
-          </label>
-          <button id="hermes-endpoint-submit-btn" type="submit" disabled>Configure</button>
-          <button id="hermes-endpoint-cancel-btn" type="button">Cancel</button>
-        </form>
-        <p id="hermes-endpoint-error" class="muted" hidden></p>
-      </div>
-
-      <!--
-        D-10 (remediated) API Server verification sub-panel — VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION.
-        Visible only once authorized. No endpoint/host/port editing control exists here — the
-        one place an endpoint can ever be entered is the dedicated setup panel above, which only
-        ever submits it to the main process; this section itself never accepts, displays, or
-        edits any endpoint/API-key value, and never shows a raw HTTP status/header/body. No chat
-        transcript, prompt composer, message history, assistant response, session id/metadata,
-        context/file/Git/search attach, tool activity, provider/model selector, subagent,
-        multimodel, terminal, shell, or write/save/commit/push/pull/fetch control exists here or
-        anywhere else on this page — verifying the connection never sends the task draft or any
-        selected context (see the Task section below, whose own review surface only ever shows
-        this verification's safe state, never a way to send anything to it).
-      -->
-      <div id="hermes-api-server-section" hidden>
-        <p id="hermes-api-server-status">No local Hermes API Server endpoint configured.</p>
-        <div class="hermes-actions">
-          <button id="hermes-api-server-verify-btn" type="button">Verify local Hermes connection</button>
-        </div>
-        <p id="hermes-api-server-note" class="muted" hidden></p>
-        <p id="hermes-api-server-error" class="muted" hidden></p>
+    <section id="view-startup" class="view" aria-labelledby="startup-title">
+      <h2 id="startup-title" tabindex="-1">Vyron Code hazırlanıyor</h2>
+      <p id="startup-message" class="lead">Yerel AI bağlantısı kontrol ediliyor…</p>
+      <div class="progress" role="progressbar" aria-label="Yerel AI hazırlanıyor" aria-busy="true">
+        <span class="progress-bar"></span>
       </div>
     </section>
 
-    <section>
-      <h2>Workspace</h2>
-      <p id="workspace-status">No workspace is selected.</p>
-      <div class="workspace-actions">
-        <button id="pick-directory-btn" type="button">Open folder…</button>
-        <button id="clear-workspace-btn" type="button" hidden>Clear workspace</button>
-      </div>
-      <p class="muted">
-        Opening a folder only grants Vyron Code a read-only reference to it. Only the folder's
-        own name is shown here; its full path stays private to the app and is never displayed.
-      </p>
-    </section>
-
-    <section id="workspace-panel" hidden>
-      <h2>Workspace explorer</h2>
-      <nav class="workspace-nav" aria-label="Workspace views">
-        <button id="nav-explorer-btn" type="button" class="nav-tab" aria-pressed="true">Explorer</button>
-        <button id="nav-search-btn" type="button" class="nav-tab" aria-pressed="false">Search</button>
-        <button id="nav-git-btn" type="button" class="nav-tab" aria-pressed="false">Git Summary</button>
-      </nav>
-
-      <div id="view-explorer" class="workspace-view">
-        <div class="explorer-layout">
-          <div class="explorer-tree-pane">
-            <ul id="explorer-tree" aria-label="Workspace files"></ul>
-          </div>
-          <div class="file-viewer-pane">
-            <div id="file-viewer">
-              <p class="muted">Select a file to preview its contents.</p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div id="view-search" class="workspace-view" hidden>
-        <form id="search-form" class="search-form">
-          <label for="search-input" class="visually-hidden">Search text in workspace</label>
-          <input id="search-input" type="text" placeholder="Search text in this workspace…" maxlength="200" autocomplete="off" />
-          <button id="search-btn" type="submit">Search</button>
-        </form>
-        <p id="search-status" class="muted">Enter a query and press Search.</p>
-        <ul id="search-results" aria-label="Search results"></ul>
-      </div>
-
-      <div id="view-git" class="workspace-view" hidden>
-        <div id="git-summary">
-          <p class="muted">Open this tab to load the Git summary.</p>
-        </div>
+    <section id="view-ready" class="view" aria-labelledby="ready-title" hidden>
+      <h2 id="ready-title" tabindex="-1">Ne üzerinde çalışmak istiyorsun?</h2>
+      <label for="task-draft-input" class="visually-hidden">Task metni</label>
+      <textarea
+        id="task-draft-input"
+        maxlength="4000"
+        rows="9"
+        placeholder="Görevini buraya yaz…"
+        autocomplete="off"
+        spellcheck="true"
+        aria-describedby="task-draft-hint"
+      ></textarea>
+      <p id="task-draft-hint" class="muted">Yalnız bu metin gönderilir. Dosya, workspace, Git veya araç bağlamı paylaşılmaz.</p>
+      <p id="task-draft-error" class="error-text" role="alert" hidden></p>
+      <div class="actions">
+        <button id="task-review-btn" class="primary" type="button" disabled>Taslağı incele</button>
       </div>
     </section>
 
-    <section id="task-panel">
-      <!--
-        Task composer — VYRON_CODE_V02_D09_TASK_FIRST_COMPOSER_AND_CONTEXT_REVIEW_AUTHORIZATION.
-        A local-only task drafting and review surface. No control on this page can send,
-        submit, execute, start a session, or transfer context/files/search/Git data anywhere —
-        every "Add to context" button here only copies data already rendered elsewhere on this
-        same page into local renderer memory. Nothing here calls window.vyronDesktop; this
-        section works even if that bridge is unavailable. No fetch/network request is possible
-        from this page in any case (this page's own CSP forbids connect-src entirely).
-      -->
-      <h2>Task</h2>
-      <p class="muted">Nothing is sent automatically.</p>
-      <p class="muted">Review your task and selected context before any future send action becomes available.</p>
-
-      <div id="task-profiles" role="group" aria-label="Task profile"></div>
-
-      <div id="task-draft-composer">
-        <label for="task-draft-input" class="visually-hidden">Local task draft</label>
-        <textarea
-          id="task-draft-input"
-          maxlength="4000"
-          rows="4"
-          placeholder="Describe what you would like explained…"
-          autocomplete="off"
-        ></textarea>
-        <p id="task-draft-status" class="muted">This is a local draft. Nothing is sent.</p>
-        <div class="task-actions">
-          <button id="task-clear-draft-btn" type="button">Clear draft</button>
-          <button id="task-review-btn" type="button" disabled>Review task draft</button>
-        </div>
+    <section id="view-review" class="view" aria-labelledby="review-title" hidden>
+      <h2 id="review-title" tabindex="-1">Göndermeden önce incele</h2>
+      <p class="lead">Hermes'e gönderilecek metin:</p>
+      <div id="task-review-text" class="reviewed-text"></div>
+      <p class="muted">Bu işlem:</p>
+      <ul class="check-list">
+        <li>Yalnız bu metni gönderir</li>
+        <li>Dosya, workspace, Git veya araç bağlamı göndermez</li>
+        <li>Araçlar ve MCP kapalıdır</li>
+        <li>Kalıcı task geçmişi oluşturmaz</li>
+      </ul>
+      <div class="actions">
+        <button id="task-review-back-btn" class="secondary" type="button">Geri dön</button>
+        <button id="task-send-btn" class="primary" type="button">İncelenen task'ı gönder</button>
       </div>
-
-      <div id="task-context-summary">
-        <p id="task-context-count" class="muted">No workspace context selected.</p>
-        <div class="task-actions">
-          <button id="task-add-workspace-name-btn" type="button">Add workspace name</button>
-          <button id="task-add-git-summary-btn" type="button">Add Git summary</button>
-          <button id="task-add-profile-btn" type="button">Add task profile</button>
-          <button id="task-clear-context-btn" type="button" hidden>Clear all context</button>
+      <p id="task-send-status" class="muted" role="status" aria-live="polite" hidden></p>
+      <section id="task-response-section" class="response" aria-labelledby="task-response-title" hidden>
+        <h3 id="task-response-title" tabindex="-1">Yanıt</h3>
+        <div id="task-response-text" class="response-text"></div>
+        <p id="task-response-truncated-note" class="muted" hidden>Yanıt kısaltıldı.</p>
+        <div class="actions">
+          <button id="task-clear-response-btn" class="secondary" type="button">Yanıtı temizle</button>
         </div>
-        <ul id="task-context-list" aria-label="Selected context"></ul>
-      </div>
-
-      <div id="task-review" hidden>
-        <h3>Review task draft</h3>
-        <p class="muted">This is a local preview. Review the exact text below before sending anything.</p>
-        <dl>
-          <dt>Task profile</dt>
-          <dd id="task-review-profile"></dd>
-          <dt>Task draft</dt>
-          <dd id="task-review-draft"></dd>
-        </dl>
-        <p class="muted">Selected context (informational only — never sent)</p>
-        <ul id="task-review-context-list" aria-label="Selected context"></ul>
-        <dl>
-          <dt>What will be sent</dt>
-          <dd id="task-review-send-scope">Only this task text will be sent.</dd>
-          <dt>What will not be sent</dt>
-          <dd id="task-review-no-context">No workspace, file, search result, Git data or selected context is sent.</dd>
-          <dt>Hermes tools &amp; history</dt>
-          <dd id="task-review-tool-history-disclosure">Hermes tools and persistent task history are disabled for this connection.</dd>
-          <dt>Hermes API verification</dt>
-          <dd id="task-review-hermes-verification">Not verified</dd>
-          <dt>Task submission</dt>
-          <dd id="task-review-task-sending">Not available in this build.</dd>
-        </dl>
-        <div class="hermes-actions">
-          <button id="task-send-btn" type="button" disabled>Send reviewed task</button>
-        </div>
-        <p id="task-send-error" class="muted" hidden></p>
-        <div id="task-response-section" hidden>
-          <p class="muted">Hermes response</p>
-          <p id="task-response-text"></p>
-          <p id="task-response-truncated-note" class="muted" hidden>Response was truncated.</p>
-        </div>
-        <div class="task-actions">
-          <button id="task-review-back-btn" type="button">Back to draft</button>
-          <button id="task-review-clear-context-btn" type="button">Clear all context</button>
-          <button id="task-review-close-btn" type="button">Close review</button>
-        </div>
-      </div>
+      </section>
     </section>
 
-    <section>
-      <h2>Capability boundary</h2>
-      <p>
-        This desktop scaffold has no file-write, terminal, Git-write, or multi-model-start
-        capability of any kind. Nothing on this page, or anywhere in this build, can execute a
-        command, write a file, mutate a Git repository, or start a multi-model session.
-      </p>
-      <p>
-        Hermes token/session integration is not configured in this build — no chat or Hermes
-        connection is available yet.
-      </p>
-      <ul id="capabilities" aria-label="Capability status"></ul>
+    <section id="view-unavailable" class="view" aria-labelledby="unavailable-title" hidden>
+      <h2 id="unavailable-title" tabindex="-1">Yerel AI şu anda hazır değil.</h2>
+      <p id="unavailable-category" class="lead"></p>
+      <div class="actions">
+        <button id="ai-retry-btn" class="primary" type="button">Tekrar dene</button>
+        <button id="ai-copy-diagnostics-btn" class="secondary" type="button">Tanılama bilgilerini kopyala</button>
+      </div>
+      <p id="ai-copy-status" class="muted" role="status" aria-live="polite"></p>
     </section>
   </main>
-
-  <footer>
-    <span id="platform-label">Platform:</span> <span id="platform-value">—</span>
-  </footer>
 
   <script src="renderer.js"></script>
 </body>
