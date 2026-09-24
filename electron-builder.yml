@@ -1,0 +1,44 @@
+# Windows packaging for Vyron Code (electron-builder). Nothing here publishes, uploads or signs.
+# The desktop UI is the static local renderer (electron/renderer.html + renderer.css + renderer.js)
+# loaded with BrowserWindow.loadFile, so no Next.js/dev/production server is bundled or started.
+appId: com.vyron.code
+productName: Vyron Code
+copyright: Vyron Code
+directories:
+  output: release
+  buildResources: build
+# Use the Electron runtime already installed by npm (no separate runtime download at package time).
+electronDist: node_modules/electron/dist
+electronVersion: 44.3.0
+publish: null
+npmRebuild: false
+asar: true
+# Ship only the compiled Electron code and the auth proxy script. No node_modules, no Next output,
+# no source, tests, data, docs or secrets.
+files:
+  - package.json
+  - dist-electron/**/*
+  - scripts/hermes-auth-proxy.mjs
+  - "!**/node_modules/**"
+  - "!**/*.map"
+# The auth proxy is run by a separate Node process, so it must be a real file outside the archive.
+asarUnpack:
+  - scripts/hermes-auth-proxy.mjs
+win:
+  target:
+    - target: nsis
+      arch: x64
+    - target: dir
+      arch: x64
+  executableName: VyronCode
+  artifactName: VyronCode-Setup-${version}.${ext}
+  requestedExecutionLevel: asInvoker
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Vyron Code
+  runAfterFinish: false

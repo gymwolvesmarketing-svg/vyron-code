@@ -27,3 +27,12 @@ logs/
 tmp/
 temp/
 scratch/
+
+# Desktop packaging output
+release/
+dist-electron/
+out/
+win-unpacked/
+*.exe
+*.blockmap
+latest.yml

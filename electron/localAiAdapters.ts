@@ -236,9 +236,22 @@ function startGateway(): ChildHandle | null {
   }
 }
 
+/**
+ * In a packaged app the electron code lives inside `app.asar`, but the auth proxy script is run by a
+ * separate Node process (Electron as Node), so it is shipped unpacked next to the archive
+ * (`app.asar.unpacked`, see electron-builder.yml `asarUnpack`). Outside a package the path is unchanged.
+ * Pure string mapping of a fixed, main-process-computed path; nothing here is renderer-controlled.
+ */
+export function toAsarUnpackedPath(filePath: string): string {
+  const marker = "app.asar" + path.sep;
+  const index = filePath.indexOf(marker);
+  if (index < 0) return filePath;
+  return filePath.slice(0, index) + "app.asar.unpacked" + path.sep + filePath.slice(index + marker.length);
+}
+
 function startProxy(apiKey: string): ChildHandle | null {
   try {
-    const script = path.resolve(__dirname, "..", "..", "scripts", "hermes-auth-proxy.mjs");
+    const script = toAsarUnpackedPath(path.resolve(__dirname, "..", "..", "scripts", "hermes-auth-proxy.mjs"));
     if (!existsSync(script)) return null;
     const child = spawn(process.execPath, [script], {
       env: buildProxyEnvironment(apiKey, process.env.SystemRoot) as NodeJS.ProcessEnv,
