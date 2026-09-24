@@ -16,7 +16,8 @@ that is disabled for this connection, verified live (see below).
 
 ## 1. Prerequisites (one-time)
 
-You need three things running/configured:
+You need five things running/configured (items 4 and 5 are what make a task leave nothing
+behind in Hermes):
 
 1. **Tool isolation** — already applied to your Hermes config this session:
    `platform_toolsets.api_server: ["no_mcp"]` in `%LOCALAPPDATA%\hermes\config.yaml`. Live-
@@ -38,6 +39,30 @@ You need three things running/configured:
    node scripts/hermes-auth-proxy.mjs
    ```
    Leave this running in its own terminal window alongside Hermes.
+
+4. **Four local patches to your installed Hermes 0.21.0 source** (files in `hermes-patches/`).
+   These are edits to a third-party app, applied by you, in this order, each with its own backup,
+   apply, verify and rollback block in the patch file's header:
+   - `0001-api-server-task-auth-and-ephemeral-history.patch` — only its
+     `agent._persist_disabled = True` insertion in `gateway/platforms/api_server.py` (the auth hunk
+     is optional; the proxy above already enforces the key).
+   - `0002-api-server-ephemeral-diagnostics.patch` — no error-path request dump, no prompt preview
+     or error text in log lines.
+   - `0004-api-server-ephemeral-final-log-privacy.patch` — no provider error text, traceback,
+     session id, token/usage or response-length data in logs.
+   - `0005-api-server-ephemeral-success-usage.patch` — no session, usage, billing or model rows
+     written to `state.db` on a successful answer.
+   - `0003-...patch` is obsolete (superseded by 0002); do not apply it.
+   Apply from inside `%LOCALAPPDATA%\hermes\hermes-agent` (do not use `git apply --directory`), run
+   the verify block before restarting, then restart `hermes gateway run`. A Hermes update or
+   reinstall removes these patches; repeat the steps afterwards.
+
+5. **A working default model for the API Server.** It reads `model:` from
+   `%LOCALAPPDATA%\hermes\config.yaml`. The OpenCode free-tier default answers with a 403 on this
+   machine. Point `model:` at a provider that works for you (for example the local OmniRoute:
+   `default: auto/best-reasoning`, `provider: custom`, `base_url: http://127.0.0.1:20128/v1`,
+   keeping your existing `key_env` line), back the file up first, and restart the gateway. The model
+   you pick inside Hermes Desktop is a per-session choice and does not change this file.
 
 ## 2. Start Vyron Code Desktop
 
@@ -84,19 +109,31 @@ If you ever need a new key: generate one yourself (`openssl rand -hex 32`), upda
 `scripts/hermes-auth-proxy.mjs` with the new value in `HERMES_API_SERVER_KEY`. Then re-authorize
 in Vyron Code with the new key.
 
-## Known limitation — please read
+## Exact persistence guarantee — please read
 
-Hermes's own installed task-persistence behavior (writing your prompt/response/session data to
-its local database, `state.db`) is **not** disabled by anything in this setup — only the
-tool-access and authentication gaps were addressed. This isn't a theoretical gap: a live test
-sent one marked task through this exact setup and then found that exact marker text durably
-written into `state.db`'s `messages` table afterward, confirming the prompt (and the session it
-belongs to) is saved by Hermes regardless of anything Vyron Code does. See
-`hermes-patches/0001-api-server-task-auth-and-ephemeral-history.patch` if you'd like to apply the
-(unsupported, source-level) fix for that yourself; it wasn't applied automatically, by design —
-every attempt to apply it directly from within the development environment that built this
-feature was refused by that environment's own permission system, so it is left for you to review
-and apply at your own discretion, on your own machine.
+**With patches 0001, 0002, 0004 and 0005 applied and the gateway restarted afterwards**, a task
+sent through this flow (a real Vyron Desktop send, on both a successful answer and a provider
+error) was live-verified to leave nothing in Hermes's durable storage: no prompt, response, API
+session id, session or message row, `session_model_usage` row, token/usage/billing/model/provider
+metadata, response id, response length, request-dump file, provider error text, traceback, or
+`state.db` / WAL write. The check compared every `state.db` table, every database file, the WAL,
+`sessions/`, `cache/` and every log against a baseline taken just before the request. See
+`VYRON_CODE_D11_COMPLETE_DELIVERY_REPORT.md` for the evidence.
+
+**Without those patches this is NOT true.** An unpatched Hermes API Server writes your prompt,
+session and usage to `state.db`, and dumps request content to `sessions/request_dump_*.json` and
+`logs/`. Verify the patches are present (each patch's header has a verify block) after any Hermes
+update or reinstall.
+
+What the guarantee does not cover:
+- **Older data stays.** Rows, request dumps and log lines written by earlier, pre-patch tests are
+  still in your Hermes history. Removing them is your decision.
+- **Console output.** On a provider failure the gateway prints the provider's error text to its
+  console. Hermes does not save it, but do not redirect the gateway console to a file.
+- **Your model provider.** The task reaches whichever provider your default model points at (for
+  example OmniRoute); that application's own storage is outside Hermes and was not inspected.
+- **Requests outside this flow.** Other clients that send session headers or force very long
+  context can reach code paths the patches do not guard.
 
 ## Troubleshooting
 
@@ -106,4 +143,4 @@ and apply at your own discretion, on your own machine.
 | "Not available in this build." on the send row | Endpoint isn't configured yet. |
 | Configure/Send buttons stay disabled | Check you used `http://127.0.0.1:8643` (not `8642`) and a non-empty draft. |
 | "The task could not be completed. Please try again." | The proxy or Hermes gateway isn't running, or your key doesn't match — check both terminal windows. |
-| Answer is provider-related error text like "free tier" or "403" | This is Hermes's own configured model backend responding, not a Vyron Code or proxy issue — check your own Hermes model/provider setup. |
+| Answer is provider-related error text like "free tier" or "403" | This is Hermes's own configured model backend responding, not a Vyron Code or proxy issue — set a working default model in `config.yaml` (prerequisite 5) and restart the gateway. |
