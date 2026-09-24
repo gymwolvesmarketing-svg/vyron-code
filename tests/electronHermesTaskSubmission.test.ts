@@ -1,17 +1,15 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
-import { getTaskSubmissionState, reviewTaskDraft, sendReviewedTask, clearTaskSubmission } from "../electron/hermesTaskSubmission";
+import { getTaskSubmissionState, sendTask, clearTaskSubmission } from "../electron/hermesTaskSubmission";
 import { beginAuthorization, clearAuthorization } from "../electron/hermesAuthorization";
 import { configureEndpoint, clearEndpointConfiguration } from "../electron/hermesEndpointSetup";
 
-// Every value below is an explicit, obviously-fake sample — never a real Hermes API key, never
-// real task/response content, and never read from .env.local/process.env. `global.fetch` is
-// fully mocked below; nothing in this file ever reaches a real socket, DNS resolver, or TCP/
-// HTTP server of any kind. VYRON_CODE_COMPLETE_LOCAL_HERMES_D11_DELIVERY_AUTHORIZATION
-// explicitly requires a controlled fake transport for automated tests — real local runtime
-// acceptance is recorded separately, in VYRON_CODE_D11_COMPLETE_DELIVERY_REPORT.md.
+// Every value below is an explicit, obviously-fake sample - never a real Hermes API key, never real
+// task/response content, and never read from .env or process.env. `global.fetch` is fully mocked;
+// nothing in this file reaches a real socket. Real local runtime acceptance is recorded separately.
 const PLACEHOLDER_CREDENTIAL = "placeholder-test-api-server-key-not-real";
 const FAKE_LOOPBACK_ENDPOINT = "http://127.0.0.1:19130";
-const VALID_DRAFT = "placeholder test task draft — reply with a short acknowledgement";
+const VALID_DRAFT = "placeholder test task draft - reply with a short acknowledgement";
+const SAFE_KEYS = ["state", "text", "truncated"].sort();
 
 const fetchMock = vi.fn();
 
@@ -31,6 +29,10 @@ function chatCompletionBody(content: string): unknown {
   };
 }
 
+function okResponse(content: string) {
+  return { ok: true, status: 200, json: async () => chatCompletionBody(content) };
+}
+
 beforeEach(() => {
   clearAuthorization();
   clearEndpointConfiguration();
@@ -43,113 +45,85 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("getTaskSubmissionState — safe ambient state, gated on authorization and endpoint configuration", () => {
+describe("getTaskSubmissionState - safe ambient state, gated on authorization and endpoint configuration", () => {
   it("reports unauthorized before any authorization exists", () => {
-    expect(getTaskSubmissionState()).toEqual({ state: "unauthorized", draftLength: null, text: null, truncated: false });
+    expect(getTaskSubmissionState()).toEqual({ state: "unauthorized", text: null, truncated: false });
   });
 
   it("reports unavailable once authorized but before any endpoint is configured", async () => {
     await beginAuthorization({ credential: PLACEHOLDER_CREDENTIAL });
-    expect(getTaskSubmissionState()).toEqual({ state: "unavailable", draftLength: null, text: null, truncated: false });
+    expect(getTaskSubmissionState()).toEqual({ state: "unavailable", text: null, truncated: false });
   });
 
-  it("reports idle once both authorized and a valid endpoint is configured, with nothing reviewed yet", async () => {
+  it("reports idle once both authorized and a valid endpoint is configured", async () => {
     await authorizeAndConfigure();
-    expect(getTaskSubmissionState()).toEqual({ state: "idle", draftLength: null, text: null, truncated: false });
+    expect(getTaskSubmissionState()).toEqual({ state: "idle", text: null, truncated: false });
   });
 
-  it("never includes an endpoint, API key, or any field beyond the four safe ones", async () => {
+  it("never includes an endpoint, API key, or any field beyond the three safe ones", async () => {
     await authorizeAndConfigure();
-    const result = getTaskSubmissionState();
-    expect(Object.keys(result).sort()).toEqual(["draftLength", "state", "text", "truncated"].sort());
+    expect(Object.keys(getTaskSubmissionState()).sort()).toEqual(SAFE_KEYS);
   });
 });
 
-describe("reviewTaskDraft — validation and precondition gating", () => {
-  it("fails safely with unauthorized when authorization has not been granted", async () => {
-    expect(await reviewTaskDraft({ draft: VALID_DRAFT })).toEqual({ state: "unauthorized", draftLength: null, text: null, truncated: false });
+describe("sendTask - validation and precondition gating (there is no review step)", () => {
+  it("fails safely with unauthorized when authorization has not been granted, and never sends", async () => {
+    expect(await sendTask({ draft: VALID_DRAFT })).toEqual({ state: "unauthorized", text: null, truncated: false });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("fails safely with unavailable when authorized but no endpoint is configured", async () => {
     await beginAuthorization({ credential: PLACEHOLDER_CREDENTIAL });
-    expect(await reviewTaskDraft({ draft: VALID_DRAFT })).toEqual({ state: "unavailable", draftLength: null, text: null, truncated: false });
-  });
-
-  it("accepts a valid non-empty draft and reports review_ready with the correct draft length", async () => {
-    await authorizeAndConfigure();
-    const result = await reviewTaskDraft({ draft: VALID_DRAFT });
-    expect(result.state).toBe("review_ready");
-    expect(result.draftLength).toBe(VALID_DRAFT.length);
+    expect((await sendTask({ draft: VALID_DRAFT })).state).toBe("unavailable");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("rejects an empty draft — stays idle, no snapshot created", async () => {
+  it("sends a valid draft directly, in one call, with no prior review", async () => {
     await authorizeAndConfigure();
-    const result = await reviewTaskDraft({ draft: "" });
-    expect(result.state).toBe("idle");
+    fetchMock.mockResolvedValueOnce(okResponse("ack"));
+    const result = await sendTask({ draft: VALID_DRAFT });
+    expect(result).toEqual({ state: "completed", text: "ack", truncated: false });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects a whitespace-only draft", async () => {
+  it.each([
+    ["empty", ""],
+    ["whitespace-only", "  \n\t "],
+    ["over the maximum length", "x".repeat(4_001)],
+    ["containing a NUL control character", "hello" + String.fromCharCode(0) + "world"],
+    ["containing a bell control character", "hello" + String.fromCharCode(7)],
+  ])("rejects a draft that is %s without sending", async (_label, draft) => {
     await authorizeAndConfigure();
-    const result = await reviewTaskDraft({ draft: "   \n\t  " });
-    expect(result.state).toBe("idle");
+    expect((await sendTask({ draft })).state).toBe("safe_failure");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("rejects a draft exceeding the maximum length", async () => {
+  it("accepts a draft of exactly the maximum length, and multi-line text with tabs", async () => {
     await authorizeAndConfigure();
-    const result = await reviewTaskDraft({ draft: "a".repeat(4_001) });
-    expect(result.state).toBe("idle");
+    fetchMock.mockResolvedValue(okResponse("ok"));
+    expect((await sendTask({ draft: "x".repeat(4_000) })).state).toBe("completed");
+    expect((await sendTask({ draft: "line one\n\tline two\r\nline three" })).state).toBe("completed");
   });
 
-  it("accepts a draft at exactly the maximum length", async () => {
+  it.each([
+    ["a non-object", "hello"],
+    ["null", null],
+    ["an array", ["hello"]],
+    ["an extra field", { draft: VALID_DRAFT, model: "other" }],
+    ["a wrong field name", { text: VALID_DRAFT }],
+    ["a non-string draft", { draft: 5 }],
+  ])("rejects a malformed request (%s) without sending", async (_label, request) => {
     await authorizeAndConfigure();
-    const result = await reviewTaskDraft({ draft: "a".repeat(4_000) });
-    expect(result.state).toBe("review_ready");
-  });
-
-  it("rejects a draft containing a NUL or other C0 control character", async () => {
-    await authorizeAndConfigure();
-    const result = await reviewTaskDraft({ draft: `task text\u0000with NUL` });
-    expect(result.state).toBe("idle");
-  });
-
-  it("accepts a draft containing newlines and tabs (legitimate multi-line text)", async () => {
-    await authorizeAndConfigure();
-    const result = await reviewTaskDraft({ draft: "line one\nline two\tindented" });
-    expect(result.state).toBe("review_ready");
-  });
-
-  it("rejects a malformed request shape (extra field, wrong type, missing field)", async () => {
-    await authorizeAndConfigure();
-    expect((await reviewTaskDraft({ draft: VALID_DRAFT, extra: "x" })).state).toBe("idle");
-    expect((await reviewTaskDraft({ draft: 123 })).state).toBe("idle");
-    expect((await reviewTaskDraft({})).state).toBe("idle");
-    expect((await reviewTaskDraft("not-an-object")).state).toBe("idle");
-    expect((await reviewTaskDraft(null)).state).toBe("idle");
-  });
-
-  it("re-validates preconditions immediately before committing a snapshot, never trusting a prior read", async () => {
-    await authorizeAndConfigure();
-    clearAuthorization();
-    expect((await reviewTaskDraft({ draft: VALID_DRAFT })).state).toBe("unauthorized");
-  });
-
-  it("a fresh review supersedes and discards any previously reviewed snapshot", async () => {
-    await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: "first draft" });
-    const second = await reviewTaskDraft({ draft: "second draft, different length!!" });
-    expect(second.state).toBe("review_ready");
-    expect(second.draftLength).toBe("second draft, different length!!".length);
+    expect((await sendTask(request)).state).toBe("safe_failure");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
-describe("sendReviewedTask — request contract (fixed POST /v1/chat/completions only)", () => {
+describe("sendTask - request contract (fixed POST /v1/chat/completions only)", () => {
   it("sends exactly one POST to <origin>/v1/chat/completions with the exact minimal contract", async () => {
     await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
-    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => chatCompletionBody("ack") });
-    const result = await sendReviewedTask();
+    fetchMock.mockResolvedValueOnce(okResponse("ack"));
+    const result = await sendTask({ draft: VALID_DRAFT });
     expect(result.state).toBe("completed");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -169,66 +143,46 @@ describe("sendReviewedTask — request contract (fixed POST /v1/chat/completions
   });
 
   it("always sends to the endpoint's own origin, discarding any configured /v1 path", async () => {
-    clearEndpointConfiguration();
     await beginAuthorization({ credential: PLACEHOLDER_CREDENTIAL });
     await configureEndpoint({ endpoint: "http://127.0.0.1:19130/v1" });
-    await reviewTaskDraft({ draft: VALID_DRAFT });
-    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => chatCompletionBody("ack") });
-    await sendReviewedTask();
+    fetchMock.mockResolvedValueOnce(okResponse("ack"));
+    await sendTask({ draft: VALID_DRAFT });
     const [url] = fetchMock.mock.calls[0] as [string];
     expect(url).toBe("http://127.0.0.1:19130/v1/chat/completions");
   });
 
-  it("fails safely with idle/unauthorized/unavailable — never sends — when no draft has been reviewed", async () => {
-    await authorizeAndConfigure();
-    expect(await sendReviewedTask()).toEqual({ state: "idle", draftLength: null, text: null, truncated: false });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   it("extracts choices[0].message.content as the safe response text", async () => {
     await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
-    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => chatCompletionBody("VYRON_D11_TEXT_ONLY_OK") });
-    const result = await sendReviewedTask();
-    expect(result).toEqual({ state: "completed", draftLength: null, text: "VYRON_D11_TEXT_ONLY_OK", truncated: false });
+    fetchMock.mockResolvedValueOnce(okResponse("VYRON_D11_TEXT_ONLY_OK"));
+    expect(await sendTask({ draft: VALID_DRAFT })).toEqual({ state: "completed", text: "VYRON_D11_TEXT_ONLY_OK", truncated: false });
   });
 
   it("truncates a response exceeding the bounded maximum and flags truncated: true", async () => {
     await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
     const longText = "x".repeat(5_000);
-    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => chatCompletionBody(longText) });
-    const result = await sendReviewedTask();
+    fetchMock.mockResolvedValueOnce(okResponse(longText));
+    const result = await sendTask({ draft: VALID_DRAFT });
     expect(result.state).toBe("completed");
     expect(result.truncated).toBe(true);
-    expect(result.text).toHaveLength(4_000);
     expect(result.text).toBe(longText.slice(0, 4_000));
   });
 
   it("maps a non-ok HTTP response to safe_failure, never exposing the raw status", async () => {
     await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
     fetchMock.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
-    expect(await sendReviewedTask()).toEqual({ state: "safe_failure", draftLength: null, text: null, truncated: false });
+    expect(await sendTask({ draft: VALID_DRAFT })).toEqual({ state: "safe_failure", text: null, truncated: false });
   });
 
-  it("maps a rejected fetch (connection refused) to safe_failure", async () => {
+  it("maps a rejected fetch (connection refused) and an abort (timeout) to safe_failure", async () => {
     await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
     fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
-    expect((await sendReviewedTask()).state).toBe("safe_failure");
-  });
-
-  it("maps an abort (timeout) to safe_failure", async () => {
-    await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
+    expect((await sendTask({ draft: VALID_DRAFT })).state).toBe("safe_failure");
     fetchMock.mockRejectedValueOnce(new DOMException("The operation was aborted.", "AbortError"));
-    expect((await sendReviewedTask()).state).toBe("safe_failure");
+    expect((await sendTask({ draft: VALID_DRAFT })).state).toBe("safe_failure");
   });
 
-  it("maps a tool-call-shaped or non-text response to safe_failure — never renders/executes structured content", async () => {
+  it("maps a tool-call-shaped or non-text response to safe_failure - never renders or executes structured content", async () => {
     await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
     fetchMock.mockResolvedValueOnce({
       ok: true,
       status: 200,
@@ -236,21 +190,27 @@ describe("sendReviewedTask — request contract (fixed POST /v1/chat/completions
         choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: "1", function: { name: "terminal", arguments: "{}" } }] }, finish_reason: "tool_calls" }],
       }),
     });
-    expect((await sendReviewedTask()).state).toBe("safe_failure");
+    expect((await sendTask({ draft: VALID_DRAFT })).state).toBe("safe_failure");
   });
 
-  it("maps a missing/malformed choices array to safe_failure", async () => {
+  it("maps a missing or malformed choices array to safe_failure", async () => {
     await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
     fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) });
-    expect((await sendReviewedTask()).state).toBe("safe_failure");
+    expect((await sendTask({ draft: VALID_DRAFT })).state).toBe("safe_failure");
+  });
+
+  it("allows another task to be sent after a failure (the next send is a fresh attempt)", async () => {
+    await authorizeAndConfigure();
+    fetchMock.mockRejectedValueOnce(new Error("boom"));
+    expect((await sendTask({ draft: VALID_DRAFT })).state).toBe("safe_failure");
+    fetchMock.mockResolvedValueOnce(okResponse("second"));
+    expect(await sendTask({ draft: VALID_DRAFT })).toEqual({ state: "completed", text: "second", truncated: false });
   });
 });
 
-describe("sendReviewedTask — lifecycle and bounds", () => {
-  it("bounds to one send in flight — a duplicate call while one is pending is reduced to sending, not a second request", async () => {
+describe("sendTask - lifecycle and bounds", () => {
+  it("bounds to one send in flight - a duplicate call while one is pending is reduced to sending, not a second request", async () => {
     await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
     let resolveFirst: (value: unknown) => void = () => {};
     fetchMock.mockImplementationOnce(
       () =>
@@ -258,65 +218,72 @@ describe("sendReviewedTask — lifecycle and bounds", () => {
           resolveFirst = resolve;
         }),
     );
-    const first = sendReviewedTask();
-    const second = await sendReviewedTask();
+    const first = sendTask({ draft: VALID_DRAFT });
+    const second = await sendTask({ draft: VALID_DRAFT });
     expect(second.state).toBe("sending");
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    resolveFirst({ ok: true, status: 200, json: async () => chatCompletionBody("ack") });
+    resolveFirst(okResponse("ack"));
     expect((await first).state).toBe("completed");
+  });
+
+  it("reports sending through getTaskSubmissionState while a request is pending", async () => {
+    await authorizeAndConfigure();
+    let resolveFirst: (value: unknown) => void = () => {};
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirst = resolve;
+        }),
+    );
+    const pending = sendTask({ draft: VALID_DRAFT });
+    expect(getTaskSubmissionState().state).toBe("sending");
+    resolveFirst(okResponse("ack"));
+    await pending;
+    expect(getTaskSubmissionState().state).toBe("completed");
   });
 });
 
 describe("clearTaskSubmission", () => {
-  it("is idempotent — safe to call with no prior review or send", () => {
+  it("is idempotent - safe to call with nothing sent", () => {
     expect(() => clearTaskSubmission()).not.toThrow();
-    expect(clearTaskSubmission()).toEqual({ state: "unauthorized", draftLength: null, text: null, truncated: false });
-  });
-
-  it("resets a review_ready state back to idle (while still authorized/configured)", async () => {
-    await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
-    expect(getTaskSubmissionState().state).toBe("review_ready");
-    clearTaskSubmission();
-    expect(getTaskSubmissionState()).toEqual({ state: "idle", draftLength: null, text: null, truncated: false });
+    expect(clearTaskSubmission()).toEqual({ state: "unauthorized", text: null, truncated: false });
   });
 
   it("resets a completed state back to idle, discarding the completed response text", async () => {
     await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
-    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => chatCompletionBody("ack") });
-    await sendReviewedTask();
+    fetchMock.mockResolvedValueOnce(okResponse("ack"));
+    await sendTask({ draft: VALID_DRAFT });
     expect(getTaskSubmissionState().state).toBe("completed");
     clearTaskSubmission();
-    expect(getTaskSubmissionState()).toEqual({ state: "idle", draftLength: null, text: null, truncated: false });
+    expect(getTaskSubmissionState()).toEqual({ state: "idle", text: null, truncated: false });
   });
 
   it("sends no network request of its own", async () => {
     await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
     clearTaskSubmission();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
-describe("cross-module cleanup — task submission state clears on every revoke path (T-17-style)", () => {
-  it("clearing authorization makes a review_ready/completed state unreachable via getTaskSubmissionState (self-heal)", async () => {
+describe("cross-module cleanup - task submission state clears on every revoke path (T-17-style)", () => {
+  it("clearing authorization makes a completed state unreachable (self-heal)", async () => {
     await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
+    fetchMock.mockResolvedValueOnce(okResponse("ack"));
+    await sendTask({ draft: VALID_DRAFT });
     clearAuthorization();
-    expect(getTaskSubmissionState()).toEqual({ state: "unauthorized", draftLength: null, text: null, truncated: false });
+    expect(getTaskSubmissionState()).toEqual({ state: "unauthorized", text: null, truncated: false });
   });
 
-  it("clearing the endpoint configuration makes a review_ready state unreachable via getTaskSubmissionState (self-heal)", async () => {
+  it("clearing the endpoint configuration makes a completed state unreachable (self-heal)", async () => {
     await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
+    fetchMock.mockResolvedValueOnce(okResponse("ack"));
+    await sendTask({ draft: VALID_DRAFT });
     clearEndpointConfiguration();
-    expect(getTaskSubmissionState()).toEqual({ state: "unavailable", draftLength: null, text: null, truncated: false });
+    expect(getTaskSubmissionState()).toEqual({ state: "unavailable", text: null, truncated: false });
   });
 
-  it("a stale sendReviewedTask() completion cannot restore completed after an intervening clearTaskSubmission()", async () => {
+  it("a stale send completion cannot restore completed after an intervening clearTaskSubmission()", async () => {
     await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
     let resolveFetch: (value: unknown) => void = () => {};
     fetchMock.mockImplementationOnce(
       () =>
@@ -324,17 +291,16 @@ describe("cross-module cleanup — task submission state clears on every revoke 
           resolveFetch = resolve;
         }),
     );
-    const pending = sendReviewedTask();
+    const pending = sendTask({ draft: VALID_DRAFT });
     clearTaskSubmission();
-    resolveFetch({ ok: true, status: 200, json: async () => chatCompletionBody("ack") });
+    resolveFetch(okResponse("ack"));
     const result = await pending;
     expect(result.state).not.toBe("completed");
     expect(getTaskSubmissionState().state).not.toBe("completed");
   });
 
-  it("a stale sendReviewedTask() completion cannot restore completed after an intervening clearAuthorization()", async () => {
+  it("a stale send completion cannot restore completed after an intervening clearAuthorization()", async () => {
     await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
     let resolveFetch: (value: unknown) => void = () => {};
     fetchMock.mockImplementationOnce(
       () =>
@@ -342,60 +308,71 @@ describe("cross-module cleanup — task submission state clears on every revoke 
           resolveFetch = resolve;
         }),
     );
-    const pending = sendReviewedTask();
+    const pending = sendTask({ draft: VALID_DRAFT });
     clearAuthorization();
-    resolveFetch({ ok: true, status: 200, json: async () => chatCompletionBody("ack") });
-    const result = await pending;
-    expect(result.state).not.toBe("completed");
+    resolveFetch(okResponse("ack"));
+    expect((await pending).state).not.toBe("completed");
+  });
+
+  it("a clear during a pending send does not block the next send from starting", async () => {
+    await authorizeAndConfigure();
+    let resolveFetch: (value: unknown) => void = () => {};
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    const stale = sendTask({ draft: VALID_DRAFT });
+    clearTaskSubmission();
+    fetchMock.mockResolvedValueOnce(okResponse("fresh"));
+    const fresh = await sendTask({ draft: VALID_DRAFT });
+    expect(fresh).toEqual({ state: "completed", text: "fresh", truncated: false });
+    resolveFetch(okResponse("late"));
+    await stale;
+    expect(getTaskSubmissionState()).toEqual({ state: "completed", text: "fresh", truncated: false });
   });
 });
 
 describe("security regressions", () => {
-  it("getTaskSubmissionState/sendReviewedTask/clearTaskSubmission take no parameters; reviewTaskDraft takes exactly one", () => {
+  it("getTaskSubmissionState/clearTaskSubmission take no parameters; sendTask takes exactly one", () => {
     expect(getTaskSubmissionState.length).toBe(0);
-    expect(sendReviewedTask.length).toBe(0);
     expect(clearTaskSubmission.length).toBe(0);
-    expect(reviewTaskDraft.length).toBe(1);
+    expect(sendTask.length).toBe(1);
   });
 
-  it("no result object from any exported function ever carries a field beyond the four safe ones", async () => {
+  it("no result object from any exported function ever carries a field beyond the three safe ones", async () => {
     await authorizeAndConfigure();
-    const reviewed = await reviewTaskDraft({ draft: VALID_DRAFT });
-    expect(Object.keys(reviewed).sort()).toEqual(["draftLength", "state", "text", "truncated"].sort());
-    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => chatCompletionBody("ack") });
-    const sent = await sendReviewedTask();
-    expect(Object.keys(sent).sort()).toEqual(["draftLength", "state", "text", "truncated"].sort());
-    const cleared = clearTaskSubmission();
-    expect(Object.keys(cleared).sort()).toEqual(["draftLength", "state", "text", "truncated"].sort());
+    fetchMock.mockResolvedValueOnce(okResponse("ack"));
+    expect(Object.keys(await sendTask({ draft: VALID_DRAFT })).sort()).toEqual(SAFE_KEYS);
+    expect(Object.keys(clearTaskSubmission()).sort()).toEqual(SAFE_KEYS);
+    expect(Object.keys(await sendTask({ draft: "" })).sort()).toEqual(SAFE_KEYS);
   });
 
   it("never sends the credential in the URL, body, or anywhere but the Authorization header", async () => {
     await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
-    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => chatCompletionBody("ack") });
-    await sendReviewedTask();
+    fetchMock.mockResolvedValueOnce(okResponse("ack"));
+    await sendTask({ draft: VALID_DRAFT });
     const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).not.toContain(PLACEHOLDER_CREDENTIAL);
     expect(options.body as string).not.toContain(PLACEHOLDER_CREDENTIAL);
-    const headers = options.headers as Record<string, string>;
-    expect(headers["Authorization"]).toContain(PLACEHOLDER_CREDENTIAL);
+    expect((options.headers as Record<string, string>)["Authorization"]).toContain(PLACEHOLDER_CREDENTIAL);
   });
 
   it("never sends a query string, cookie, or redirect-follow option", async () => {
     await authorizeAndConfigure();
-    await reviewTaskDraft({ draft: VALID_DRAFT });
-    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => chatCompletionBody("ack") });
-    await sendReviewedTask();
+    fetchMock.mockResolvedValueOnce(okResponse("ack"));
+    await sendTask({ draft: VALID_DRAFT });
     const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).not.toContain("?");
     expect(options).not.toHaveProperty("credentials");
     expect(options.redirect).toBe("error");
   });
 
-  it("never echoes the draft text back in any result beyond draftLength (a number, never the text itself pre-send)", async () => {
+  it("never echoes the task text back through a failure result", async () => {
     await authorizeAndConfigure();
-    const result = await reviewTaskDraft({ draft: VALID_DRAFT });
-    expect(result.text).toBeNull();
+    fetchMock.mockRejectedValueOnce(new Error("boom " + VALID_DRAFT));
+    const result = await sendTask({ draft: VALID_DRAFT });
     expect(JSON.stringify(result)).not.toContain(VALID_DRAFT);
   });
 });

@@ -23,9 +23,9 @@
  *
  * Defines app lifecycle wiring, applies the hardened BrowserWindow policy from
  * ./security-policy, loads only the local renderer asset, enforces deny-by-default
- * navigation/new-window behavior, and registers exactly seven IPC handlers below: three for the
+ * navigation/new-window behavior, and registers exactly six IPC handlers below: three for the
  * one-click local AI lifecycle (state / retry / diagnostics copy, delegating to
- * electron/localAiAdapters.ts) and four for the reviewed-task flow (electron/hermesTaskSubmission.ts).
+ * electron/localAiAdapters.ts) and three for the direct-task flow (electron/hermesTaskSubmission.ts).
  * There is no terminal/shell handler, no environment/token/endpoint handler, and no workspace
  * handler anywhere in this file.
  *
@@ -41,7 +41,7 @@ import { app, BrowserWindow, ipcMain, powerMonitor } from "electron";
 import path from "node:path";
 import { HARDENED_WEB_PREFERENCES, isNavigationAllowed, isNewWindowAllowed } from "./security-policy";
 import { HERMES_IPC_CHANNELS, LOCAL_AI_IPC_CHANNELS } from "./shared-ipc-contract";
-import { getTaskSubmissionState, reviewTaskDraft, sendReviewedTask, clearTaskSubmission } from "./hermesTaskSubmission";
+import { getTaskSubmissionState, sendTask, clearTaskSubmission } from "./hermesTaskSubmission";
 import { createProductionLocalAiManager } from "./localAiAdapters";
 
 /**
@@ -158,18 +158,17 @@ function registerLocalAiIpcHandlers(): void {
 }
 
 /**
- * Registers the four reviewed-task IPC handlers (D-11). Each is a thin delegate to
- * electron/hermesTaskSubmission.ts, which alone owns the reviewed draft and every validation rule.
- * getTaskSubmissionState/sendReviewedTask/clearTaskSubmission take no arguments at all;
- * reviewTaskDraft's raw request is passed straight through unexamined, exactly as that module's own
+ * Registers the three direct-task IPC handlers. Each is a thin delegate to
+ * electron/hermesTaskSubmission.ts, which alone owns every validation rule.
+ * getTaskSubmissionState/clearTaskSubmission take no arguments at all;
+ * sendTask's raw request is passed straight through unexamined, exactly as that module's own
  * validation expects. There is no authorization, endpoint or verification handler: those are set
  * only by the main-process lifecycle manager after every readiness check passes, and the renderer
  * can neither set nor read them.
  */
 function registerHermesIpcHandlers(): void {
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_TASK_SUBMISSION_STATE, () => getTaskSubmissionState());
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_REVIEW_TASK_DRAFT, (_event, request: unknown) => reviewTaskDraft(request));
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_SEND_REVIEWED_TASK, () => sendReviewedTask());
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_SEND_TASK, (_event, request: unknown) => sendTask(request));
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_TASK_SUBMISSION, () => clearTaskSubmission());
 }
 

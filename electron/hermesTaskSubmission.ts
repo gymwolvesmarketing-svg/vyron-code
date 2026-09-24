@@ -1,66 +1,26 @@
 /**
- * Main-process-only, explicit-review-gated Hermes task submission service —
- * VYRON_CODE_COMPLETE_LOCAL_HERMES_D11_DELIVERY_AUTHORIZATION.
+ * Main-process-only Hermes task submission service (direct send).
  *
- * ════════════════════════════════════════════════════════════════════════════════════
- * WHAT THIS MODULE DOES
- * ════════════════════════════════════════════════════════════════════════════════════
- * Exactly one capability, in three explicit steps: (1) accept the user's own plain-text task
- * draft via `reviewTaskDraft()`, validating it and holding an immutable snapshot in
- * main-process memory only; (2) on `sendReviewedTask()`, send that exact snapshot — nothing
- * else — as one bounded, non-streaming `POST /v1/chat/completions` request; (3) reduce the
- * response to a single bounded, plain-text field. No workspace, file, search, Git, task
- * profile, or "selected context" data is ever attached — those exist only in the renderer's
- * own local D-09 review surface for the user's own information, never transmitted.
+ * Exactly one capability: accept the user's own plain-text task via `sendTask({ draft })`,
+ * validate it independently of the renderer, send exactly that text as one bounded, non-streaming
+ * `POST /v1/chat/completions` request, and reduce the response to a single bounded plain-text
+ * field. There is no review, snapshot or approval step: the user writes a task and sends it. No
+ * workspace, file, search, Git, skill, connector or attachment data is ever attached; the request
+ * body is `{ messages: [{ role: "user", content }], stream: false }` and nothing else.
  *
- * ════════════════════════════════════════════════════════════════════════════════════
- * WHY THIS TARGETS /v1/chat/completions, AND WHAT MAKES IT SAFE TODAY
- * ════════════════════════════════════════════════════════════════════════════════════
- * Per VYRON_CODE_V02_D11_EXPLICIT_TASK_SUBMISSION_CONTRACT_DISCOVERY_REPORT.md and
- * VYRON_CODE_V02_D11_HERMES_API_SERVER_CAPABILITY_ISOLATION_DISCOVERY_REPORT.md,
- * `/v1/chat/completions` is the smallest of the three OpenAI-shaped task routes the installed
- * Hermes Agent API Server exposes, and by default runs the full agent (tools, memory,
- * delegation, MCP) with no per-request way for a client to disable any of that. Two local,
- * source-verified mitigations make this module's actual request safe against the real,
- * locally-configured Hermes install:
- *
- *   1. Tool isolation — PROVEN, applied, and live-verified this task: this machine's
- *      `%LOCALAPPDATA%\hermes\config.yaml` now sets `platform_toolsets.api_server: ["no_mcp"]`,
- *      confirmed live via `GET /v1/toolsets` to report zero enabled toolsets for this platform
- *      (terminal, file, code_execution, browser, web, delegation, memory, skills, and every
- *      default MCP server all report `"enabled": false`). Hermes's own two-layer enforcement
- *      (schema exposure AND dispatch-time `validate_tool_calls` rejection of any tool name not
- *      in the resolved set) makes this a real boundary, not just an advertised one.
- *   2. Authentication — the installed Hermes Agent version enforces no `API_SERVER_KEY` check
- *      on `/v1/chat/completions` itself (confirmed against both the local install and the
- *      current official upstream source). Patching Hermes's own installed source to add that
- *      check was attempted and was blocked by this development environment's own permission
- *      system (see hermes-patches/0001-api-server-task-auth-and-ephemeral-history.patch for the
- *      reviewable, unapplied patch). This module instead targets `scripts/hermes-auth-proxy.mjs`
- *      — a small local reverse proxy that enforces the missing check itself, using the same
- *      `API_SERVER_KEY` value — see that script's own header. The endpoint the user configures
- *      via D-08E's existing setup panel should be the proxy's port, not Hermes's own port.
- *
- * What this module still cannot prove or guarantee, honestly stated: the installed Hermes
- * Agent's task/response persistence (a `session_db` handle + durable SQLite write) is NOT
- * disabled by anything reachable from this module's own request — that gap requires a source
- * patch to Hermes itself (also in the same unapplied patch file above) that this environment's
- * permission system likewise would not allow this module to apply on the user's behalf. This is
- * disclosed here, in the required report, and in VYRON_CODE_D11_LOCAL_HERMES_SETUP_AND_UAT.md —
- * never silently assumed solved.
- *
- * ════════════════════════════════════════════════════════════════════════════════════
- * SECURITY BOUNDARY — IDENTICAL DISCIPLINE TO electron/hermesApiServer.ts
- * ════════════════════════════════════════════════════════════════════════════════════
- * Credential and endpoint are read from electron/hermesAuthorization.ts and
- * electron/hermesEndpointSetup.ts/hermesEndpoint.ts exactly as hermesApiServer.ts already does
- * — never a second, parallel source. The reviewed draft snapshot is immutable, main-process-
- * memory-only, cleared on every clear/send/revoke path, and never persisted. Exactly one send
- * may be in flight; a monotonic generation counter (the same T-17-style guard used by every
- * other Hermes module in this codebase) discards any stale completion after a clear/revoke/
- * newer-send. The renderer never receives a raw HTTP status, header, body, endpoint, or
- * credential — only the fixed `HermesTaskSubmissionState` enum plus the one bounded,
- * plain-text response field.
+ * Safety properties this module still guarantees:
+ *   - Credential and endpoint come only from electron/hermesAuthorization.ts and
+ *     electron/hermesEndpointSetup.ts/hermesEndpoint.ts (set by the local AI lifecycle manager,
+ *     never by the renderer). The credential is only ever sent in the Authorization header.
+ *   - Tool isolation (`platform_toolsets.api_server: ["no_mcp"]`, verified live at startup) and the
+ *     auth proxy (scripts/hermes-auth-proxy.mjs) remain the boundary that makes this request safe.
+ *   - Nothing here persists a task or response. The text lives in main-process memory only while a
+ *     send is in flight or its answer is held for the renderer, and is cleared on every
+ *     clear/revoke/quit path.
+ *   - Exactly one send may be in flight; a monotonic generation counter discards any stale
+ *     completion after a clear/revoke/newer send.
+ *   - The renderer only ever receives the fixed `HermesTaskSubmissionState` enum plus the one
+ *     bounded, plain-text response field, never a raw status, header, body, endpoint or credential.
  */
 import type { HermesTaskSubmissionState } from "./shared-ipc-contract";
 import { getAuthorizationState, getCurrentCredential } from "./hermesAuthorization";
@@ -83,20 +43,16 @@ const SEND_TIMEOUT_MS = 60_000;
  * server itself reports, which this module never forwards. */
 const MAX_RESPONSE_CHARS = 4_000;
 
-type AmbientState = "idle" | "review_ready" | "sending" | "completed" | "unavailable" | "unauthorized" | "safe_failure" | "cancelled";
+type AmbientState = "idle" | "sending" | "completed" | "unavailable" | "unauthorized" | "safe_failure" | "cancelled";
 
 let ambientState: AmbientState = "idle";
-/** The immutable reviewed snapshot — set only by `reviewTaskDraft()`, read only by
- * `sendReviewedTask()`, cleared by every clear/revoke/newer-review path. Never the live
- * renderer textarea value at send time — exactly this snapshot, unconditionally. */
-let reviewedDraft: string | null = null;
 let lastCompletedText: string | null = null;
 let lastCompletedTruncated = false;
 let sendInFlight = false;
 
 /** Monotonic generation counter — identical T-17-style guard to every other Hermes module in
  * this codebase. Bumped by every reset; checked after the one `await fetch(...)` resolves so a
- * send superseded by a clear/revoke/newer review can never commit a now-stale "completed"
+ * send superseded by a clear/revoke/newer send can never commit a now-stale "completed"
  * state. */
 let generation = 0;
 
@@ -120,7 +76,6 @@ function currentPreconditionState(): "unauthorized" | "unavailable" | null {
 function resetToIdle(): void {
   generation++;
   sendInFlight = false;
-  reviewedDraft = null;
   lastCompletedText = null;
   lastCompletedTruncated = false;
   ambientState = "idle";
@@ -129,7 +84,6 @@ function resetToIdle(): void {
 function safeState(state: AmbientState): HermesTaskSubmissionState {
   return {
     state,
-    draftLength: state === "review_ready" && reviewedDraft !== null ? reviewedDraft.length : null,
     text: state === "completed" ? lastCompletedText : null,
     truncated: state === "completed" ? lastCompletedTruncated : false,
   };
@@ -138,7 +92,7 @@ function safeState(state: AmbientState): HermesTaskSubmissionState {
 /**
  * The only safe, renderer-facing task-submission state. Self-heals: if authorization or
  * endpoint configuration is no longer in place while this module was tracking anything beyond
- * `idle`, this call resets to `idle` first — a stale reviewed draft or completed answer from a
+ * `idle`, this call resets to `idle` first — a stale completed answer from a
  * now-revoked authorization/endpoint can no longer be trusted or shown.
  */
 export function getTaskSubmissionState(): HermesTaskSubmissionState {
@@ -151,55 +105,25 @@ export function getTaskSubmissionState(): HermesTaskSubmissionState {
 }
 
 /**
- * The one narrow, schema-validated crossing point for the user's own task text. Validates the
- * request shape and draft bounds independently of anything the renderer already checked, then
- * — after an explicit yield point, mirroring every other Hermes module's own T-17 race guard —
- * commits the immutable snapshot only if nothing has reset state in the meantime. Never echoes
- * the draft back; the renderer already has its own copy on screen.
+ * The single, user-initiated send action and the one narrow, schema-validated crossing point for
+ * the user's own task text. Validates the request shape (exactly one string field, `draft`) and
+ * draft bounds, re-checks authorization and endpoint, then sends exactly one non-streaming
+ * `POST <origin>/v1/chat/completions` (`messages: [{role:"user", content}]` only, no `model`,
+ * no tools, `stream: false`, `Authorization: Bearer <credential>`). A call while another send is in
+ * flight is reduced to `sending` and never starts a second request.
  */
-export async function reviewTaskDraft(request: unknown): Promise<HermesTaskSubmissionState> {
+export async function sendTask(request: unknown): Promise<HermesTaskSubmissionState> {
   const precondition = currentPreconditionState();
   if (precondition) {
     if (ambientState !== "idle") resetToIdle();
     return safeState(precondition);
   }
-  if (typeof request !== "object" || request === null || Array.isArray(request)) return safeState(ambientState);
-  const keys = Object.keys(request as Record<string, unknown>);
-  if (keys.length !== 1 || keys[0] !== "draft") return safeState(ambientState);
-  const draft = (request as Record<string, unknown>).draft;
-  if (typeof draft !== "string" || !validateDraft(draft)) return safeState(ambientState);
-
-  const generationAtStart = generation;
-  await Promise.resolve();
-  if (generation !== generationAtStart) return safeState(ambientState);
-
-  generation++;
-  sendInFlight = false;
-  reviewedDraft = draft;
-  lastCompletedText = null;
-  lastCompletedTruncated = false;
-  ambientState = "review_ready";
-  return safeState("review_ready");
-}
-
-/**
- * The single explicit, user-initiated send action. Re-validates every precondition and the
- * reviewed snapshot immediately before any network use; a duplicate call while one is already
- * in flight is safely reduced to `sending` rather than starting a second request. Sends exactly
- * one non-streaming `POST <origin>/v1/chat/completions` — `messages: [{role:"user", content}]`
- * only, no `model` field (the server's own configured default applies), `stream: false`,
- * `Authorization: Bearer <credential>` (see this file's own header for why the credential is
- * still attached even though the installed Hermes version itself does not enforce it on this
- * route — the local hermes-auth-proxy.mjs proxy does).
- */
-export async function sendReviewedTask(): Promise<HermesTaskSubmissionState> {
-  const precondition = currentPreconditionState();
-  if (precondition) {
-    if (ambientState !== "idle") resetToIdle();
-    return safeState(precondition);
-  }
-  if (reviewedDraft === null) return safeState(ambientState === "idle" ? "idle" : ambientState);
   if (sendInFlight) return safeState("sending");
+  if (typeof request !== "object" || request === null || Array.isArray(request)) return safeState("safe_failure");
+  const keys = Object.keys(request as Record<string, unknown>);
+  if (keys.length !== 1 || keys[0] !== "draft") return safeState("safe_failure");
+  const draft = (request as Record<string, unknown>).draft;
+  if (typeof draft !== "string" || !validateDraft(draft)) return safeState("safe_failure");
 
   const endpoint = getConfiguredEndpoint() ?? resolveTrustedEndpoint();
   if (endpoint.kind !== "trusted") return safeState("unavailable");
@@ -207,9 +131,10 @@ export async function sendReviewedTask(): Promise<HermesTaskSubmissionState> {
   if (credential === null) return safeState("unauthorized");
 
   sendInFlight = true;
+  lastCompletedText = null;
+  lastCompletedTruncated = false;
   const generationAtStart = ++generation;
   ambientState = "sending";
-  const draftAtSend = reviewedDraft;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
@@ -223,19 +148,16 @@ export async function sendReviewedTask(): Promise<HermesTaskSubmissionState> {
         Authorization: `Bearer ${credential}`,
       },
       body: JSON.stringify({
-        messages: [{ role: "user", content: draftAtSend }],
+        messages: [{ role: "user", content: draft }],
         stream: false,
       }),
       signal: controller.signal,
     });
     clearTimeout(timer);
-    sendInFlight = false;
     if (generation !== generationAtStart) return getTaskSubmissionState();
-    // Defensive re-check, not merely the generation counter above: authorization/endpoint may
-    // have been revoked directly (e.g. via electron/main.ts's own clearHermesAuthorization()
-    // composition) without ever calling back into this module's own clear/generation-bumping
-    // path. A completed answer must never be committed or returned once either precondition is
-    // no longer met, even if this module's own generation counter never changed.
+    sendInFlight = false;
+    // Defensive re-check: authorization/endpoint may have been revoked without this module's own
+    // clear path running. A completed answer is never committed once either precondition is gone.
     const preconditionAfterFetch = currentPreconditionState();
     if (preconditionAfterFetch) {
       resetToIdle();
@@ -246,6 +168,7 @@ export async function sendReviewedTask(): Promise<HermesTaskSubmissionState> {
       return safeState("safe_failure");
     }
     const body: unknown = await response.json();
+    if (generation !== generationAtStart) return getTaskSubmissionState();
     const text = extractSafeResponseText(body);
     if (text === null) {
       ambientState = "safe_failure";
@@ -258,8 +181,8 @@ export async function sendReviewedTask(): Promise<HermesTaskSubmissionState> {
     return safeState("completed");
   } catch {
     clearTimeout(timer);
-    sendInFlight = false;
     if (generation !== generationAtStart) return getTaskSubmissionState();
+    sendInFlight = false;
     const preconditionAfterFetch = currentPreconditionState();
     if (preconditionAfterFetch) {
       resetToIdle();
@@ -294,8 +217,8 @@ function extractSafeResponseText(body: unknown): string | null {
  * Explicit, immediate, idempotent cleanup — called from electron/main.ts on clear-
  * authorization, clear-endpoint-configuration, and app before-quit, mirroring every other
  * Hermes module's own established composition pattern. Also the renderer's own explicit
- * "draft changed since review" invalidation path. Safe to call whether or not anything is
- * currently reviewed, sending, or completed.
+ * "clear answer" path. Safe to call whether or not anything is
+ * currently sending or completed.
  */
 export function clearTaskSubmission(): HermesTaskSubmissionState {
   resetToIdle();

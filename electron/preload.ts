@@ -6,8 +6,8 @@
  *
  * Exposes exactly two namespaces on `window.vyronDesktop`, via `contextBridge` only:
  * - `localAi`: three parameter-free methods (state, explicit retry, sanitized diagnostics copy);
- * - `hermes`: the four reviewed-task methods (D-11); only `reviewTaskDraft` takes an argument, a
- *   single `{ draft }` object.
+ * - `hermes`: the three direct-task methods; only `sendTask` takes an argument, a single
+ *   `{ draft }` object, and it sends immediately (no review step).
  * `ipcRenderer` itself is never exposed on `window` - only these fixed, single-hardcoded-channel
  * wrapper closures are. There is no generic invoke/send/on surface, no EventEmitter, and no
  * command, path, environment, URL, host, port, credential or endpoint parameter anywhere.
@@ -43,12 +43,11 @@ type HermesTaskSubmissionAmbientState =
 
 interface HermesTaskSubmissionState {
   readonly state: HermesTaskSubmissionAmbientState;
-  readonly draftLength: number | null;
   readonly text: string | null;
   readonly truncated: boolean;
 }
 
-interface HermesTaskDraftReviewRequest {
+interface HermesTaskRequest {
   readonly draft: string;
 }
 
@@ -60,8 +59,7 @@ interface DesktopLocalAiApi {
 
 interface DesktopHermesApi {
   getTaskSubmissionState(): Promise<HermesTaskSubmissionState>;
-  reviewTaskDraft(request: HermesTaskDraftReviewRequest): Promise<HermesTaskSubmissionState>;
-  sendReviewedTask(): Promise<HermesTaskSubmissionState>;
+  sendTask(request: HermesTaskRequest): Promise<HermesTaskSubmissionState>;
   clearTaskSubmission(): Promise<HermesTaskSubmissionState>;
 }
 
@@ -74,8 +72,7 @@ const LOCAL_AI_GET_STATE_CHANNEL = "localAi:getState";
 const LOCAL_AI_RETRY_CHANNEL = "localAi:retry";
 const LOCAL_AI_COPY_DIAGNOSTICS_CHANNEL = "localAi:copyDiagnostics";
 const HERMES_GET_TASK_SUBMISSION_STATE_CHANNEL = "hermes:getTaskSubmissionState";
-const HERMES_REVIEW_TASK_DRAFT_CHANNEL = "hermes:reviewTaskDraft";
-const HERMES_SEND_REVIEWED_TASK_CHANNEL = "hermes:sendReviewedTask";
+const HERMES_SEND_TASK_CHANNEL = "hermes:sendTask";
 const HERMES_CLEAR_TASK_SUBMISSION_CHANNEL = "hermes:clearTaskSubmission";
 
 const vyronDesktop: DesktopApi = {
@@ -86,8 +83,7 @@ const vyronDesktop: DesktopApi = {
   },
   hermes: {
     getTaskSubmissionState: () => ipcRenderer.invoke(HERMES_GET_TASK_SUBMISSION_STATE_CHANNEL),
-    reviewTaskDraft: (request) => ipcRenderer.invoke(HERMES_REVIEW_TASK_DRAFT_CHANNEL, request),
-    sendReviewedTask: () => ipcRenderer.invoke(HERMES_SEND_REVIEWED_TASK_CHANNEL),
+    sendTask: (request) => ipcRenderer.invoke(HERMES_SEND_TASK_CHANNEL, request),
     clearTaskSubmission: () => ipcRenderer.invoke(HERMES_CLEAR_TASK_SUBMISSION_CHANNEL),
   },
 };

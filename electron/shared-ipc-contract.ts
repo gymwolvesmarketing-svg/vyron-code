@@ -243,7 +243,7 @@ export interface HermesApiServerResult {
 }
 
 /**
- * D-11 explicit reviewed task submission state — VYRON_CODE_COMPLETE_LOCAL_HERMES_D11_DELIVERY_AUTHORIZATION.
+ * Direct task submission state (D-11 transport) — VYRON_CODE_COMPLETE_LOCAL_HERMES_D11_DELIVERY_AUTHORIZATION.
  * Never carries an endpoint, API key, raw HTTP status/headers/body, session id, or any
  * protocol detail — only this safe state enum plus the three bounded, already-safe fields
  * below. `text` is populated only in the `"completed"` state, and is always the already-
@@ -252,7 +252,6 @@ export interface HermesApiServerResult {
  */
 export type HermesTaskSubmissionAmbientState =
   | "idle"
-  | "review_ready"
   | "sending"
   | "completed"
   | "unavailable"
@@ -262,19 +261,18 @@ export type HermesTaskSubmissionAmbientState =
 
 export interface HermesTaskSubmissionState {
   readonly state: HermesTaskSubmissionAmbientState;
-  readonly draftLength: number | null;
   readonly text: string | null;
   readonly truncated: boolean;
 }
 
 /**
- * The one and only shape `reviewTaskDraft` accepts — exactly one field, `draft`, a string.
+ * The one and only shape `sendTask` accepts — exactly one field, `draft`, a string.
  * Mirrors `HermesAuthorizationRequest`/`HermesEndpointConfigurationRequest`'s own single-field
  * discipline exactly. This is the one narrow, schema-validated crossing point for the user's
  * own task text — never combined with workspace/file/search/Git/context data at this or any
  * later step.
  */
-export interface HermesTaskDraftReviewRequest {
+export interface HermesTaskRequest {
   readonly draft: string;
 }
 
@@ -314,16 +312,15 @@ export interface DesktopLocalAiApi {
 }
 
 /**
- * The reviewed-task bridge (D-11) - exactly four methods. `getTaskSubmissionState`,
- * `sendReviewedTask` and `clearTaskSubmission` take no arguments at all; `reviewTaskDraft` takes
- * exactly one `draft` string field. Authorization and endpoint are set only by the main-process
+ * The direct-task bridge - exactly three methods. `getTaskSubmissionState` and
+ * `clearTaskSubmission` take no arguments at all; `sendTask` takes exactly one `draft` string field
+ * and sends it immediately (there is no review or approval step). Authorization and endpoint are set only by the main-process
  * lifecycle manager after every readiness check passes; the renderer can neither set nor read
  * either of them.
  */
 export interface DesktopHermesApi {
   getTaskSubmissionState(): Promise<HermesTaskSubmissionState>;
-  reviewTaskDraft(request: HermesTaskDraftReviewRequest): Promise<HermesTaskSubmissionState>;
-  sendReviewedTask(): Promise<HermesTaskSubmissionState>;
+  sendTask(request: HermesTaskRequest): Promise<HermesTaskSubmissionState>;
   clearTaskSubmission(): Promise<HermesTaskSubmissionState>;
 }
 
@@ -343,13 +340,12 @@ export const LOCAL_AI_IPC_CHANNELS = {
 export type LocalAiIpcChannel = (typeof LOCAL_AI_IPC_CHANNELS)[keyof typeof LOCAL_AI_IPC_CHANNELS];
 
 /**
- * Reviewed-task IPC channels (D-11). A distinct channel-name family from the local AI lifecycle
+ * Direct-task IPC channels. A distinct channel-name family from the local AI lifecycle
  * channels above; both are the only `ipcMain.handle`/`ipcRenderer.invoke` channels in this codebase.
  */
 export const HERMES_IPC_CHANNELS = {
   HERMES_GET_TASK_SUBMISSION_STATE: "hermes:getTaskSubmissionState",
-  HERMES_REVIEW_TASK_DRAFT: "hermes:reviewTaskDraft",
-  HERMES_SEND_REVIEWED_TASK: "hermes:sendReviewedTask",
+  HERMES_SEND_TASK: "hermes:sendTask",
   HERMES_CLEAR_TASK_SUBMISSION: "hermes:clearTaskSubmission",
 } as const;
 
