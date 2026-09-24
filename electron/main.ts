@@ -37,10 +37,10 @@
  * main-process-only local AI lifecycle manager, and on every quit path stops only the services the
  * app itself started. Credentials and endpoints never leave the main process.
  */
-import { app, BrowserWindow, ipcMain, powerMonitor } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, powerMonitor } from "electron";
 import path from "node:path";
 import { HARDENED_WEB_PREFERENCES, isNavigationAllowed, isNewWindowAllowed } from "./security-policy";
-import { HERMES_IPC_CHANNELS, LOCAL_AI_IPC_CHANNELS } from "./shared-ipc-contract";
+import { APP_IPC_CHANNELS, HERMES_IPC_CHANNELS, LOCAL_AI_IPC_CHANNELS } from "./shared-ipc-contract";
 import { getTaskSubmissionState, sendTask, clearTaskSubmission } from "./hermesTaskSubmission";
 import { createProductionLocalAiManager } from "./localAiAdapters";
 
@@ -89,6 +89,21 @@ function createMainWindow(): BrowserWindow {
       ...HARDENED_WEB_PREFERENCES,
       preload: path.join(__dirname, "preload.js"),
     },
+  });
+
+  // No native menu bar: every command lives in the workspace menu. The two keyboard shortcuts a menu
+  // bar used to provide (reload, developer tools) are handled here, without any renderer input.
+  window.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") return;
+    const key = input.key.toLowerCase();
+    const command = input.control || input.meta;
+    if (key === "f12" || (command && input.shift && key === "i")) {
+      event.preventDefault();
+      window.webContents.toggleDevTools();
+    } else if (key === "f5" || (command && !input.shift && key === "r")) {
+      event.preventDefault();
+      window.webContents.reload();
+    }
   });
 
   // Deny-by-default navigation policy — no origin is currently approved (see
@@ -171,6 +186,13 @@ function registerHermesIpcHandlers(): void {
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_TASK_SUBMISSION_STATE, () => getTaskSubmissionState());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_SEND_TASK, (_event, request: unknown) => sendTask(request));
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_TASK_SUBMISSION, () => clearTaskSubmission());
+}
+
+/** The one window-bridge handler: takes no argument and only ever acts on the app's own main window. */
+function registerAppIpcHandlers(): void {
+  ipcMain.handle(APP_IPC_CHANNELS.APP_TOGGLE_DEV_TOOLS, (event) => {
+    if (mainWindow && event.sender === mainWindow.webContents) mainWindow.webContents.toggleDevTools();
+  });
 }
 
 /**
@@ -264,9 +286,11 @@ app.on("activate", () => logLifecycle("app activate"));
 app.on("child-process-gone", (_event, details) => logLifecycle("child-process-gone", `${details.type}/${details.reason}`));
 
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(null);
   mainWindow = createMainWindow();
   registerLocalAiIpcHandlers();
   registerHermesIpcHandlers();
+  registerAppIpcHandlers();
   // Non-blocking: the window is already open and shows the startup state while this runs.
   void localAi.start();
   registerPowerMonitorDiagnostics();

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { HARDENED_WEB_PREFERENCES, ALLOWED_NAVIGATION_ORIGINS, isNavigationAllowed, isNewWindowAllowed } from "../electron/security-policy";
-import { HERMES_IPC_CHANNELS, LOCAL_AI_IPC_CHANNELS } from "../electron/shared-ipc-contract";
+import { APP_IPC_CHANNELS, HERMES_IPC_CHANNELS, LOCAL_AI_IPC_CHANNELS } from "../electron/shared-ipc-contract";
 
 // Strips block (/** ... */, /* ... */) and line (// ...) comments before pattern-matching
 // source text, so structural checks below reflect actual code — not this codebase's own doc
@@ -500,7 +500,7 @@ describe("electron/main.ts — local-only content load", () => {
   });
 });
 
-describe("IPC contract — exactly three local-AI methods plus the three direct-task methods", () => {
+describe("IPC contract — three local-AI methods, three direct-task methods and one window-bridge method", () => {
   it("LOCAL_AI_IPC_CHANNELS has exactly the three new channels", () => {
     expect(Object.values(LOCAL_AI_IPC_CHANNELS).sort()).toEqual(["localAi:copyDiagnostics", "localAi:getState", "localAi:retry"]);
   });
@@ -514,7 +514,7 @@ describe("IPC contract — exactly three local-AI methods plus the three direct-
   });
 
   it("no channel name is shared between the two namespaces", () => {
-    const all = [...Object.values(LOCAL_AI_IPC_CHANNELS), ...Object.values(HERMES_IPC_CHANNELS)];
+    const all = [...Object.values(LOCAL_AI_IPC_CHANNELS), ...Object.values(HERMES_IPC_CHANNELS), ...Object.values(APP_IPC_CHANNELS)];
     expect(new Set(all).size).toBe(all.length);
   });
 });
@@ -531,7 +531,7 @@ describe("electron/preload.ts — narrow fixed bridge", () => {
     expect([...code.matchAll(/exposeInMainWorld\(\s*"([^"]+)"/g)].map((m) => m[1])).toEqual(["vyronDesktop"]);
   });
 
-  it("exposes exactly the six fixed methods and no generic invoke/send/on", () => {
+  it("exposes exactly the seven fixed methods and no generic invoke/send/on", () => {
     const methods = [...code.matchAll(/^\s{4}(\w+):\s*(?:async\s*)?\(/gm)].map((m) => m[1]).sort();
     expect(methods).toEqual(
       [
@@ -541,6 +541,7 @@ describe("electron/preload.ts — narrow fixed bridge", () => {
         "getTaskSubmissionState",
         "retryLocalAiStartup",
         "sendTask",
+        "toggleDevTools",
       ].sort(),
     );
     expect(code).not.toMatch(/\b(send|on|once|invoke)\s*:/);
@@ -552,7 +553,7 @@ describe("electron/preload.ts — narrow fixed bridge", () => {
   });
 
   it("duplicates the canonical channel strings exactly", () => {
-    for (const channel of [...Object.values(LOCAL_AI_IPC_CHANNELS), ...Object.values(HERMES_IPC_CHANNELS)]) {
+    for (const channel of [...Object.values(LOCAL_AI_IPC_CHANNELS), ...Object.values(HERMES_IPC_CHANNELS), ...Object.values(APP_IPC_CHANNELS)]) {
       expect(code).toContain(`"${channel}"`);
     }
   });
@@ -561,8 +562,8 @@ describe("electron/preload.ts — narrow fixed bridge", () => {
 describe("electron/main.ts — local AI IPC wiring", () => {
   const code = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", "main.ts"), "utf8"));
 
-  it("registers exactly six ipcMain handlers (three local AI, three task)", () => {
-    expect(code.match(/ipcMain\.handle\(/g)).toHaveLength(6);
+  it("registers exactly seven ipcMain handlers (three local AI, three task, one window bridge)", () => {
+    expect(code.match(/ipcMain\.handle\(/g)).toHaveLength(7);
   });
 
   it("the three local AI handlers take no renderer-supplied argument", () => {

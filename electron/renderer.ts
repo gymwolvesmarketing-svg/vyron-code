@@ -45,9 +45,14 @@ interface DesktopHermesApi {
   clearTaskSubmission(): Promise<HermesTaskSubmissionState>;
 }
 
+interface DesktopAppApi {
+  toggleDevTools(): Promise<void>;
+}
+
 interface DesktopApi {
   readonly localAi: DesktopLocalAiApi;
   readonly hermes: DesktopHermesApi;
+  readonly app: DesktopAppApi;
 }
 
 interface Window {
@@ -157,6 +162,7 @@ const ICONS: Record<string, string[]> = {
   trash: ["p:M5 7h14M10 4h4M7 7l1 13h8l1-13"],
   link: ["p:M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"],
   spinner: ["p:M12 3a9 9 0 019 9"],
+  refresh: ["p:M20 12a8 8 0 11-2.3-5.6", "p:M20 4v5h-5"],
 };
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -394,7 +400,7 @@ function applyAiState(next: LocalAiState): void {
     overlayDismissed = true;
     if (ws.view === "new-task") focusSoon(el("task-input"));
   } else if (next.state === "starting" && previous !== "starting") {
-    focusSoon(el("startup-title"));
+    focusSoon(el("startup-card"));
   }
 }
 
@@ -2087,6 +2093,7 @@ function openAppMenu(trigger: HTMLElement): void {
         onSelect: () => window.setTimeout(() => openProjectCreate(must("add-project-btn")), 0),
       }),
     );
+    menu.appendChild(makeMenuItem({ label: "Ayarlar", icon: "settings", onSelect: () => navigate("settings") }));
     menu.appendChild(makeSeparator());
     menu.appendChild(
       makeMenuItem({
@@ -2110,7 +2117,21 @@ function openAppMenu(trigger: HTMLElement): void {
         },
       }),
     );
+    menu.appendChild(makeSeparator());
+    menu.appendChild(make("div", "menu-heading", "Görünüm"));
+    menu.appendChild(makeMenuItem({ label: "Yeniden Yükle", icon: "refresh", onSelect: () => window.location.reload() }));
+    menu.appendChild(makeMenuItem({ label: "Geliştirici Araçları", icon: "code", onSelect: () => toggleDevTools() }));
   });
+}
+
+function toggleDevTools(): void {
+  const api = window.vyronDesktop;
+  if (!api) return;
+  try {
+    void api.app.toggleDevTools().catch(() => undefined);
+  } catch {
+    // Developer tools are a convenience; a failure must never affect the workspace.
+  }
 }
 
 function openAccountMenu(trigger: HTMLElement): void {

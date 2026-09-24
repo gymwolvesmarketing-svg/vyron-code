@@ -78,7 +78,6 @@ describe("default new-task workspace shell", () => {
 
   it("shows the welcome hero, the mode and project selectors, the large composer and its toolbar", async () => {
     const h = await start();
-    expect(h.el("hero-title").textContent).toBe("Vyron ile üret");
     expect(h.el("mode-label").textContent).toBe("Yerel");
     expect(h.el("project-label").textContent).toBe("Proje seç veya oluştur");
     expect(h.el<HTMLTextAreaElement>("task-input").placeholder).toBe("Vyron'un ne üzerinde çalışmasını istersin?");
@@ -116,10 +115,11 @@ describe("default new-task workspace shell", () => {
 });
 
 describe("startup overlay and local AI states", () => {
-  it("shows Vyron Code hazırlanıyor with a stage message while starting, then hides it when ready", async () => {
+  it("shows the logo and a stage message (no title text) while starting, then hides it when ready", async () => {
     const h = await start({ ai: { state: "starting", stage: "gateway" } });
     expect(h.el("startup-overlay").hidden).toBe(false);
-    expect(h.el("startup-title").textContent).toBe("Vyron Code hazırlanıyor");
+    expect(h.el("startup-card").getAttribute("aria-label")).toBe("Vyron Code hazırlanıyor");
+    expect(h.el("startup-overlay").textContent).not.toContain("Vyron Code hazırlanıyor");
     expect(h.el("startup-message").textContent).toBe("Yerel AI motoru başlatılıyor…");
     expect(h.el("ai-status-text").textContent).toBe("Yerel AI başlatılıyor");
     h.behavior.aiState = { state: "ready" };
@@ -1114,7 +1114,7 @@ describe("web site management, settings and account", () => {
   it("the app menu offers Yeni görev, Yeni proje oluştur and collapse/expand of all projects", async () => {
     const h = await start();
     h.click(h.el("app-menu-btn"));
-    expect(h.menuLabels()).toEqual(["Yeni görev", "Yeni proje oluştur", "Tüm projeleri daralt", "Tüm projeleri genişlet"]);
+    expect(h.menuLabels()).toEqual(["Yeni görev", "Yeni proje oluştur", "Ayarlar", "Tüm projeleri daralt", "Tüm projeleri genişlet", "Yeniden Yükle", "Geliştirici Araçları"]);
     h.click(item(h, "Tüm projeleri daralt"));
     expect(Array.from(h.doc.querySelectorAll<HTMLElement>(".project-group")).every((g) => g.dataset.expanded === "false")).toBe(true);
     h.click(h.el("app-menu-btn"));
@@ -1330,10 +1330,10 @@ describe("removed review flow and static page contract", () => {
     }
   });
 
-  it("the renderer talks to the main process through exactly the six fixed bridge methods", () => {
-    const calls = new Set([...rendererSource.matchAll(/api\.(localAi|hermes)\.(\w+)\(/g)].map((m) => `${m[1]}.${m[2]}`));
+  it("the renderer talks to the main process through exactly the fixed bridge methods (no more than seven)", () => {
+    const calls = new Set([...rendererSource.matchAll(/api\.(localAi|hermes|app)\.(\w+)\(/g)].map((m) => `${m[1]}.${m[2]}`));
     expect(calls).toEqual(
-      new Set(["localAi.getLocalAiState", "localAi.retryLocalAiStartup", "localAi.copyLocalAiDiagnostics", "hermes.sendTask", "hermes.clearTaskSubmission"]),
+      new Set(["localAi.getLocalAiState", "localAi.retryLocalAiStartup", "localAi.copyLocalAiDiagnostics", "hermes.sendTask", "hermes.clearTaskSubmission", "app.toggleDevTools"]),
     );
   });
 
@@ -1371,5 +1371,35 @@ describe("responsive layout rules", () => {
   it("menus are fixed-position and capped to the viewport width", () => {
     expect(css).toMatch(/\.menu, \.panel\s*\{[^}]*position:\s*fixed/);
     expect(css).toMatch(/max-width:\s*min\(360px, calc\(100vw - 16px\)\)/);
+  });
+});
+
+describe("logo-only startup and welcome screens, single menu", () => {
+  it("shows no title text next to the logo on the startup screen or the welcome hero", async () => {
+    const h = await start();
+    expect(h.doc.body.textContent).not.toContain("Vyron ile üret");
+    expect(h.doc.body.textContent).not.toContain("Vyron Code hazırlanıyor");
+    expect(h.doc.querySelector("#hero .hero-logo")?.getAttribute("alt")).toBe("Vyron Code");
+    expect(h.doc.querySelector("#startup-overlay .startup-logo")?.getAttribute("alt")).toBe("Vyron Code");
+    expect(h.doc.querySelector("#hero h2, #startup-overlay h2")).toBeNull();
+  });
+
+  it("the workspace menu carries the commands a native menu bar used to hold: Ayarlar, Yeniden Yükle, Geliştirici Araçları", async () => {
+    const h = await start();
+    h.click(h.el("app-menu-btn"));
+    expect(h.doc.querySelector("#menu-layer .menu-heading")?.textContent).toBe("Görünüm");
+    h.click(item(h, "Geliştirici Araçları"));
+    await h.flush();
+    expect(h.calls.devTools).toBe(1);
+    h.click(h.el("app-menu-btn"));
+    h.click(item(h, "Ayarlar"));
+    expect(h.visibleViews()).toEqual(["settings"]);
+  });
+
+  it("main removes the native menu bar and keeps only reload and developer-tools shortcuts", () => {
+    const main = fs.readFileSync(path.join(__dirname, "..", "electron", "main.ts"), "utf8");
+    expect(main).toContain("Menu.setApplicationMenu(null)");
+    expect(main).toContain("before-input-event");
+    expect(main).toContain("toggleDevTools()");
   });
 });

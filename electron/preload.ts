@@ -63,9 +63,14 @@ interface DesktopHermesApi {
   clearTaskSubmission(): Promise<HermesTaskSubmissionState>;
 }
 
+interface DesktopAppApi {
+  toggleDevTools(): Promise<void>;
+}
+
 interface DesktopApi {
   readonly localAi: DesktopLocalAiApi;
   readonly hermes: DesktopHermesApi;
+  readonly app: DesktopAppApi;
 }
 
 const LOCAL_AI_GET_STATE_CHANNEL = "localAi:getState";
@@ -74,6 +79,7 @@ const LOCAL_AI_COPY_DIAGNOSTICS_CHANNEL = "localAi:copyDiagnostics";
 const HERMES_GET_TASK_SUBMISSION_STATE_CHANNEL = "hermes:getTaskSubmissionState";
 const HERMES_SEND_TASK_CHANNEL = "hermes:sendTask";
 const HERMES_CLEAR_TASK_SUBMISSION_CHANNEL = "hermes:clearTaskSubmission";
+const APP_TOGGLE_DEV_TOOLS_CHANNEL = "app:toggleDevTools";
 
 const vyronDesktop: DesktopApi = {
   localAi: {
@@ -85,6 +91,9 @@ const vyronDesktop: DesktopApi = {
     getTaskSubmissionState: () => ipcRenderer.invoke(HERMES_GET_TASK_SUBMISSION_STATE_CHANNEL),
     sendTask: (request) => ipcRenderer.invoke(HERMES_SEND_TASK_CHANNEL, request),
     clearTaskSubmission: () => ipcRenderer.invoke(HERMES_CLEAR_TASK_SUBMISSION_CHANNEL),
+  },
+  app: {
+    toggleDevTools: () => ipcRenderer.invoke(APP_TOGGLE_DEV_TOOLS_CHANNEL),
   },
 };
 

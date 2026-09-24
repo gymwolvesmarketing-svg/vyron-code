@@ -324,10 +324,19 @@ export interface DesktopHermesApi {
   clearTaskSubmission(): Promise<HermesTaskSubmissionState>;
 }
 
+/**
+ * The window bridge - exactly one method, no arguments: toggles the developer tools of the app's own
+ * window (the "Geliştirici Araçları" entry of the workspace menu). Reload is done by the page itself.
+ */
+export interface DesktopAppApi {
+  toggleDevTools(): Promise<void>;
+}
+
 /** The full shape of `window.vyronDesktop`, as exposed by electron/preload.ts. */
 export interface DesktopApi {
   readonly localAi: DesktopLocalAiApi;
   readonly hermes: DesktopHermesApi;
+  readonly app: DesktopAppApi;
 }
 
 /** Local AI lifecycle IPC channels - wired to real `ipcMain.handle` handlers in electron/main.ts. */
@@ -347,6 +356,11 @@ export const HERMES_IPC_CHANNELS = {
   HERMES_GET_TASK_SUBMISSION_STATE: "hermes:getTaskSubmissionState",
   HERMES_SEND_TASK: "hermes:sendTask",
   HERMES_CLEAR_TASK_SUBMISSION: "hermes:clearTaskSubmission",
+} as const;
+
+/** The single window-bridge channel (no arguments, no return value). */
+export const APP_IPC_CHANNELS = {
+  APP_TOGGLE_DEV_TOOLS: "app:toggleDevTools",
 } as const;
 
 export type HermesIpcChannel = (typeof HERMES_IPC_CHANNELS)[keyof typeof HERMES_IPC_CHANNELS];

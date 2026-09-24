@@ -35,7 +35,7 @@ export interface Harness {
   dom: JSDOM;
   win: Window & typeof globalThis;
   doc: Document;
-  calls: { getState: number; retry: number; copy: number; send: Array<{ draft: string }>; clear: number };
+  calls: { getState: number; retry: number; copy: number; send: Array<{ draft: string }>; clear: number; devTools: number };
   behavior: {
     aiState: FakeAiState;
     retryState: FakeAiState;
@@ -65,7 +65,7 @@ export interface SetupOptions {
 
 export function setup(options: SetupOptions = {}): Harness {
   const errors: unknown[] = [];
-  const calls = { getState: 0, retry: 0, copy: 0, send: [] as Array<{ draft: string }>, clear: 0 };
+  const calls = { getState: 0, retry: 0, copy: 0, send: [] as Array<{ draft: string }>, clear: 0, devTools: 0 };
   const behavior: Harness["behavior"] = {
     aiState: options.ai ?? { state: "ready" },
     retryState: { state: "starting", stage: "checking" },
@@ -96,6 +96,11 @@ export function setup(options: SetupOptions = {}): Harness {
               calls.copy += 1;
               if (behavior.copyResult === "throw") throw new Error("boom");
               return behavior.copyResult;
+            },
+          },
+          app: {
+            toggleDevTools: async () => {
+              calls.devTools += 1;
             },
           },
           hermes: {
