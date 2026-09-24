@@ -109,7 +109,9 @@ describe("default new-task workspace shell", () => {
   it("renders every icon as an inline svg (no remote image or font)", async () => {
     const h = await start();
     expect(h.doc.querySelectorAll("svg.ico").length).toBeGreaterThan(30);
-    expect(h.doc.querySelectorAll("img").length).toBe(0);
+    const sources = Array.from(h.doc.querySelectorAll("img")).map((n) => n.getAttribute("src"));
+    expect(sources.length).toBeGreaterThan(0);
+    for (const source of sources) expect(source, "brand images are local files").toMatch(/^assets\/[a-z-]+\.png$/);
   });
 });
 

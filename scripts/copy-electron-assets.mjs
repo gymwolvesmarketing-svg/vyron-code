@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SRC_DIR = path.join(ROOT, "electron");
 const DEST_DIR = path.join(ROOT, "dist-electron", "electron");
-const ASSETS = ["renderer.html", "renderer.css"];
+const ASSETS = ["renderer.html", "renderer.css", "assets/logo.png", "assets/mark.png", "assets/icon.png"];
 
 function main() {
   fs.mkdirSync(DEST_DIR, { recursive: true });
@@ -35,6 +35,7 @@ function main() {
       process.exitCode = 1;
       return;
     }
+    fs.mkdirSync(path.dirname(path.join(DEST_DIR, name)), { recursive: true });
     fs.copyFileSync(src, path.join(DEST_DIR, name));
     console.log(`Copied electron/${name} -> dist-electron/electron/${name}`);
   }

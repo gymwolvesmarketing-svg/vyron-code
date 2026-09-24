@@ -52,7 +52,7 @@ describe("packaging - configuration", () => {
 
   it("ships only the compiled electron code and the auth proxy script: no node_modules, source, tests, data or env files", () => {
     const filesBlock = builderConfig.slice(builderConfig.indexOf("\nfiles:"), builderConfig.indexOf("\nasarUnpack:"));
-    const entries = [...filesBlock.matchAll(/^\s+-\s+"?([^"\n]+)"?\s*$/gm)].map((m) => m[1]);
+    const entries = [...filesBlock.matchAll(/^\s+-\s+"?([^"\n]+)"?\s*$/gm)].map((m) => (m[1] ?? "").trim());
     expect(entries).toEqual(["package.json", "dist-electron/**/*", "scripts/hermes-auth-proxy.mjs", "!**/node_modules/**", "!**/*.map"]);
   });
 
@@ -121,5 +121,38 @@ describe("packaging - resource resolution", () => {
   it("every renderer asset the window loads is produced by the electron build", () => {
     expect(read("scripts/copy-electron-assets.mjs")).toContain('"renderer.html", "renderer.css"');
     expect(read("electron/renderer.html")).toContain("renderer.js");
+  });
+});
+
+describe("packaging - brand assets and application icon", () => {
+  const assets = path.join(root, "electron", "assets");
+
+  it("ships the application icon (multi-size .ico plus PNG) and the two UI brand images", () => {
+    for (const name of ["icon.ico", "icon.png", "logo.png", "mark.png"]) {
+      expect(fs.statSync(path.join(assets, name)).size, name).toBeGreaterThan(1000);
+    }
+    const ico = fs.readFileSync(path.join(assets, "icon.ico"));
+    expect(ico.readUInt16LE(0)).toBe(0);
+    expect(ico.readUInt16LE(2)).toBe(1);
+    expect(ico.readUInt16LE(4)).toBeGreaterThanOrEqual(6);
+    const png = fs.readFileSync(path.join(assets, "icon.png"));
+    expect(png.subarray(1, 4).toString("ascii")).toBe("PNG");
+    expect(png.readUInt32BE(16)).toBeGreaterThanOrEqual(256);
+    expect(png.readUInt32BE(16)).toBe(png.readUInt32BE(20));
+  });
+
+  it("uses the icon for the Windows executable/installer and for the BrowserWindow", () => {
+    expect(builderConfig).toMatch(/icon: electron\/assets\/icon\.ico/);
+    expect(read("electron/main.ts")).toContain('icon: path.join(__dirname, "assets", "icon.png")');
+  });
+
+  it("copies the brand images next to the renderer during the electron build, and the page references only those", () => {
+    const copy = read("scripts/copy-electron-assets.mjs");
+    for (const name of ["assets/logo.png", "assets/mark.png", "assets/icon.png"]) expect(copy).toContain(name);
+    const html = read("electron/renderer.html");
+    const refs = [...html.matchAll(/src="(assets\/[^"]+)"/g)].map((m) => m[1]);
+    expect(refs.length).toBeGreaterThan(0);
+    for (const ref of refs) expect(fs.existsSync(path.join(root, "electron", ref as string)), ref).toBe(true);
+    expect(html).not.toMatch(/src="(https?:|data:|\/\/)/);
   });
 });
