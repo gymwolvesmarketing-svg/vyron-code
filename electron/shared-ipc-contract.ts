@@ -279,98 +279,74 @@ export interface HermesTaskDraftReviewRequest {
 }
 
 /**
- * D-08B + D-08E + D-10 (remediated) + D-11's full Hermes bridge — exactly fourteen methods.
- * `clearAuthorization`/`clearEndpointConfiguration`/`getApiServerVerificationState`/
- * `verifyApiServerConnection`/`clearApiServerVerification`/`getTaskSubmissionState`/
- * `sendReviewedTask`/`clearTaskSubmission` take no arguments at all; `configureEndpoint` takes
- * exactly one `endpoint` string field; `reviewTaskDraft` takes exactly one `draft` string field.
- * No endpoint/host/port/credential/prompt/session ID/workspace/context data or options object
- * of any kind is ever accepted from or returned to the renderer. No WebSocket/`ws://`/`wss://`/
- * `/api/ws`/query-string-token/JSON-RPC/session concept exists anywhere in this bridge.
+ * One-click local AI lifecycle state - VYRON_CODE_ONE_CLICK_LOCAL_AI_STARTUP_AND_UX_DELIVERY.
+ * The main process alone owns starting, verifying and stopping the local Hermes gateway and the
+ * local auth proxy (see electron/localAiLifecycle.ts). The renderer only ever receives this safe,
+ * fixed-vocabulary state: no endpoint, port, path, command line, credential, process id, raw log,
+ * health payload, toolset body, HTTP status or provider error ever crosses this boundary.
+ */
+export type LocalAiStage = "checking" | "gateway" | "proxy" | "verifying";
+
+export type SafeLocalAiFailureCategory =
+  | "hermes_start_failed"
+  | "secure_connection_unverified"
+  | "model_unresponsive"
+  | "unavailable";
+
+export type LocalAiState =
+  | { readonly state: "starting"; readonly stage: LocalAiStage }
+  | { readonly state: "ready" }
+  | { readonly state: "unavailable"; readonly category: SafeLocalAiFailureCategory };
+
+/** Result of the sanitized-diagnostics copy action. The text itself never reaches the renderer. */
+export interface SafeCopyResult {
+  readonly copied: boolean;
+}
+
+/**
+ * The full local-AI bridge - exactly three methods, none of which accepts any argument. There is
+ * no command, path, environment, URL, host or port parameter anywhere in this bridge.
+ */
+export interface DesktopLocalAiApi {
+  getLocalAiState(): Promise<LocalAiState>;
+  retryLocalAiStartup(): Promise<LocalAiState>;
+  copyLocalAiDiagnostics(): Promise<SafeCopyResult>;
+}
+
+/**
+ * The reviewed-task bridge (D-11) - exactly four methods. `getTaskSubmissionState`,
+ * `sendReviewedTask` and `clearTaskSubmission` take no arguments at all; `reviewTaskDraft` takes
+ * exactly one `draft` string field. Authorization and endpoint are set only by the main-process
+ * lifecycle manager after every readiness check passes; the renderer can neither set nor read
+ * either of them.
  */
 export interface DesktopHermesApi {
-  getAvailability(): Promise<HermesAvailability>;
-  getAuthorizationState(): Promise<HermesAuthorizationState>;
-  beginAuthorization(request: HermesAuthorizationRequest): Promise<HermesAuthorizationResult>;
-  clearAuthorization(): Promise<HermesAuthorizationResult>;
-  getEndpointConfigurationState(): Promise<HermesEndpointState>;
-  configureEndpoint(request: HermesEndpointConfigurationRequest): Promise<HermesEndpointConfigurationResult>;
-  clearEndpointConfiguration(): Promise<HermesEndpointConfigurationResult>;
-  getApiServerVerificationState(): Promise<HermesApiServerState>;
-  verifyApiServerConnection(): Promise<HermesApiServerResult>;
-  clearApiServerVerification(): Promise<HermesApiServerResult>;
   getTaskSubmissionState(): Promise<HermesTaskSubmissionState>;
   reviewTaskDraft(request: HermesTaskDraftReviewRequest): Promise<HermesTaskSubmissionState>;
   sendReviewedTask(): Promise<HermesTaskSubmissionState>;
   clearTaskSubmission(): Promise<HermesTaskSubmissionState>;
 }
 
-/**
- * Milestone A's full workspace bridge. Each method is explicit and purpose-specific — no
- * generic channel-invoking capability. `listEntries`/`readTextFile` take a caller-supplied
- * relative path; `searchText` takes a caller-supplied query string; every one of these is
- * revalidated against the granted canonical root on every call in the main process (see
- * electron/workspaceExplorer.ts, electron/workspaceFileViewer.ts, electron/workspaceSearch.ts,
- * electron/workspaceGit.ts) — the preload/renderer layer never decides what is or isn't
- * accessible, it only forwards the caller's own relative-path/query string.
- */
-export interface DesktopWorkspaceApi {
-  pickDirectory(): Promise<WorkspaceGrantState>;
-  getCurrent(): Promise<WorkspaceGrantState>;
-  clearCurrent(): Promise<WorkspaceGrantState>;
-  listEntries(relativePath: string): Promise<ListEntriesResult>;
-  readTextFile(relativePath: string): Promise<ReadTextFileResult>;
-  searchText(query: string): Promise<SearchTextResult>;
-  getGitSummary(): Promise<GitSummaryResult>;
-}
-
 /** The full shape of `window.vyronDesktop`, as exposed by electron/preload.ts. */
 export interface DesktopApi {
-  readonly platform: DesktopRuntimeState["platform"];
-  readonly capabilities: DesktopRuntimeState["capabilities"];
-  readonly security: DesktopSecurityState;
-  readonly workspace: DesktopWorkspaceApi;
+  readonly localAi: DesktopLocalAiApi;
   readonly hermes: DesktopHermesApi;
 }
 
-/**
- * Implemented IPC channels — wired to real `ipcMain.handle` handlers in electron/main.ts
- * (delegating to electron/workspace-grant.ts, electron/workspaceExplorer.ts,
- * electron/workspaceFileViewer.ts, electron/workspaceSearch.ts, electron/workspaceGit.ts) and
- * exposed through the preload bridge as the `workspace.*` methods above. Nothing else in this
- * codebase calls `ipcMain.handle`/`ipcRenderer.invoke` for any other channel.
- */
-export const WORKSPACE_IPC_CHANNELS = {
-  WORKSPACE_PICK_DIRECTORY: "workspace:pickDirectory",
-  WORKSPACE_GET_CURRENT: "workspace:getCurrent",
-  WORKSPACE_CLEAR_CURRENT: "workspace:clearCurrent",
-  WORKSPACE_LIST: "workspace:list",
-  WORKSPACE_READ_TEXT: "workspace:readText",
-  WORKSPACE_SEARCH: "workspace:search",
-  WORKSPACE_GIT_SUMMARY: "workspace:gitSummary",
+/** Local AI lifecycle IPC channels - wired to real `ipcMain.handle` handlers in electron/main.ts. */
+export const LOCAL_AI_IPC_CHANNELS = {
+  LOCAL_AI_GET_STATE: "localAi:getState",
+  LOCAL_AI_RETRY: "localAi:retry",
+  LOCAL_AI_COPY_DIAGNOSTICS: "localAi:copyDiagnostics",
 } as const;
 
-export type WorkspaceIpcChannel = (typeof WORKSPACE_IPC_CHANNELS)[keyof typeof WORKSPACE_IPC_CHANNELS];
+export type LocalAiIpcChannel = (typeof LOCAL_AI_IPC_CHANNELS)[keyof typeof LOCAL_AI_IPC_CHANNELS];
 
 /**
- * Implemented Hermes authorization IPC channels — VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION.
- * Wired to real `ipcMain.handle` handlers in electron/main.ts, delegating to
- * electron/hermesAuthorization.ts, and exposed through the preload bridge as the `hermes.*`
- * methods above. A distinct channel-name family from `WORKSPACE_IPC_CHANNELS` — kept separate
- * because they own an entirely independent piece of process-memory state (see
- * electron/hermesAuthorization.ts's own "independent-lifetime policy" note).
+ * Reviewed-task IPC channels (D-11). A distinct channel-name family from the local AI lifecycle
+ * channels above; both are the only `ipcMain.handle`/`ipcRenderer.invoke` channels in this codebase.
  */
 export const HERMES_IPC_CHANNELS = {
-  HERMES_GET_AVAILABILITY: "hermes:getAvailability",
-  HERMES_GET_AUTHORIZATION_STATE: "hermes:getAuthorizationState",
-  HERMES_BEGIN_AUTHORIZATION: "hermes:beginAuthorization",
-  HERMES_CLEAR_AUTHORIZATION: "hermes:clearAuthorization",
-  HERMES_GET_ENDPOINT_CONFIGURATION_STATE: "hermes:getEndpointConfigurationState",
-  HERMES_CONFIGURE_ENDPOINT: "hermes:configureEndpoint",
-  HERMES_CLEAR_ENDPOINT_CONFIGURATION: "hermes:clearEndpointConfiguration",
-  HERMES_GET_API_SERVER_VERIFICATION_STATE: "hermes:getApiServerVerificationState",
-  HERMES_VERIFY_API_SERVER_CONNECTION: "hermes:verifyApiServerConnection",
-  HERMES_CLEAR_API_SERVER_VERIFICATION: "hermes:clearApiServerVerification",
   HERMES_GET_TASK_SUBMISSION_STATE: "hermes:getTaskSubmissionState",
   HERMES_REVIEW_TASK_DRAFT: "hermes:reviewTaskDraft",
   HERMES_SEND_REVIEWED_TASK: "hermes:sendReviewedTask",
@@ -378,17 +354,3 @@ export const HERMES_IPC_CHANNELS = {
 } as const;
 
 export type HermesIpcChannel = (typeof HERMES_IPC_CHANNELS)[keyof typeof HERMES_IPC_CHANNELS];
-
-/**
- * Future, still-unimplemented IPC channel name placeholder — declared so a later phase
- * references this one shared name rather than an ad hoc string. No `ipcMain.handle`/
- * `ipcRenderer.invoke` call exists anywhere in this codebase for it yet.
- * `WORKSPACE_CLEAR_RECENT` is reserved for a future D-07 "recent workspaces" persistence
- * feature — it is a DIFFERENT concept from `WORKSPACE_CLEAR_CURRENT` above (implemented,
- * process-memory-only) and must never be conflated with or substituted for it.
- */
-export const FUTURE_IPC_CHANNELS = {
-  WORKSPACE_CLEAR_RECENT: "workspace:clearRecent",
-} as const;
-
-export type FutureIpcChannel = (typeof FUTURE_IPC_CHANNELS)[keyof typeof FUTURE_IPC_CHANNELS];

@@ -23,38 +23,26 @@
  *
  * Defines app lifecycle wiring, applies the hardened BrowserWindow policy from
  * ./security-policy, loads only the local renderer asset, enforces deny-by-default
- * navigation/new-window behavior, and registers exactly the workspace IPC handlers below.
- * There is no terminal/shell handler, no environment/token handler, and no
- * Hermes/provider/deliberation handler anywhere in this file — each of those is its own,
- * separately authorized, future phase (see VYRON_CODE_V02_DESKTOP_ARCHITECTURE_DECISION.md).
+ * navigation/new-window behavior, and registers exactly seven IPC handlers below: three for the
+ * one-click local AI lifecycle (state / retry / diagnostics copy, delegating to
+ * electron/localAiAdapters.ts) and four for the reviewed-task flow (electron/hermesTaskSubmission.ts).
+ * There is no terminal/shell handler, no environment/token/endpoint handler, and no workspace
+ * handler anywhere in this file.
  *
  * This file is not executed by this authorization's own static-validation steps. Electron app
  * launch, BrowserWindow creation at runtime, and native process behavior all require their
  * own separate, explicit runtime authorization/user-owned foreground launch.
  *
- * Extended by VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION to
- * register the four Hermes authorization IPC handlers, delegating entirely to
- * electron/hermesAuthorization.ts. This file still has no Hermes network/health/session/
- * prompt/event handler of any kind — this phase adds only an authorization *state* boundary,
- * nothing that connects to Hermes.
+ * Local AI startup (VYRON_CODE_ONE_CLICK_LOCAL_AI_STARTUP_AND_UX): on launch this file starts the
+ * main-process-only local AI lifecycle manager, and on every quit path stops only the services the
+ * app itself started. Credentials and endpoints never leave the main process.
  */
 import { app, BrowserWindow, ipcMain, powerMonitor } from "electron";
 import path from "node:path";
 import { HARDENED_WEB_PREFERENCES, isNavigationAllowed, isNewWindowAllowed } from "./security-policy";
-import { HERMES_IPC_CHANNELS, WORKSPACE_IPC_CHANNELS } from "./shared-ipc-contract";
-import { pickDirectory, getCurrent, clearCurrent } from "./workspace-grant";
-import { listEntries } from "./workspaceExplorer";
-import { readTextFile } from "./workspaceFileViewer";
-import { searchText } from "./workspaceSearch";
-import { getGitSummary } from "./workspaceGit";
-import { getAvailability, getAuthorizationState, beginAuthorization, clearAuthorization as clearHermesAuthorization } from "./hermesAuthorization";
-import {
-  getEndpointConfigurationState,
-  configureEndpoint,
-  clearEndpointConfiguration,
-} from "./hermesEndpointSetup";
-import { getApiServerVerificationState, verifyApiServerConnection, clearApiServerVerification } from "./hermesApiServer";
+import { HERMES_IPC_CHANNELS, LOCAL_AI_IPC_CHANNELS } from "./shared-ipc-contract";
 import { getTaskSubmissionState, reviewTaskDraft, sendReviewedTask, clearTaskSubmission } from "./hermesTaskSubmission";
+import { createProductionLocalAiManager } from "./localAiAdapters";
 
 /**
  * Explicit, disabled-by-default opt-in for the lifecycle diagnostics below —
@@ -152,79 +140,33 @@ function createMainWindow(): BrowserWindow {
 }
 
 /**
- * Registers every implemented workspace IPC handler. Each is a thin delegate to its own
- * electron/workspace*.ts service module — no filesystem/Git/terminal/token logic lives here
- * or anywhere else in this file. `listEntries`/`readTextFile`/`searchText` accept exactly one
- * caller-supplied string argument (a relative path or a search query); any non-string value
- * received over IPC is rejected here, before it ever reaches a service module, since the main
- * process must never trust a renderer-supplied argument's type.
+ * The one local AI lifecycle manager for this process - VYRON_CODE_ONE_CLICK_LOCAL_AI_STARTUP_AND_UX_DELIVERY.
+ * It alone starts, verifies and (for services this app started) stops the local Hermes gateway and
+ * auth proxy; see electron/localAiLifecycle.ts and electron/localAiAdapters.ts.
  */
-function registerWorkspaceIpcHandlers(window: BrowserWindow): void {
-  ipcMain.handle(WORKSPACE_IPC_CHANNELS.WORKSPACE_PICK_DIRECTORY, () => pickDirectory(window));
-  ipcMain.handle(WORKSPACE_IPC_CHANNELS.WORKSPACE_GET_CURRENT, () => getCurrent());
-  ipcMain.handle(WORKSPACE_IPC_CHANNELS.WORKSPACE_CLEAR_CURRENT, () => clearCurrent());
-  ipcMain.handle(WORKSPACE_IPC_CHANNELS.WORKSPACE_LIST, (_event, relativePath: unknown) =>
-    listEntries(typeof relativePath === "string" ? relativePath : "")
-  );
-  ipcMain.handle(WORKSPACE_IPC_CHANNELS.WORKSPACE_READ_TEXT, (_event, relativePath: unknown) =>
-    readTextFile(typeof relativePath === "string" ? relativePath : "")
-  );
-  ipcMain.handle(WORKSPACE_IPC_CHANNELS.WORKSPACE_SEARCH, (_event, query: unknown) => searchText(typeof query === "string" ? query : ""));
-  ipcMain.handle(WORKSPACE_IPC_CHANNELS.WORKSPACE_GIT_SUMMARY, () => getGitSummary());
+const localAi = createProductionLocalAiManager();
+
+/**
+ * Registers the three local AI lifecycle IPC handlers. None accepts a renderer-supplied argument:
+ * there is no command, path, environment, URL, host or port parameter, and every reply is the
+ * safe, fixed-vocabulary state or a boolean copy result (never the diagnostics text itself).
+ */
+function registerLocalAiIpcHandlers(): void {
+  ipcMain.handle(LOCAL_AI_IPC_CHANNELS.LOCAL_AI_GET_STATE, () => localAi.getState());
+  ipcMain.handle(LOCAL_AI_IPC_CHANNELS.LOCAL_AI_RETRY, () => localAi.retry());
+  ipcMain.handle(LOCAL_AI_IPC_CHANNELS.LOCAL_AI_COPY_DIAGNOSTICS, () => localAi.copyDiagnostics());
 }
 
 /**
- * Registers the Hermes IPC handlers — VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION,
- * re-scoped by VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION away from the Hermes
- * dashboard's internal WebSocket/session surface onto the officially documented Hermes API
- * Server connection-verification capability (see electron/hermesApiServer.ts's own header for
- * the full evidence trail). Each handler is a thin delegate to its owning module, which alone
- * owns the credential/endpoint/verification state and every validation rule; this file never
- * inspects, logs, or forwards a request payload itself. No WebSocket, `/api/ws`, JSON-RPC,
- * session, prompt, or event handler is registered anywhere in this file.
+ * Registers the four reviewed-task IPC handlers (D-11). Each is a thin delegate to
+ * electron/hermesTaskSubmission.ts, which alone owns the reviewed draft and every validation rule.
+ * getTaskSubmissionState/sendReviewedTask/clearTaskSubmission take no arguments at all;
+ * reviewTaskDraft's raw request is passed straight through unexamined, exactly as that module's own
+ * validation expects. There is no authorization, endpoint or verification handler: those are set
+ * only by the main-process lifecycle manager after every readiness check passes, and the renderer
+ * can neither set nor read them.
  */
 function registerHermesIpcHandlers(): void {
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_AVAILABILITY, () => getAvailability());
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_AUTHORIZATION_STATE, () => getAuthorizationState());
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_BEGIN_AUTHORIZATION, (_event, request: unknown) => beginAuthorization(request));
-  // D-10 (remediated) — clearing authorization also clears any locally-tracked API Server
-  // verification state at the IPC boundary itself, not merely as a renderer-side courtesy: this
-  // is an enforced guarantee, not something a caller could bypass by invoking this channel
-  // through any path other than the renderer's own convenience wrapper (which already does the
-  // same thing, redundantly and harmlessly).
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_AUTHORIZATION, () => {
-    const result = clearHermesAuthorization();
-    clearApiServerVerification();
-    // D-11 — clearing authorization also clears any locally-tracked task submission state
-    // (reviewed draft, in-flight send, completed answer), for the same enforced-guarantee
-    // reason as clearApiServerVerification() above.
-    clearTaskSubmission();
-    return result;
-  });
-  // D-08E — configureEndpoint's raw request is passed straight through unexamined, exactly as
-  // electron/hermesEndpointSetup.ts's own isValidRequestShape expects; no second, weaker, or
-  // divergent validation exists here. clearEndpointConfiguration takes no arguments.
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_ENDPOINT_CONFIGURATION_STATE, () => getEndpointConfigurationState());
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CONFIGURE_ENDPOINT, (_event, request: unknown) => configureEndpoint(request));
-  // D-10 (remediated) — clearing the endpoint configuration also clears any locally-tracked API
-  // Server verification state, for the same enforced-guarantee reason as above.
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_ENDPOINT_CONFIGURATION, () => {
-    const result = clearEndpointConfiguration();
-    clearApiServerVerification();
-    clearTaskSubmission();
-    return result;
-  });
-  // D-10 (remediated) — getApiServerVerificationState/verifyApiServerConnection/
-  // clearApiServerVerification take no arguments at all; see electron/hermesApiServer.ts's own
-  // header for the full evidence trail and exactly what verifyApiServerConnection() sends.
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_API_SERVER_VERIFICATION_STATE, () => getApiServerVerificationState());
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_VERIFY_API_SERVER_CONNECTION, () => verifyApiServerConnection());
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_API_SERVER_VERIFICATION, () => clearApiServerVerification());
-  // D-11 — getTaskSubmissionState/sendReviewedTask/clearTaskSubmission take no arguments at
-  // all; reviewTaskDraft's raw request is passed straight through unexamined, exactly as
-  // electron/hermesTaskSubmission.ts's own validation expects — no second, weaker, or
-  // divergent validation exists here. See that module's own header for the full evidence
-  // trail and exactly what sendReviewedTask() sends.
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_TASK_SUBMISSION_STATE, () => getTaskSubmissionState());
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_REVIEW_TASK_DRAFT, (_event, request: unknown) => reviewTaskDraft(request));
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_SEND_REVIEWED_TASK, () => sendReviewedTask());
@@ -310,7 +252,8 @@ process.on("exit", (code) => logLifecycle("process exit", `code=${code}`));
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"] as const) {
   process.on(signal, () => {
     logLifecycle("process signal", signal);
-    process.exit(0);
+    // Stop only the services this app started, then exit regardless of the outcome.
+    void localAi.shutdown().finally(() => process.exit(0));
   });
 }
 
@@ -322,8 +265,10 @@ app.on("child-process-gone", (_event, details) => logLifecycle("child-process-go
 
 app.whenReady().then(() => {
   mainWindow = createMainWindow();
-  registerWorkspaceIpcHandlers(mainWindow);
+  registerLocalAiIpcHandlers();
   registerHermesIpcHandlers();
+  // Non-blocking: the window is already open and shows the startup state while this runs.
+  void localAi.start();
   registerPowerMonitorDiagnostics();
   startLifecycleHeartbeat();
   // Same listener-attachment confirmation as createMainWindow()'s own, but for every `app`-
@@ -332,15 +277,37 @@ app.whenReady().then(() => {
   logLifecycle("app-level listener registration confirmed", `app=${app.eventNames().length} powerMonitor=${powerMonitor.eventNames().length}`);
 });
 
-app.on("before-quit", () => {
+/**
+ * Graceful quit - the only place app.quit() is called. Services this app started are stopped first
+ * (services that were already running are never touched), then the app quits. `before-quit` routes
+ * through the same function, so every quit path (window close, menu, OS request) stops app-owned
+ * services exactly once.
+ */
+let localAiShutdownStarted = false;
+let localAiShutdownDone = false;
+
+function quitAfterLocalAiShutdown(): void {
+  if (localAiShutdownDone) {
+    app.quit();
+    return;
+  }
+  if (localAiShutdownStarted) return;
+  localAiShutdownStarted = true;
+  void localAi.shutdown().finally(() => {
+    localAiShutdownDone = true;
+    app.quit();
+  });
+}
+
+app.on("before-quit", (event) => {
   logLifecycle("before-quit");
-  // D-10 (remediated) — clears any locally-tracked Hermes API Server verification state before
-  // the process exits, rather than leaving it dangling. clearApiServerVerification() is
-  // idempotent/safe to call even when nothing was ever verified.
-  clearApiServerVerification();
-  // D-11 — clears any locally-tracked task submission state (reviewed draft, in-flight send,
-  // completed answer) before the process exits, for the same reason.
+  // Clears any locally-tracked task submission state (reviewed draft, in-flight send, completed
+  // answer) before the process exits, rather than leaving it dangling.
   clearTaskSubmission();
+  if (!localAiShutdownDone) {
+    event.preventDefault();
+    quitAfterLocalAiShutdown();
+  }
 });
 app.on("will-quit", () => logLifecycle("will-quit"));
 // `quit` fires AFTER the app has finished quitting, immediately before the process itself
@@ -350,7 +317,7 @@ app.on("quit", (_event, exitCode) => logLifecycle("quit", `exitCode=${exitCode}`
 
 app.on("window-all-closed", () => {
   logLifecycle("window-all-closed");
-  if (process.platform !== "darwin") app.quit();
+  if (process.platform !== "darwin") quitAfterLocalAiShutdown();
 });
 
 /**

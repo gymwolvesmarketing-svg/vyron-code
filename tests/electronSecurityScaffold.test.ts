@@ -1,9 +1,9 @@
-import { describe, it, expect, vi, beforeAll } from "vitest";
+import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 
 import { HARDENED_WEB_PREFERENCES, ALLOWED_NAVIGATION_ORIGINS, isNavigationAllowed, isNewWindowAllowed } from "../electron/security-policy";
-import { FUTURE_IPC_CHANNELS, WORKSPACE_IPC_CHANNELS, HERMES_IPC_CHANNELS } from "../electron/shared-ipc-contract";
+import { HERMES_IPC_CHANNELS, LOCAL_AI_IPC_CHANNELS } from "../electron/shared-ipc-contract";
 
 // Strips block (/** ... */, /* ... */) and line (// ...) comments before pattern-matching
 // source text, so structural checks below reflect actual code — not this codebase's own doc
@@ -66,361 +66,6 @@ describe("New-window policy — deny-by-default", () => {
   });
 });
 
-describe("FUTURE_IPC_CHANNELS — declared but never wired", () => {
-  it("is a plain, frozen-shape set of channel-name strings only (no function/handler values)", () => {
-    for (const value of Object.values(FUTURE_IPC_CHANNELS)) {
-      expect(typeof value).toBe("string");
-    }
-  });
-
-  it("still reserves workspace:clearRecent as a distinct, future-only D-07 concept", () => {
-    expect(FUTURE_IPC_CHANNELS.WORKSPACE_CLEAR_RECENT).toBe("workspace:clearRecent");
-  });
-
-  it("never conflates clearRecent with the D-03 clearCurrent channel", () => {
-    expect(FUTURE_IPC_CHANNELS.WORKSPACE_CLEAR_RECENT).not.toBe(WORKSPACE_IPC_CHANNELS.WORKSPACE_CLEAR_CURRENT);
-  });
-});
-
-describe("WORKSPACE_IPC_CHANNELS — implemented channels (D-03 + Milestone A)", () => {
-  it("exposes exactly the seven implemented workspace channels, no more", () => {
-    expect(Object.values(WORKSPACE_IPC_CHANNELS).sort()).toEqual(
-      [
-        "workspace:clearCurrent",
-        "workspace:getCurrent",
-        "workspace:gitSummary",
-        "workspace:list",
-        "workspace:pickDirectory",
-        "workspace:readText",
-        "workspace:search",
-      ].sort()
-    );
-  });
-});
-
-describe("HERMES_IPC_CHANNELS — implemented channels (D-08B + D-08E + D-10 remediated)", () => {
-  it("exposes exactly the fourteen implemented Hermes channels, no more", () => {
-    expect(Object.values(HERMES_IPC_CHANNELS).sort()).toEqual(
-      [
-        "hermes:getAvailability",
-        "hermes:getAuthorizationState",
-        "hermes:beginAuthorization",
-        "hermes:clearAuthorization",
-        "hermes:getEndpointConfigurationState",
-        "hermes:configureEndpoint",
-        "hermes:clearEndpointConfiguration",
-        "hermes:getApiServerVerificationState",
-        "hermes:verifyApiServerConnection",
-        "hermes:clearApiServerVerification",
-        "hermes:getTaskSubmissionState",
-        "hermes:reviewTaskDraft",
-        "hermes:sendReviewedTask",
-        "hermes:clearTaskSubmission",
-      ].sort()
-    );
-  });
-
-  it("shares no channel name with WORKSPACE_IPC_CHANNELS — a distinct, independent namespace", () => {
-    const workspaceChannels = new Set(Object.values(WORKSPACE_IPC_CHANNELS));
-    for (const channel of Object.values(HERMES_IPC_CHANNELS)) {
-      expect(workspaceChannels.has(channel as never)).toBe(false);
-    }
-  });
-});
-
-// electron/preload.ts calls contextBridge.exposeInMainWorld at module load time — mocking
-// "electron" (this codebase's established vi.mock convention, see tests/contextPayload.test.ts)
-// lets the module load safely under plain Node/vitest without a real Electron runtime. The
-// exposed API is captured into a plain closure variable (not read back from `.mock.calls`),
-// since this project's vitest config clears mock call-history between tests — a plain
-// variable survives that, a `vi.fn()`'s own call history does not.
-let capturedName: string | undefined;
-let capturedApi: Record<string, unknown> | undefined;
-const exposeInMainWorld = vi.fn((name: string, api: Record<string, unknown>) => {
-  capturedName = name;
-  capturedApi = api;
-});
-const ipcRendererInvoke = vi.fn();
-vi.mock("electron", () => ({
-  contextBridge: { exposeInMainWorld },
-  ipcRenderer: { invoke: ipcRendererInvoke },
-}));
-
-describe("preload.ts — exposed window.vyronDesktop API", () => {
-  let callCountAtImport = 0;
-  beforeAll(async () => {
-    await import("../electron/preload");
-    // Read immediately, before this suite's first `it` triggers a mock-history clear.
-    callCountAtImport = exposeInMainWorld.mock.calls.length;
-  });
-
-  function exposedApi(): Record<string, unknown> {
-    if (!capturedApi) throw new Error("electron/preload.ts did not call contextBridge.exposeInMainWorld");
-    return capturedApi;
-  }
-
-  it("exposes exactly one global, named 'vyronDesktop', via contextBridge only", () => {
-    expect(callCountAtImport).toBe(1);
-    expect(capturedName).toBe("vyronDesktop");
-    expect(capturedApi).toEqual(expect.any(Object));
-  });
-
-  it("has no generic invoke/send/on method and no raw ipcRenderer reference at the top level", () => {
-    const api = exposedApi();
-    for (const forbiddenKey of ["invoke", "send", "on", "ipcRenderer", "sendSync", "postMessage"]) {
-      expect(api).not.toHaveProperty(forbiddenKey);
-    }
-  });
-
-  it("declares workspacePicker, workspaceRead, workspaceSearch and gitSummary available (Milestone A)", () => {
-    const capabilities = exposedApi().capabilities as Record<string, unknown>;
-    expect(capabilities.workspacePicker).toBe(true);
-    expect(capabilities.workspaceRead).toBe(true);
-    expect(capabilities.workspaceSearch).toBe(true);
-    expect(capabilities.gitSummary).toBe(true);
-  });
-
-  it("exposes exactly the seven Milestone A workspace methods, no more", () => {
-    const workspace = exposedApi().workspace as Record<string, unknown>;
-    expect(Object.keys(workspace).sort()).toEqual(
-      ["clearCurrent", "getCurrent", "getGitSummary", "listEntries", "pickDirectory", "readTextFile", "searchText"]
-    );
-    for (const method of Object.values(workspace)) {
-      expect(typeof method).toBe("function");
-    }
-  });
-
-  it("the four parameter-free grant/summary methods invoke exactly one fixed channel, with no arguments forwarded", () => {
-    const workspace = exposedApi().workspace as Record<string, (...args: unknown[]) => unknown>;
-    ipcRendererInvoke.mockClear();
-    workspace.pickDirectory?.();
-    workspace.getCurrent?.();
-    workspace.clearCurrent?.();
-    workspace.getGitSummary?.();
-    expect(ipcRendererInvoke).toHaveBeenCalledTimes(4);
-    const calledChannels = ipcRendererInvoke.mock.calls.map((call) => call[0]).sort();
-    expect(calledChannels).toEqual(
-      ["workspace:clearCurrent", "workspace:getCurrent", "workspace:gitSummary", "workspace:pickDirectory"].sort()
-    );
-    // Every call was made with exactly one argument (the channel) — no second/third argument
-    // (e.g. a path) was ever forwarded from the renderer.
-    for (const call of ipcRendererInvoke.mock.calls) {
-      expect(call).toHaveLength(1);
-    }
-  });
-
-  it("the three path/query-taking methods forward exactly the channel plus the caller's own single argument, verbatim", () => {
-    const workspace = exposedApi().workspace as Record<string, (...args: unknown[]) => unknown>;
-    ipcRendererInvoke.mockClear();
-    workspace.listEntries?.("src/sub");
-    workspace.readTextFile?.("src/sub/file.ts");
-    workspace.searchText?.("needle");
-    expect(ipcRendererInvoke).toHaveBeenCalledTimes(3);
-    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(1, "workspace:list", "src/sub");
-    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(2, "workspace:readText", "src/sub/file.ts");
-    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(3, "workspace:search", "needle");
-    // Never a third argument — the renderer cannot smuggle any additional payload through.
-    for (const call of ipcRendererInvoke.mock.calls) {
-      expect(call).toHaveLength(2);
-    }
-  });
-
-  it("exposes no absolute-path field, filesystem handle, or native-dialog object anywhere", () => {
-    const api = exposedApi();
-    const serialized = JSON.stringify(api, (_key, value) => (typeof value === "function" ? "[function]" : value));
-    for (const forbiddenSubstring of ["C:\\", "C:/", "\\\\", "dialog", "BrowserWindow", "filePaths"]) {
-      expect(serialized).not.toContain(forbiddenSubstring);
-    }
-  });
-
-  it("declares no terminal capability", () => {
-    expect((exposedApi().capabilities as Record<string, unknown>).terminal).toBe(false);
-  });
-
-  it("declares no file-write capability", () => {
-    expect((exposedApi().capabilities as Record<string, unknown>).fileWrite).toBe(false);
-  });
-
-  it("declares no Git-write capability (distinct from the now-true, read-only gitSummary capability)", () => {
-    const capabilities = exposedApi().capabilities as Record<string, unknown>;
-    expect(capabilities.gitWrite).toBe(false);
-    expect(capabilities.gitSummary).toBe(true);
-  });
-
-  it("declares no multimodel-start capability", () => {
-    expect((exposedApi().capabilities as Record<string, unknown>).multimodelStart).toBe(false);
-  });
-
-  it("declares no token/environment exposure of any kind", () => {
-    const api = exposedApi();
-    expect((api.capabilities as Record<string, unknown>).hermesTokenStorage).toBe(false);
-    for (const forbiddenKey of ["token", "env", "environment", "process", "credentials"]) {
-      expect(api).not.toHaveProperty(forbiddenKey);
-    }
-  });
-
-  it("exposes exactly the fourteen Hermes methods, no more (D-08B + D-08E + D-10 remediated + D-11)", () => {
-    const hermes = exposedApi().hermes as Record<string, unknown>;
-    expect(Object.keys(hermes).sort()).toEqual(
-      [
-        "getAvailability",
-        "getAuthorizationState",
-        "beginAuthorization",
-        "clearAuthorization",
-        "getEndpointConfigurationState",
-        "configureEndpoint",
-        "clearEndpointConfiguration",
-        "getApiServerVerificationState",
-        "verifyApiServerConnection",
-        "clearApiServerVerification",
-        "getTaskSubmissionState",
-        "reviewTaskDraft",
-        "sendReviewedTask",
-        "clearTaskSubmission",
-      ].sort()
-    );
-    for (const method of Object.values(hermes)) {
-      expect(typeof method).toBe("function");
-    }
-  });
-
-  it("getTaskSubmissionState/sendReviewedTask/clearTaskSubmission take no arguments at all; reviewTaskDraft takes exactly one single-field request object (D-11, T-14)", () => {
-    const hermes = exposedApi().hermes as Record<string, (...args: unknown[]) => unknown>;
-    ipcRendererInvoke.mockClear();
-    hermes.getTaskSubmissionState?.();
-    hermes.sendReviewedTask?.();
-    hermes.clearTaskSubmission?.();
-    expect(ipcRendererInvoke).toHaveBeenCalledTimes(3);
-    for (const call of ipcRendererInvoke.mock.calls) {
-      expect(call).toHaveLength(1);
-    }
-    ipcRendererInvoke.mockClear();
-    const request = { draft: "placeholder-test-draft-text" };
-    hermes.reviewTaskDraft?.(request);
-    expect(ipcRendererInvoke).toHaveBeenCalledTimes(1);
-    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(1, "hermes:reviewTaskDraft", request);
-    expect(ipcRendererInvoke.mock.calls[0]).toHaveLength(2);
-  });
-
-  it("getApiServerVerificationState, verifyApiServerConnection, and clearApiServerVerification take no arguments at all — no endpoint/API-key/path/options object can be forwarded (D-10 remediated, T-14)", () => {
-    const hermes = exposedApi().hermes as Record<string, (...args: unknown[]) => unknown>;
-    ipcRendererInvoke.mockClear();
-    hermes.getApiServerVerificationState?.();
-    hermes.verifyApiServerConnection?.();
-    hermes.clearApiServerVerification?.();
-    expect(ipcRendererInvoke).toHaveBeenCalledTimes(3);
-    for (const call of ipcRendererInvoke.mock.calls) {
-      expect(call).toHaveLength(1);
-    }
-    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(1, "hermes:getApiServerVerificationState");
-    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(2, "hermes:verifyApiServerConnection");
-    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(3, "hermes:clearApiServerVerification");
-  });
-
-  it("getEndpointConfigurationState and clearEndpointConfiguration take no arguments at all (D-08E, T-14)", () => {
-    const hermes = exposedApi().hermes as Record<string, (...args: unknown[]) => unknown>;
-    ipcRendererInvoke.mockClear();
-    hermes.getEndpointConfigurationState?.();
-    hermes.clearEndpointConfiguration?.();
-    expect(ipcRendererInvoke).toHaveBeenCalledTimes(2);
-    for (const call of ipcRendererInvoke.mock.calls) {
-      expect(call).toHaveLength(1);
-    }
-    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(1, "hermes:getEndpointConfigurationState");
-    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(2, "hermes:clearEndpointConfiguration");
-  });
-
-  it("configureEndpoint forwards exactly the channel plus the caller's own single-field request object, verbatim, and nothing else", () => {
-    const hermes = exposedApi().hermes as Record<string, (...args: unknown[]) => unknown>;
-    ipcRendererInvoke.mockClear();
-    const request = { endpoint: "ws://127.0.0.1:19130/api/ws" };
-    hermes.configureEndpoint?.(request);
-    expect(ipcRendererInvoke).toHaveBeenCalledTimes(1);
-    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(1, "hermes:configureEndpoint", request);
-    expect(ipcRendererInvoke.mock.calls[0]).toHaveLength(2);
-  });
-
-  it("has no generic invoke/send/on method and no raw ipcRenderer reference on the hermes namespace either", () => {
-    const hermes = exposedApi().hermes as Record<string, unknown>;
-    for (const forbiddenKey of ["invoke", "send", "on", "ipcRenderer", "sendSync", "postMessage"]) {
-      expect(hermes).not.toHaveProperty(forbiddenKey);
-    }
-  });
-
-  it("the three parameter-free Hermes methods invoke exactly their own fixed channel, with no arguments forwarded", () => {
-    const hermes = exposedApi().hermes as Record<string, (...args: unknown[]) => unknown>;
-    ipcRendererInvoke.mockClear();
-    hermes.getAvailability?.();
-    hermes.getAuthorizationState?.();
-    hermes.clearAuthorization?.();
-    expect(ipcRendererInvoke).toHaveBeenCalledTimes(3);
-    const calledChannels = ipcRendererInvoke.mock.calls.map((call) => call[0]).sort();
-    expect(calledChannels).toEqual(["hermes:clearAuthorization", "hermes:getAuthorizationState", "hermes:getAvailability"].sort());
-    for (const call of ipcRendererInvoke.mock.calls) {
-      expect(call).toHaveLength(1);
-    }
-  });
-
-  it("beginAuthorization forwards exactly the channel plus the caller's own request object, verbatim, and nothing else", () => {
-    const hermes = exposedApi().hermes as Record<string, (...args: unknown[]) => unknown>;
-    ipcRendererInvoke.mockClear();
-    const request = { credential: "placeholder-test-credential-value" };
-    hermes.beginAuthorization?.(request);
-    expect(ipcRendererInvoke).toHaveBeenCalledTimes(1);
-    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(1, "hermes:beginAuthorization", request);
-    expect(ipcRendererInvoke.mock.calls[0]).toHaveLength(2);
-  });
-
-  it("its local Hermes channel-name duplicates match shared-ipc-contract.ts's canonical HERMES_IPC_CHANNELS exactly", () => {
-    const hermes = exposedApi().hermes as Record<string, (...args: unknown[]) => unknown>;
-    ipcRendererInvoke.mockClear();
-    hermes.getAvailability?.();
-    expect(ipcRendererInvoke).toHaveBeenNthCalledWith(1, HERMES_IPC_CHANNELS.HERMES_GET_AVAILABILITY);
-  });
-});
-
-describe("electron/preload.ts — no runtime relative local import (D-03 bridge-injection fix)", () => {
-  // VYRON_CODE_V02_D03_PRELOAD_BRIDGE_INJECTION_DIAGNOSTIC_AND_FIX_AUTHORIZATION regression
-  // test. preload.ts runs in a sandboxed preload context with more limited APIs than a
-  // normal Node/Electron main-process module (per Electron's own bundled type declarations).
-  // It previously imported `WORKSPACE_IPC_CHANNELS`/`DesktopApi` from
-  // "./shared-ipc-contract", compiling to a runtime `require("./shared-ipc-contract")` — the
-  // one remaining structural difference between this file and every other electron/*.ts file
-  // known to load correctly. This test asserts the source-level invariant that removes that
-  // difference: preload.ts must import only from Electron's own built-in module, never a
-  // relative local file.
-  const source = fs.readFileSync(path.join(__dirname, "..", "electron", "preload.ts"), "utf8");
-  const stripped = stripComments(source);
-
-  it("imports only from the 'electron' built-in module — no relative local import of any kind", () => {
-    const importLines = stripped.match(/^\s*import\b.*$/gm) ?? [];
-    expect(importLines.length).toBeGreaterThan(0);
-    for (const line of importLines) {
-      expect(line).not.toMatch(/from ["']\.\//);
-    }
-  });
-
-  it("still declares the DesktopApi/WorkspaceGrantState shapes it needs, locally", () => {
-    expect(stripped).toMatch(/interface DesktopApi/);
-    expect(stripped).toMatch(/interface WorkspaceGrantState/);
-  });
-
-  it("duplicates the exact D-03 channel-name string literals, not a re-derived or computed value", () => {
-    expect(stripped).toContain('"workspace:pickDirectory"');
-    expect(stripped).toContain('"workspace:getCurrent"');
-    expect(stripped).toContain('"workspace:clearCurrent"');
-  });
-
-  it("its local channel-name duplicates match shared-ipc-contract.ts's canonical WORKSPACE_IPC_CHANNELS exactly", () => {
-    // Cross-checks against the real, canonical source of truth. This test file itself is not
-    // constrained by the sandboxed-preload runtime, so importing it here (only to compare
-    // string values, never re-exported or re-used at preload runtime) is safe.
-    expect(WORKSPACE_IPC_CHANNELS.WORKSPACE_PICK_DIRECTORY).toBe("workspace:pickDirectory");
-    expect(WORKSPACE_IPC_CHANNELS.WORKSPACE_GET_CURRENT).toBe("workspace:getCurrent");
-    expect(WORKSPACE_IPC_CHANNELS.WORKSPACE_CLEAR_CURRENT).toBe("workspace:clearCurrent");
-  });
-});
-
 describe("Electron scaffold source — no shell/child_process execution capability", () => {
   const electronDir = path.join(__dirname, "..", "electron");
   const sourceFiles = fs.readdirSync(electronDir).filter((f) => f.endsWith(".ts"));
@@ -440,11 +85,15 @@ describe("Electron scaffold source — no shell/child_process execution capabili
   // deliberate exceptions — one bounded `GET <origin>/health` probe and one bounded, explicit
   // `POST <origin>/v1/chat/completions` request respectively, the only two real network calls
   // this entire scaffold makes; see each file's own header for the full evidence trail.
-  const FILES_ALLOWED_FETCH = new Set(["hermesApiServer.ts", "hermesTaskSubmission.ts"]);
+  const FILES_ALLOWED_FETCH = new Set(["hermesApiServer.ts", "hermesTaskSubmission.ts", "localAiAdapters.ts"]);
+  // localAiAdapters.ts is the one main-process module that starts the two local services
+  // (fixed spawn of the Hermes gateway and the auth proxy, taskkill for cleanup) and probes them.
+  const FILES_ALLOWED_CHILD_PROCESS = new Set(["localAiAdapters.ts"]);
+  const FILES_ALLOWED_ENV_FS = new Set(["localAiAdapters.ts"]);
   const forbiddenPatterns: Array<[string, RegExp, (file: string) => boolean]> = [
-    ["child_process import", /child_process/, () => true],
-    ["exec( call", /\bexec\s*\(/, () => true],
-    ["spawn( call", /\bspawn\s*\(/, () => true],
+    ["child_process import", /child_process/, (file) => !FILES_ALLOWED_CHILD_PROCESS.has(file)],
+    ["exec( call", /\bexec\s*\(/, (file) => !FILES_ALLOWED_CHILD_PROCESS.has(file)],
+    ["spawn( call", /\bspawn\s*\(/, (file) => !FILES_ALLOWED_CHILD_PROCESS.has(file)],
     ["fork( call", /\bfork\s*\(/, () => true],
     ["shell.openPath", /shell\.openPath/, () => true],
     ["shell.openExternal", /shell\.openExternal/, () => true],
@@ -455,7 +104,7 @@ describe("Electron scaffold source — no shell/child_process execution capabili
     [
       "direct node:fs import (must go through workspaceAccess.ts/lib/canonicalPath.ts for path validation first)",
       /from ["']node:fs["']|from ["']fs["']/,
-      (file) => !FILES_ALLOWED_DIRECT_FS.has(file),
+      (file) => !FILES_ALLOWED_DIRECT_FS.has(file) && !FILES_ALLOWED_ENV_FS.has(file),
     ],
   ];
 
@@ -467,8 +116,8 @@ describe("Electron scaffold source — no shell/child_process execution capabili
     }
   });
 
-  it("confirms exactly the seventeen expected scaffold .ts files exist, no more", () => {
-    expect(sourceFiles).toHaveLength(17);
+  it("confirms exactly the nineteen expected scaffold .ts files exist, no more", () => {
+    expect(sourceFiles).toHaveLength(19);
     expect(sourceFiles.sort()).toEqual(
       [
         "hermesApiServer.ts",
@@ -476,6 +125,8 @@ describe("Electron scaffold source — no shell/child_process execution capabili
         "hermesEndpoint.ts",
         "hermesEndpointSetup.ts",
         "hermesTaskSubmission.ts",
+        "localAiAdapters.ts",
+        "localAiLifecycle.ts",
         "main.ts",
         "preload.ts",
         "renderer.ts",
@@ -822,11 +473,11 @@ describe("electron/hermesEndpointSetup.ts and its getConfiguredEndpoint accessor
     }
   });
 
-  it("hermesApiServer.ts, main.ts, and hermesTaskSubmission.ts are the only files that import electron/hermesEndpointSetup.ts", () => {
+  it("hermesApiServer.ts, localAiAdapters.ts, and hermesTaskSubmission.ts are the only files that import electron/hermesEndpointSetup.ts", () => {
     const electronDir = path.join(__dirname, "..", "electron");
     const files = fs.readdirSync(electronDir).filter((f) => f.endsWith(".ts") && f !== "hermesEndpointSetup.ts");
     const importers = files.filter((f) => stripComments(fs.readFileSync(path.join(electronDir, f), "utf8")).match(/from ["']\.\/hermesEndpointSetup["']/));
-    expect(importers.sort()).toEqual(["hermesApiServer.ts", "main.ts", "hermesTaskSubmission.ts"].sort());
+    expect(importers.sort()).toEqual(["hermesApiServer.ts", "localAiAdapters.ts", "hermesTaskSubmission.ts"].sort());
   });
 });
 
@@ -846,734 +497,6 @@ describe("electron/main.ts — local-only content load", () => {
     expect(source).not.toContain("localhost");
     expect(source).not.toContain("127.0.0.1");
     expect(source).not.toMatch(/data:/);
-  });
-});
-
-describe("electron/main.ts — Hermes authorization + endpoint-setup + API Server verification IPC handler registration (D-08B + D-08E + D-10 remediated)", () => {
-  const source = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", "main.ts"), "utf8"));
-
-  it("registers exactly the ten Hermes IPC handlers, delegating to electron/hermesAuthorization.ts, electron/hermesEndpointSetup.ts, and electron/hermesApiServer.ts", () => {
-    expect(source).toMatch(/from ["']\.\/hermesAuthorization["']/);
-    expect(source).toMatch(/from ["']\.\/hermesEndpointSetup["']/);
-    expect(source).toMatch(/from ["']\.\/hermesApiServer["']/);
-    for (const channel of [
-      "HERMES_IPC_CHANNELS.HERMES_GET_AVAILABILITY",
-      "HERMES_IPC_CHANNELS.HERMES_GET_AUTHORIZATION_STATE",
-      "HERMES_IPC_CHANNELS.HERMES_BEGIN_AUTHORIZATION",
-      "HERMES_IPC_CHANNELS.HERMES_CLEAR_AUTHORIZATION",
-      "HERMES_IPC_CHANNELS.HERMES_GET_ENDPOINT_CONFIGURATION_STATE",
-      "HERMES_IPC_CHANNELS.HERMES_CONFIGURE_ENDPOINT",
-      "HERMES_IPC_CHANNELS.HERMES_CLEAR_ENDPOINT_CONFIGURATION",
-      "HERMES_IPC_CHANNELS.HERMES_GET_API_SERVER_VERIFICATION_STATE",
-      "HERMES_IPC_CHANNELS.HERMES_VERIFY_API_SERVER_CONNECTION",
-      "HERMES_IPC_CHANNELS.HERMES_CLEAR_API_SERVER_VERIFICATION",
-    ]) {
-      expect(source).toContain(channel);
-    }
-  });
-
-  it("the API Server verification IPC handlers take no renderer-supplied argument at all (T-14)", () => {
-    expect(source).toMatch(/ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_GET_API_SERVER_VERIFICATION_STATE,\s*\(\)\s*=>/);
-    expect(source).toMatch(/ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_VERIFY_API_SERVER_CONNECTION,\s*\(\)\s*=>/);
-    expect(source).toMatch(/ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_CLEAR_API_SERVER_VERIFICATION,\s*\(\)\s*=>/);
-  });
-
-  it("the clearEndpointConfiguration and getEndpointConfigurationState IPC handlers take no renderer-supplied argument at all", () => {
-    expect(source).toMatch(/ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_CLEAR_ENDPOINT_CONFIGURATION,\s*\(\)\s*=>/);
-    expect(source).toMatch(/ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_GET_ENDPOINT_CONFIGURATION_STATE,\s*\(\)\s*=>/);
-  });
-
-  it("passes configureEndpoint's raw request straight through, unexamined — no second/weaker validation here", () => {
-    expect(source).toMatch(/configureEndpoint\(request\)/);
-  });
-
-  it("never logs a Hermes endpoint configuration request payload via logLifecycle or console", () => {
-    expect(source).not.toMatch(/logLifecycle\([^)]*endpoint/i);
-    expect(source).not.toMatch(/console\.[a-z]+\([^)]*endpoint/i);
-  });
-
-  it("passes beginAuthorization's raw request straight through, unexamined — no second/weaker validation here", () => {
-    expect(source).toMatch(/beginAuthorization\(request\)/);
-  });
-
-  it("never logs a Hermes authorization request payload via logLifecycle or console", () => {
-    expect(source).not.toMatch(/logLifecycle\([^)]*credential/i);
-    expect(source).not.toMatch(/console\.[a-z]+\([^)]*credential/i);
-  });
-
-  it("D-10 (remediated): clearing authorization also clears any tracked API Server verification state, enforced at the IPC handler itself, not only as a renderer courtesy", () => {
-    const handlerBody = /ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_CLEAR_AUTHORIZATION, \(\) => \{[\s\S]*?\}\);/.exec(source)?.[0] ?? "";
-    expect(handlerBody).toMatch(/clearHermesAuthorization\(\)/);
-    expect(handlerBody).toMatch(/clearApiServerVerification\(\)/);
-  });
-
-  it("D-10 (remediated): clearing the endpoint configuration also clears any tracked API Server verification state, enforced at the IPC handler itself", () => {
-    const handlerBody = /ipcMain\.handle\(HERMES_IPC_CHANNELS\.HERMES_CLEAR_ENDPOINT_CONFIGURATION, \(\) => \{[\s\S]*?\}\);/.exec(source)?.[0] ?? "";
-    expect(handlerBody).toMatch(/clearEndpointConfiguration\(\)/);
-    expect(handlerBody).toMatch(/clearApiServerVerification\(\)/);
-  });
-
-  it("D-10 (remediated): app exit (before-quit) safely clears any tracked API Server verification state", () => {
-    const handlerBody = /app\.on\("before-quit", \(\) => \{[\s\S]*?\}\);/.exec(source)?.[0] ?? "";
-    expect(handlerBody).toMatch(/clearApiServerVerification\(\)/);
-  });
-
-  it("registers no WebSocket/session/health/prompt/event IPC channel of any kind", () => {
-    for (const forbidden of [/hermes:connect/i, /hermes:disconnect/i, /hermes:getConnectionState/i, /hermes:session/i, /hermes:prompt/i, /hermes:respond/i, /hermes:interrupt/i, /hermes:event/i]) {
-      expect(source).not.toMatch(forbidden);
-    }
-  });
-});
-
-describe("electron/renderer.ts — classic-script compatibility (no CommonJS module wrapper)", () => {
-  // VYRON_CODE_V02_D03_PRELOAD_IPC_WIRING_FIX_AUTHORIZATION regression test. renderer.html
-  // loads this file as a plain, classic `<script src="…">` (not `type="module"`) inside a
-  // sandboxed, nodeIntegration:false renderer, where `exports`/`require`/`module` are not
-  // defined globals. TypeScript emits a CommonJS `Object.defineProperty(exports, ...)`
-  // wrapper for ANY file with a top-level import/export statement — even a type-only one —
-  // which throws `ReferenceError: exports is not defined` before any of the file's own code
-  // (including its button-click wiring) can run. This is the exact defect the fix addresses:
-  // clicking "Open folder…" did nothing, and the footer stayed at "Platform: —". This test
-  // asserts the source-level invariant that prevents a regression of that defect class.
-  const source = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.ts"), "utf8");
-  const stripped = stripComments(source);
-
-  it("contains no top-level import statement", () => {
-    expect(stripped).not.toMatch(/^\s*import\b/m);
-  });
-
-  it("contains no top-level export statement", () => {
-    expect(stripped).not.toMatch(/^\s*export\b/m);
-  });
-
-  it("still declares the DesktopApi/WorkspaceGrantState shapes it needs, locally", () => {
-    expect(stripped).toMatch(/interface DesktopApi/);
-    expect(stripped).toMatch(/interface WorkspaceGrantState/);
-  });
-});
-
-describe("electron/renderer.ts — safe unavailable/error-state handling (D-03 real-runtime fix)", () => {
-  // VYRON_CODE_V02_D03_NATIVE_FOLDER_PICKER_REAL_RUNTIME_DEFECT_ANALYSIS_AND_FIX regression
-  // test. Two silent-failure gaps could independently explain "clicking Open folder… does
-  // nothing, with no visible error": (1) `window.vyronDesktop` being unexpectedly missing was
-  // handled with a bare `if (!api) return;` — no UI feedback at all; (2) a rejected
-  // `workspace.pickDirectory()`/`clearCurrent()` call (as opposed to one resolving with a safe
-  // "denied"/"unavailable"/"cancelled" state) had no `catch` — an unhandled rejection, again
-  // with no UI feedback. Both paths now render a fixed, safe status sentence instead.
-  const source = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.ts"), "utf8");
-  const stripped = stripComments(source);
-
-  it("catches a rejected workspace.pickDirectory()/clearCurrent() call instead of leaving it unhandled", () => {
-    const catchCount = (stripped.match(/\}\s*catch\s*\{/g) ?? []).length;
-    expect(catchCount).toBeGreaterThanOrEqual(2);
-  });
-
-  it("never silently no-ops when the desktop bridge is unavailable (no bare 'if (!api) return;')", () => {
-    expect(stripped).not.toMatch(/if\s*\(!api\)\s*return;/);
-  });
-
-  it("renders a safe, fixed string-literal status message for every bridge-unavailable/failure path", () => {
-    // Matches only call sites passing a quoted string literal — naturally excludes the
-    // function's own declaration (`function renderStatusMessage(text: string): void`), which
-    // has no quote in its parameter list.
-    const calls = [...stripped.matchAll(/renderStatusMessage\("([^"]*)"\)/g)];
-    expect(calls.length).toBeGreaterThanOrEqual(5);
-  });
-
-  it("never surfaces a raw error message, stack trace, or string-coerced error object to the renderer UI", () => {
-    for (const forbidden of [/\.message\b/, /\.stack\b/, /String\(\s*(err|error)\s*\)/, /\$\{\s*(err|error)\s*\}/]) {
-      expect(stripped).not.toMatch(forbidden);
-    }
-  });
-});
-
-describe("electron/renderer.ts — Milestone A workspace bridge wiring", () => {
-  const source = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.ts"), "utf8");
-  const stripped = stripComments(source);
-
-  it("calls every Milestone A bridge method — listEntries, readTextFile, searchText, getGitSummary", () => {
-    for (const method of ["listEntries", "readTextFile", "searchText", "getGitSummary"]) {
-      expect(stripped).toMatch(new RegExp(`api\\.workspace\\.${method}\\(`));
-    }
-  });
-
-  it("never references an absolute-path-shaped variable name or a raw canonical/absolute root", () => {
-    for (const forbidden of [/canonicalRoot/, /absolutePath/i]) {
-      expect(stripped).not.toMatch(forbidden);
-    }
-  });
-
-  it("the Search form's submit handler calls preventDefault before invoking searchText", () => {
-    expect(stripped).toMatch(/handleSearchSubmit[\s\S]{0,300}preventDefault/);
-  });
-
-  it("has exactly one call site to api.workspace.readTextFile — Explorer and Search share the same bounded viewer, no alternate read path", () => {
-    const calls = stripped.match(/api\.workspace\.readTextFile\(/g) ?? [];
-    expect(calls).toHaveLength(1);
-    // And both Explorer row clicks and Search result clicks route through the one function
-    // that makes that call (openFile), not a second, parallel implementation.
-    const openFileCalls = stripped.match(/void openFile\(/g) ?? [];
-    expect(openFileCalls.length).toBeGreaterThanOrEqual(2); // at least one from Explorer, one from Search
-  });
-
-  it("the search submit button is disabled while a search is in flight, and re-enabled on completion or clear", () => {
-    expect(stripped).toMatch(/searchInFlight/);
-    expect(stripped).toMatch(/searchBtn\.disabled = true/);
-    expect(stripped).toMatch(/searchBtn\.disabled = false/);
-  });
-
-  it("provides an explicit close-preview control that clears the file selection without touching the workspace grant", () => {
-    expect(stripped).toMatch(/function closeFilePreview\(\): void \{/);
-    expect(stripped).toMatch(/"Close preview"/);
-  });
-
-  it("resetWorkspaceViewState clears every view's cached state, including the search in-flight flag", () => {
-    const fnBody = /function resetWorkspaceViewState\(\): void \{[\s\S]*?\n\}/.exec(stripped)?.[0] ?? "";
-    expect(fnBody).toMatch(/searchInFlight = false;/);
-  });
-});
-
-describe("electron/renderer.ts — Hermes authorization panel wiring (D-08B)", () => {
-  const source = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.ts"), "utf8");
-  const stripped = stripComments(source);
-  const hermesSourceStart = stripped.indexOf("HermesViewState");
-  const hermesSource = hermesSourceStart >= 0 ? stripped.slice(hermesSourceStart) : "";
-
-  it("declares the Hermes authorization types/interfaces locally, mirroring shared-ipc-contract.ts", () => {
-    expect(stripped).toMatch(/interface DesktopHermesApi/);
-    expect(stripped).toMatch(/interface HermesAuthorizationResult/);
-  });
-
-  it("calls every Hermes bridge method — getAvailability, getAuthorizationState, beginAuthorization, clearAuthorization", () => {
-    for (const method of ["getAvailability", "getAuthorizationState", "beginAuthorization", "clearAuthorization"]) {
-      expect(stripped).toMatch(new RegExp(`api\\.hermes\\.${method}\\(`));
-    }
-  });
-
-  it("the authorization form's submit handler calls preventDefault before invoking beginAuthorization", () => {
-    expect(stripped).toMatch(/handleBeginHermesAuthorization[\s\S]{0,300}preventDefault/);
-  });
-
-  it("clears the credential input in a finally block after every beginAuthorization attempt, success or failure", () => {
-    expect(stripped).toMatch(/finally\s*\{\s*els\.credentialInput\.value = "";\s*\}/);
-  });
-
-  it("uses a monotonic request generation to discard a stale beginAuthorization response after a later clear/submit (T-17)", () => {
-    expect(hermesSource).toMatch(/let hermesRequestGeneration = 0;/);
-    expect(hermesSource).toMatch(/requestId !== hermesRequestGeneration/);
-    const clearFnBody = /async function handleClearHermesAuthorization\(\): Promise<void> \{[\s\S]*?\n\}/.exec(hermesSource)?.[0] ?? "";
-    expect(clearFnBody).toMatch(/hermesRequestGeneration\+\+/);
-  });
-
-  it("never logs anything from the Hermes authorization flow", () => {
-    expect(hermesSourceStart).toBeGreaterThan(-1);
-    expect(hermesSource).not.toMatch(/console\./);
-  });
-
-  it("never renders a credential value, length, or derived fingerprint in the Hermes panel", () => {
-    for (const forbidden of [/credential\.length/, /credentialInput\.value\)/, /\.slice\(0,\s*\d/]) {
-      expect(hermesSource).not.toMatch(forbidden);
-    }
-  });
-
-  it("only ever sets safe, fixed literal status text in the Hermes panel — never a value derived from an IPC response's own content", () => {
-    expect(hermesSource).toMatch(/"Hermes: Not authorized"/);
-    expect(hermesSource).toMatch(/"Hermes: Authorized for this app session only"/);
-    expect(hermesSource).not.toMatch(/statusEl\.textContent = result\./);
-    expect(hermesSource).not.toMatch(/statusEl\.textContent = \$\{/);
-  });
-
-  it("resets the credential input value on every non-submitting render path", () => {
-    const occurrences = hermesSource.match(/credentialInput\.value = "";/g) ?? [];
-    expect(occurrences.length).toBeGreaterThanOrEqual(3);
-  });
-
-  it("gates the Authorize submit button on a non-empty, non-whitespace-only credential — never clickable while the field is empty (closes the empty-submission safe_failure gap)", () => {
-    expect(hermesSource).toMatch(/submitBtn\.disabled = submitting \|\| credentialInput\.value\.trim\(\)\.length === 0;/);
-    expect(hermesSource).toMatch(/function updateHermesAuthorizeSubmitEnabled\(\): void \{/);
-    expect(hermesSource).toMatch(/hermes-credential-input"\)\?\.addEventListener\("input", updateHermesAuthorizeSubmitEnabled\)/);
-  });
-});
-
-describe("electron/renderer.ts — D-10 (remediated) API Server verification sub-panel wiring", () => {
-  const source = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.ts"), "utf8");
-  const stripped = stripComments(source);
-  const apiServerSourceStart = stripped.indexOf("HermesApiServerViewState");
-  const apiServerSource = apiServerSourceStart >= 0 ? stripped.slice(apiServerSourceStart) : "";
-
-  it("declares the verification sub-panel type/interfaces locally", () => {
-    expect(stripped).toMatch(/type HermesApiServerViewState =/);
-    expect(stripped).toMatch(/interface HermesApiServerElements/);
-  });
-
-  it("calls exactly the three D-10 (remediated) bridge methods — getApiServerVerificationState, verifyApiServerConnection, clearApiServerVerification", () => {
-    for (const method of ["getApiServerVerificationState", "verifyApiServerConnection", "clearApiServerVerification"]) {
-      expect(stripped).toMatch(new RegExp(`api\\.hermes\\.${method}\\(`));
-    }
-  });
-
-  it("verifyApiServerConnection/clearApiServerVerification are called with no arguments at all", () => {
-    expect(stripped).toMatch(/api\.hermes\.verifyApiServerConnection\(\)/);
-    expect(stripped).toMatch(/api\.hermes\.clearApiServerVerification\(\)/);
-  });
-
-  it("uses its own independent monotonic request generation, separate from the authorization panel's", () => {
-    expect(apiServerSourceStart).toBeGreaterThan(-1);
-    expect(apiServerSource).toMatch(/let hermesApiServerRequestGeneration = 0;/);
-    expect(apiServerSource).toMatch(/requestId !== hermesApiServerRequestGeneration/);
-  });
-
-  it("clearing authorization also invalidates any in-flight verify and calls clearApiServerVerification", () => {
-    const clearFnBody = /async function handleClearHermesAuthorization\(\): Promise<void> \{[\s\S]*?\n\}/.exec(stripped)?.[0] ?? "";
-    expect(clearFnBody).toMatch(/hermesApiServerRequestGeneration\+\+/);
-    expect(clearFnBody).toMatch(/api\.hermes\.clearApiServerVerification\(\)/);
-  });
-
-  it("never renders an endpoint, API key, host, port, or raw HTTP status/header/body detail in the verification panel", () => {
-    for (const forbidden of [/statusEl\.textContent = result\./, /statusEl\.textContent = \$\{/, /\bhost\b/i, /\bport\b/i, /\bsocket\b/i]) {
-      expect(apiServerSource).not.toMatch(forbidden);
-    }
-  });
-
-  it("never logs anything from the verification flow", () => {
-    expect(apiServerSource).not.toMatch(/console\./);
-  });
-
-  it("handles endpoint_not_configured and not_authorized outcomes with fixed, safe text, never an echoed detail", () => {
-    expect(apiServerSource).toMatch(/case "endpoint_not_configured":/);
-    expect(apiServerSource).toMatch(/result\.state === "endpoint_not_configured"/);
-    expect(apiServerSource).toMatch(/result\.state === "not_authorized"/);
-  });
-
-  it("never auto-verifies at startup — initHermesState only ever reads getApiServerVerificationState, never calls verifyApiServerConnection", () => {
-    const initFnBody = /async function initHermesState\(api: DesktopApi\): Promise<void> \{[\s\S]*?\n\}/.exec(stripped)?.[0] ?? "";
-    expect(initFnBody).toMatch(/api\.hermes\.getApiServerVerificationState\(\)/);
-    expect(initFnBody).not.toMatch(/api\.hermes\.verifyApiServerConnection\(\)/);
-  });
-});
-
-describe("electron/renderer.ts — D-08E endpoint setup panel wiring", () => {
-  const source = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.ts"), "utf8");
-  const stripped = stripComments(source);
-  const endpointSourceStart = stripped.indexOf("HermesEndpointViewState");
-  const endpointSourceEnd = stripped.indexOf("HermesApiServerViewState");
-  const endpointSource = endpointSourceStart >= 0 && endpointSourceEnd > endpointSourceStart ? stripped.slice(endpointSourceStart, endpointSourceEnd) : "";
-
-  it("declares the endpoint setup panel type/interfaces locally", () => {
-    expect(stripped).toMatch(/type HermesEndpointViewState =/);
-    expect(stripped).toMatch(/interface HermesEndpointElements/);
-  });
-
-  it("calls exactly the three D-08E bridge methods — getEndpointConfigurationState, configureEndpoint, clearEndpointConfiguration", () => {
-    for (const method of ["getEndpointConfigurationState", "configureEndpoint", "clearEndpointConfiguration"]) {
-      expect(stripped).toMatch(new RegExp(`api\\.hermes\\.${method}\\(`));
-    }
-  });
-
-  it("configureEndpoint is called with exactly one object argument built from a single 'endpoint' field — no extra field", () => {
-    expect(stripped).toMatch(/api\.hermes\.configureEndpoint\(\{\s*endpoint\s*\}\)/);
-  });
-
-  it("clearEndpointConfiguration and getEndpointConfigurationState are called with no arguments", () => {
-    expect(stripped).toMatch(/api\.hermes\.clearEndpointConfiguration\(\)/);
-    expect(stripped).toMatch(/api\.hermes\.getEndpointConfigurationState\(\)/);
-  });
-
-  it("the setup form's submit handler calls preventDefault before invoking configureEndpoint", () => {
-    expect(stripped).toMatch(/handleConfigureHermesEndpoint[\s\S]{0,300}preventDefault/);
-  });
-
-  it("requires a superficial format check AND the risk-acknowledgement checkbox before enabling submit", () => {
-    expect(endpointSourceStart).toBeGreaterThan(-1);
-    expect(endpointSource).toMatch(/looksLikeSuperficiallyValidEndpoint/);
-    expect(endpointSource).toMatch(/riskCheckbox\.checked/);
-    expect(endpointSource).toMatch(/submitBtn\.disabled = !\(/);
-  });
-
-  it("the superficial format check matches http: (D-10 remediated) — never the retired ws:/wss: scheme, which would otherwise permanently disable submit for every endpoint the backend can actually accept", () => {
-    // Not sliced to a closing-brace-bounded "function body": stripComments()'s naive line-
-    // comment stripper treats the literal `//` inside this regex's own `\/\/` escape sequence
-    // as a `// comment` start, corrupting anything textually after it on that line — matching
-    // against the wider endpointSource (which still contains the un-corrupted `http:` prefix
-    // before that point) avoids relying on the corrupted tail.
-    expect(endpointSource).toContain("/^http:");
-    expect(endpointSource).not.toMatch(/\/\^wss\?:/);
-  });
-
-  it("clears the endpoint input in a finally block after every configureEndpoint attempt, success or failure", () => {
-    expect(stripped).toMatch(/finally\s*\{\s*els\.endpointInput\.value = "";\s*\}/);
-  });
-
-  it("uses its own independent monotonic request generation, separate from the authorization and connection panels'", () => {
-    expect(endpointSource).toMatch(/let hermesEndpointRequestGeneration = 0;/);
-    expect(endpointSource).toMatch(/requestId !== hermesEndpointRequestGeneration/);
-    const clearFnBody = /async function handleClearHermesEndpointConfiguration\(\): Promise<void> \{[\s\S]*?\n\}/.exec(stripped)?.[0] ?? "";
-    expect(clearFnBody).toMatch(/hermesEndpointRequestGeneration\+\+/);
-  });
-
-  it("clearing the endpoint configuration also calls clearApiServerVerification() for D-10 (remediated) hygiene", () => {
-    const clearFnBody = /async function handleClearHermesEndpointConfiguration\(\): Promise<void> \{[\s\S]*?\n\}/.exec(stripped)?.[0] ?? "";
-    expect(clearFnBody).toMatch(/api\.hermes\.clearApiServerVerification\(\)/);
-  });
-
-  it("never renders the submitted endpoint value, or any host/port/socket/URL detail, in the setup panel", () => {
-    for (const forbidden of [
-      /statusEl\.textContent = result\./,
-      /statusEl\.textContent = \$\{/,
-      /statusEl\.textContent = endpoint/,
-      /errorEl\.textContent = endpoint/,
-      /\bhost\b/i,
-      /\bport\b/i,
-      /\bsocket\b/i,
-    ]) {
-      expect(endpointSource).not.toMatch(forbidden);
-    }
-  });
-
-  it("never logs anything from the endpoint setup flow", () => {
-    expect(endpointSource).not.toMatch(/console\./);
-  });
-
-  it("resets the endpoint input and risk checkbox on every non-configuring render path", () => {
-    const inputResets = endpointSource.match(/endpointInput\.value = "";/g) ?? [];
-    const checkboxResets = endpointSource.match(/riskCheckbox\.checked = false;/g) ?? [];
-    expect(inputResets.length).toBeGreaterThanOrEqual(3);
-    expect(checkboxResets.length).toBeGreaterThanOrEqual(3);
-  });
-});
-
-describe("electron/renderer.html — static, non-interactive local content", () => {
-  const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
-  const lowerHtml = html.toLowerCase();
-
-  it("declares a restrictive CSP with connect-src 'none' (no network capability from the renderer)", () => {
-    expect(html).toMatch(/Content-Security-Policy/);
-    expect(html).toMatch(/default-src 'none'/);
-    expect(html).toMatch(/connect-src 'none'/);
-  });
-
-  it("contains exactly one <textarea> (the D-09 local task draft box), no <select>, and exactly four <input> elements — the Search query box, the Hermes credential box, the Hermes endpoint box, and the risk-acknowledgement checkbox, never a path input", () => {
-    expect(lowerHtml).not.toContain("<select");
-    const textareas = [...html.matchAll(/<textarea\b[^>]*>/g)];
-    expect(textareas).toHaveLength(1);
-    expect(textareas[0]?.[0]).toContain('id="task-draft-input"');
-    const inputs = [...html.matchAll(/<input\b[^>]*>/g)];
-    expect(inputs).toHaveLength(4);
-    const inputTags = inputs.map((m) => m[0]);
-    const searchInputTag = inputTags.find((tag) => tag.includes('id="search-input"')) ?? "";
-    expect(searchInputTag).toContain('type="text"');
-    const credentialInputTag = inputTags.find((tag) => tag.includes('id="hermes-credential-input"')) ?? "";
-    expect(credentialInputTag).toContain('type="password"');
-    const endpointInputTag = inputTags.find((tag) => tag.includes('id="hermes-endpoint-input"')) ?? "";
-    expect(endpointInputTag).toContain('type="text"');
-    const riskCheckboxTag = inputTags.find((tag) => tag.includes('id="hermes-endpoint-risk-checkbox"')) ?? "";
-    expect(riskCheckboxTag).toContain('type="checkbox"');
-    // Never a filesystem-picker input type, and never named/labelled as a path field — the
-    // workspace root can only ever come from the native "Open folder…" picker, and neither the
-    // Hermes credential input nor the Hermes endpoint input is ever a path field.
-    for (const inputTag of inputTags) {
-      expect(inputTag.toLowerCase()).not.toMatch(/type="(file|directory)"/);
-      expect(inputTag.toLowerCase()).not.toContain('name="path"');
-      expect(inputTag.toLowerCase()).not.toContain('id="path"');
-    }
-  });
-
-  it("contains exactly the five Milestone A workspace-panel buttons, the two D-03 workspace-grant buttons, the four D-08B Hermes buttons, the four D-08E endpoint-setup buttons, the one D-10 (remediated) API Server verify button, the nine D-09 task-composer buttons, and the one D-11 send button, no more", () => {
-    const buttonIds = [...html.matchAll(/<button id="([^"]+)"/g)].map((m) => m[1]);
-    expect(buttonIds.sort()).toEqual(
-      [
-        "clear-workspace-btn",
-        "nav-explorer-btn",
-        "nav-git-btn",
-        "nav-search-btn",
-        "pick-directory-btn",
-        "search-btn",
-        "hermes-authorize-btn",
-        "hermes-clear-btn",
-        "hermes-submit-btn",
-        "hermes-cancel-btn",
-        "hermes-endpoint-setup-btn",
-        "hermes-endpoint-clear-btn",
-        "hermes-endpoint-submit-btn",
-        "hermes-endpoint-cancel-btn",
-        "hermes-api-server-verify-btn",
-        "task-clear-draft-btn",
-        "task-review-btn",
-        "task-add-workspace-name-btn",
-        "task-add-git-summary-btn",
-        "task-add-profile-btn",
-        "task-clear-context-btn",
-        "task-review-back-btn",
-        "task-review-clear-context-btn",
-        "task-review-close-btn",
-        "task-send-btn",
-      ].sort()
-    );
-  });
-
-  it("the clear-workspace button starts hidden (only shown after a grant exists)", () => {
-    expect(html).toMatch(/<button id="clear-workspace-btn"[^>]*\bhidden\b/);
-  });
-
-  it("the pick-directory button is not hidden and reads 'Open folder…'", () => {
-    expect(html).toMatch(/<button id="pick-directory-btn"[^>]*>Open folder…<\/button>/);
-    expect(html).not.toMatch(/<button id="pick-directory-btn"[^>]*\bhidden\b/);
-  });
-
-  it("states plainly that no workspace is selected", () => {
-    expect(html).toMatch(/No workspace is selected/i);
-  });
-
-  it("explains that opening a folder only grants a read-only reference and never shows the full path", () => {
-    expect(lowerHtml).toMatch(/read-only reference/);
-    expect(lowerHtml).toMatch(/full path stays[\s\S]{0,20}private/);
-  });
-
-  it("no longer claims the folder picker is deferred (D-03 implements it)", () => {
-    expect(lowerHtml).not.toMatch(/native windows folder picker[\s\S]{0,120}deferred/);
-  });
-
-  it("contains the Milestone A workspace-panel structure — nav tabs and the three view containers", () => {
-    expect(html).toContain('id="workspace-panel"');
-    expect(html).toContain('id="nav-explorer-btn"');
-    expect(html).toContain('id="nav-search-btn"');
-    expect(html).toContain('id="nav-git-btn"');
-    expect(html).toContain('id="view-explorer"');
-    expect(html).toContain('id="view-search"');
-    expect(html).toContain('id="view-git"');
-    expect(html).toContain('id="explorer-tree"');
-    expect(html).toContain('id="file-viewer"');
-    expect(html).toContain('id="search-results"');
-    expect(html).toContain('id="git-summary"');
-  });
-
-  it("the workspace panel starts hidden (only shown after a grant exists)", () => {
-    expect(html).toMatch(/<section id="workspace-panel"[^>]*\bhidden\b/);
-  });
-
-  it("explains the read-only capability boundary — no file-write, terminal, Git-write, or multimodel capability", () => {
-    expect(lowerHtml).toMatch(/file-write/);
-    expect(lowerHtml).toMatch(/terminal/);
-    expect(lowerHtml).toMatch(/git-write/);
-    expect(lowerHtml).toMatch(/multi-model|multimodel/);
-  });
-
-  it("states plainly that Hermes token/session integration is not configured", () => {
-    expect(lowerHtml).toMatch(/hermes token\/session integration is not configured/);
-  });
-
-  it("never references the local web dev server's own port, and the one loopback-address mention is exactly the D-10 (remediated) endpoint-input placeholder, never a hardcoded real endpoint", () => {
-    expect(html).not.toContain("3055");
-    const occurrences = html.match(/127\.0\.0\.1/g) ?? [];
-    expect(occurrences).toHaveLength(1);
-    expect(html).toContain('placeholder="http://127.0.0.1:&lt;port&gt;"');
-  });
-
-  it("loads its script and style as local file references, not inline or remote", () => {
-    expect(html).toMatch(/<link rel="stylesheet" href="renderer\.css"/);
-    expect(html).toMatch(/<script src="renderer\.js"><\/script>/);
-    expect(html).not.toMatch(/<script>[\s\S]*?<\/script>/); // no inline <script> block
-    expect(html).not.toMatch(/href="https?:\/\//);
-    expect(html).not.toMatch(/src="https?:\/\//);
-  });
-});
-
-describe("electron/renderer.html — Hermes authorization panel (D-08B)", () => {
-  const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
-  const lowerHtml = html.toLowerCase();
-
-  it("contains the full Hermes panel structure", () => {
-    for (const id of [
-      "hermes-panel",
-      "hermes-status",
-      "hermes-explanation",
-      "hermes-authorize-btn",
-      "hermes-clear-btn",
-      "hermes-authorization-form",
-      "hermes-credential-input",
-      "hermes-submit-btn",
-      "hermes-cancel-btn",
-      "hermes-error",
-    ]) {
-      expect(html).toContain(`id="${id}"`);
-    }
-  });
-
-  it("the credential input is type=password, not prefilled, and autocomplete is off", () => {
-    const match = html.match(/<input id="hermes-credential-input"[^>]*>/);
-    expect(match).not.toBeNull();
-    const tag = match?.[0] ?? "";
-    expect(tag).toContain('type="password"');
-    expect(tag).toContain('autocomplete="off"');
-    expect(tag).not.toMatch(/\bvalue="/);
-  });
-
-  it("the Hermes clear button and authorization form both start hidden", () => {
-    expect(html).toMatch(/<button id="hermes-clear-btn"[^>]*\bhidden\b/);
-    expect(html).toMatch(/<form id="hermes-authorization-form"[^>]*\bhidden\b/);
-  });
-
-  it("the Hermes authorize button is not hidden by default", () => {
-    expect(html).not.toMatch(/<button id="hermes-authorize-btn"[^>]*\bhidden\b/);
-  });
-
-  it("states plainly that Hermes is not authorized by default, and that the credential is never saved", () => {
-    expect(lowerHtml).toMatch(/hermes: not authorized/);
-    expect(lowerHtml).toMatch(/is held only in this running desktop app and is not saved/);
-  });
-
-  it("never renders a token/credential length, prefix, suffix, fingerprint, or reveal/copy control anywhere in the static markup", () => {
-    for (const forbidden of [/token length/i, /credential length/i, /fingerprint/i, /token prefix/i, /token suffix/i, /reveal/i, /show password/i, /copy token/i]) {
-      expect(html).not.toMatch(forbidden);
-    }
-  });
-
-  it("the Hermes error message paragraph starts hidden and empty", () => {
-    expect(html).toMatch(/<p id="hermes-error" class="muted" hidden>\s*<\/p>/);
-  });
-});
-
-describe("electron/renderer.html — D-08E endpoint setup panel", () => {
-  const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
-  const lowerHtml = html.toLowerCase();
-
-  it("contains the full endpoint setup panel structure", () => {
-    for (const id of [
-      "hermes-endpoint-section",
-      "hermes-endpoint-status",
-      "hermes-endpoint-explanation",
-      "hermes-endpoint-risk-notice",
-      "hermes-endpoint-setup-btn",
-      "hermes-endpoint-clear-btn",
-      "hermes-endpoint-form",
-      "hermes-endpoint-input",
-      "hermes-endpoint-risk-checkbox",
-      "hermes-endpoint-submit-btn",
-      "hermes-endpoint-cancel-btn",
-      "hermes-endpoint-error",
-    ]) {
-      expect(html).toContain(`id="${id}"`);
-    }
-  });
-
-  it("the endpoint input is a plain text field, never masked, never prefilled, with autocomplete off", () => {
-    const match = html.match(/<input id="hermes-endpoint-input"[^>]*>/);
-    expect(match).not.toBeNull();
-    const tag = match?.[0] ?? "";
-    expect(tag).toContain('type="text"');
-    expect(tag).toContain('autocomplete="off"');
-    expect(tag).not.toMatch(/\bvalue="/);
-  });
-
-  it("the risk-acknowledgement checkbox is not pre-checked", () => {
-    const match = html.match(/<input id="hermes-endpoint-risk-checkbox"[^>]*>/);
-    expect(match).not.toBeNull();
-    const tag = match?.[0] ?? "";
-    expect(tag).toContain('type="checkbox"');
-    expect(tag).not.toMatch(/\bchecked\b/);
-  });
-
-  it("the setup form starts hidden, and the submit button starts disabled", () => {
-    expect(html).toMatch(/<form id="hermes-endpoint-form"[^>]*\bhidden\b/);
-    expect(html).toMatch(/<button id="hermes-endpoint-submit-btn"[^>]*\bdisabled\b/);
-  });
-
-  it("the clear button starts hidden; the setup button is not hidden by default", () => {
-    expect(html).toMatch(/<button id="hermes-endpoint-clear-btn"[^>]*\bhidden\b/);
-    expect(html).not.toMatch(/<button id="hermes-endpoint-setup-btn"[^>]*\bhidden\b/);
-  });
-
-  it("states plainly that no endpoint is configured by default, that it is not saved, and discloses the server-identity limitation", () => {
-    expect(lowerHtml).toMatch(/no local companion endpoint configured/);
-    expect(lowerHtml).toMatch(/the endpoint is used only for this running desktop app and is not saved/);
-    expect(lowerHtml).toMatch(/this app cannot verify the identity of the service at the endpoint you configure/);
-  });
-
-  it("contains no host/port-split field, protocol selector, header field, proxy field, certificate control, TLS-disable control, endpoint-history UI, save-endpoint checkbox, auto-connect/auto-reconnect checkbox, test-connection button, or service-discovery/port-scan button", () => {
-    for (const forbidden of [
-      /id="hermes-endpoint-host/i,
-      /id="hermes-endpoint-port/i,
-      /protocol.{0,20}select/i,
-      /id="hermes-endpoint-header/i,
-      /id="hermes-endpoint-proxy/i,
-      /certificate/i,
-      /ignore.{0,10}tls/i,
-      /disable.{0,10}tls/i,
-      /endpoint.history/i,
-      /recently.used/i,
-      /save.endpoint/i,
-      /auto.connect/i,
-      /auto.reconnect/i,
-      /test.connection/i,
-      /discover.{0,10}(local )?service/i,
-      /scan.{0,10}ports?/i,
-    ]) {
-      expect(html).not.toMatch(forbidden);
-    }
-  });
-
-  it("contains no token input field within the endpoint setup form", () => {
-    const sectionMatch = html.match(/<div id="hermes-endpoint-section">[\s\S]*?<p id="hermes-endpoint-error"[^>]*><\/p>\s*<\/div>/);
-    expect(sectionMatch).not.toBeNull();
-    const sectionHtml = sectionMatch?.[0] ?? "";
-    expect(sectionHtml).not.toMatch(/type="password"/);
-    expect(sectionHtml).not.toMatch(/id="hermes-endpoint-token/i);
-  });
-});
-
-describe("electron/renderer.html — D-10 (remediated) API Server verification sub-panel", () => {
-  const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
-  const lowerHtml = html.toLowerCase();
-
-  it("contains the full verification sub-panel structure", () => {
-    for (const id of ["hermes-api-server-section", "hermes-api-server-status", "hermes-api-server-verify-btn", "hermes-api-server-note", "hermes-api-server-error"]) {
-      expect(html).toContain(`id="${id}"`);
-    }
-  });
-
-  it("the verification section starts hidden", () => {
-    expect(html).toMatch(/<div id="hermes-api-server-section"[^>]*\bhidden\b/);
-  });
-
-  it("the verify button is not hidden by default within its own markup", () => {
-    expect(html).not.toMatch(/<button id="hermes-api-server-verify-btn"[^>]*\bhidden\b/);
-  });
-
-  it("states plainly that no endpoint is configured by default", () => {
-    expect(lowerHtml).toMatch(/no local hermes api server endpoint configured/);
-  });
-
-  it("the verification sub-panel itself (not the page as a whole) contains no endpoint/host/port/URL editing control, and no session/chat/prompt/context/provider/model UI", () => {
-    // Scoped to exactly the <div id="hermes-api-server-section">...</div> markup — D-08E
-    // legitimately adds its own, separate "id=hermes-endpoint-*" section elsewhere on this
-    // page (the only place an endpoint can ever be entered); this test's job is confirming the
-    // verification sub-panel specifically never grew its own, second endpoint-entry surface.
-    const sectionMatch = html.match(/<div id="hermes-api-server-section"[\s\S]*?<p id="hermes-api-server-error"[^>]*><\/p>\s*<\/div>/);
-    expect(sectionMatch).not.toBeNull();
-    const sectionHtml = sectionMatch?.[0] ?? "";
-    for (const forbidden of [
-      /id="hermes-host/i,
-      /id="hermes-port/i,
-      /id="hermes-url/i,
-      /id="hermes-session/i,
-      /id="hermes-prompt/i,
-      /id="hermes-chat/i,
-      /id="hermes-context/i,
-      /id="hermes-provider/i,
-      /id="hermes-model/i,
-      /<input\b/i,
-      /<form\b/i,
-    ]) {
-      expect(sectionHtml).not.toMatch(forbidden);
-    }
-  });
-
-  it("the endpoint-setup section is a distinct, separate section from the verification sub-panel, not nested inside it", () => {
-    const endpointIndex = html.indexOf('<div id="hermes-endpoint-section"');
-    const apiServerIndex = html.indexOf('<div id="hermes-api-server-section"');
-    expect(endpointIndex).toBeGreaterThan(-1);
-    expect(apiServerIndex).toBeGreaterThan(-1);
-    expect(endpointIndex).toBeLessThan(apiServerIndex);
   });
 });
 
@@ -1629,264 +552,109 @@ describe("electron/taskComposer.ts — module isolation (D-09)", () => {
   });
 });
 
-describe("electron/renderer.ts — D-09 task composer wiring", () => {
-  const source = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.ts"), "utf8");
-  const stripped = stripComments(source);
-  const composerSource = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", "taskComposer.ts"), "utf8"));
-  const taskSourceStart = stripped.indexOf("type TaskProfile =");
-  const taskSourceEnd = stripped.indexOf("HermesViewState");
-  const taskSource = taskSourceStart >= 0 && taskSourceEnd > taskSourceStart ? stripped.slice(taskSourceStart, taskSourceEnd) : "";
 
-  it("declares the task composer section locally (no import), starting from TaskProfile", () => {
-    expect(taskSourceStart).toBeGreaterThan(-1);
+describe("IPC contract — exactly three local-AI methods plus the four existing task methods", () => {
+  it("LOCAL_AI_IPC_CHANNELS has exactly the three new channels", () => {
+    expect(Object.values(LOCAL_AI_IPC_CHANNELS).sort()).toEqual(["localAi:copyDiagnostics", "localAi:getState", "localAi:retry"]);
   });
 
-  it("declares exactly the six required task profiles, in order, matching taskComposer.ts", () => {
-    const rendererIds = [...taskSource.matchAll(/id:\s*"(explain|review|plan|investigate|summarize_workspace|analyze_git_status)"/g)].map(
-      (m) => m[1],
-    );
-    const composerIds = [...composerSource.matchAll(/id:\s*"(explain|review|plan|investigate|summarize_workspace|analyze_git_status)"/g)].map(
-      (m) => m[1],
-    );
-    const expected = ["explain", "review", "plan", "investigate", "summarize_workspace", "analyze_git_status"];
-    expect(rendererIds).toEqual(expected);
-    expect(composerIds).toEqual(expected);
+  it("HERMES_IPC_CHANNELS has exactly the four existing task channels, and no manual authorization/endpoint channel", () => {
+    expect(Object.values(HERMES_IPC_CHANNELS).sort()).toEqual([
+      "hermes:clearTaskSubmission",
+      "hermes:getTaskSubmissionState",
+      "hermes:reviewTaskDraft",
+      "hermes:sendReviewedTask",
+    ]);
   });
 
-  it("MAX_DRAFT_LENGTH, MAX_CONTEXT_ITEMS, MAX_SINGLE_EXCERPT_CHARS, MAX_TOTAL_CONTEXT_CHARS match exactly between renderer.ts and taskComposer.ts (drift guard)", () => {
-    for (const constant of ["MAX_DRAFT_LENGTH", "MAX_CONTEXT_ITEMS", "MAX_SINGLE_EXCERPT_CHARS", "MAX_TOTAL_CONTEXT_CHARS", "MAX_RELATIVE_PATH_LENGTH"]) {
-      const rendererValue = new RegExp(`${constant}\\s*=\\s*([\\d_]+)`).exec(taskSource)?.[1];
-      const composerValue = new RegExp(`${constant}\\s*=\\s*([\\d_]+)`).exec(composerSource)?.[1];
-      expect(rendererValue, `${constant} missing in renderer.ts`).toBeDefined();
-      expect(composerValue, `${constant} missing in taskComposer.ts`).toBeDefined();
-      expect(rendererValue).toBe(composerValue);
-    }
-  });
-
-  it("draft validation rejects empty/whitespace-only/control-character/too-long input, mirroring taskComposer.ts's rules", () => {
-    expect(taskSource).toMatch(/reason:\s*"empty"/);
-    expect(taskSource).toMatch(/reason:\s*"too_long"/);
-    expect(taskSource).toMatch(/reason:\s*"control_characters"/);
-    expect(taskSource).toMatch(/reason:\s*"whitespace_only"/);
-  });
-
-  it("gates opening the review surface on canOpenTaskReview — never opens review unconditionally", () => {
-    const openFnBody = /function handleOpenTaskReview\(\): void \{[\s\S]*?\n\}/.exec(taskSource)?.[0] ?? "";
-    expect(openFnBody).toMatch(/if \(!canOpenTaskReview\(taskDraftText\)\) return;/);
-  });
-
-  it("never contains a Send/Run/Execute/Start agent/Ask Hermes/Start session/Connect and send button label", () => {
-    for (const forbidden of [
-      /"Send"/,
-      /"Run"/,
-      /"Execute"/,
-      /"Start agent"/i,
-      /"Ask Hermes"/i,
-      /"Start session"/i,
-      /"Connect and send"/i,
-    ]) {
-      expect(taskSource).not.toMatch(forbidden);
-    }
-  });
-
-  it("only uses the two allowed action labels for the composer's own primary actions (declared in renderer.html)", () => {
-    const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
-    expect(html).toMatch(/<button id="task-review-btn"[^>]*>Review task draft<\/button>/);
-    expect(html).toMatch(/<button id="task-clear-draft-btn"[^>]*>Clear draft<\/button>/);
-  });
-
-  it("every context candidate builder takes only already-on-screen data — no read/list/search/fetch call inside any builder", () => {
-    const builderNames = [
-      "buildFilePreviewContextItem",
-      "buildSearchResultContextItem",
-      "buildGitSummaryContextItem",
-      "buildWorkspaceNameContextItem",
-      "buildTaskProfileContextItem",
-    ];
-    for (const name of builderNames) {
-      const fnMatch = new RegExp(`function ${name}\\([\\s\\S]*?\\n\\}`).exec(taskSource);
-      expect(fnMatch, `${name} not found`).not.toBeNull();
-      const body = fnMatch?.[0] ?? "";
-      for (const forbidden of [/api\.workspace\./, /readTextFile\(/, /searchText\(/, /listEntries\(/, /getGitSummary\(/, /fetch\(/]) {
-        expect(body).not.toMatch(forbidden);
-      }
-    }
-  });
-
-  it("rejects an absolute or parent-traversal relative path before building a file/search context item", () => {
-    expect(taskSource).toMatch(/function isSafeTaskRelativePath\(relativePath: string\): boolean \{/);
-    expect(taskSource).toMatch(/segment === "\.\."/);
-  });
-
-  it("enforces the item-count and aggregate-character limits in addTaskContextItem", () => {
-    const fnBody = /function addTaskContextItem\([\s\S]*?\n\}/.exec(taskSource)?.[0] ?? "";
-    expect(fnBody).toMatch(/rejected_item_limit/);
-    expect(fnBody).toMatch(/rejected_total_char_limit/);
-  });
-
-  it("provides individual remove and clear-all context actions, both local-only", () => {
-    expect(taskSource).toMatch(/function handleRemoveTaskContextItem\(id: string\): void \{/);
-    expect(taskSource).toMatch(/function handleClearAllTaskContext\(\): void \{/);
-  });
-
-  it("resetWorkspaceViewState clears task context/review/excerpt state immediately on grant or revoke", () => {
-    const fnBody = /function resetWorkspaceViewState\(\): void \{[\s\S]*?\n\}/.exec(stripped)?.[0] ?? "";
-    expect(fnBody).toMatch(/resetTaskContextState\(\);/);
-  });
-
-  it("resetTaskContextState clears items, review-open, and both cached excerpt snapshots", () => {
-    const fnBody = /function resetTaskContextState\(\): void \{[\s\S]*?\n\}/.exec(taskSource)?.[0] ?? "";
-    expect(fnBody).toMatch(/taskContextItems = \[\];/);
-    expect(fnBody).toMatch(/taskReviewOpen = false;/);
-    expect(fnBody).toMatch(/lastFileViewerPreview = null;/);
-    expect(fnBody).toMatch(/lastGitSummaryForContext = null;/);
-  });
-
-  it("D-11: the review surface's own static declaration text (send-scope/no-context/tool-history) lives only in renderer.html, never reassigned by renderTaskReview() — plus the safe D-10 (remediated) verification-info delegate and the D-11 task-submission redraw, never a token/endpoint/raw-protocol value", () => {
-    const reviewFnBody = /function renderTaskReview\(\): void \{[\s\S]*?\n\}/.exec(taskSource)?.[0] ?? "";
-    expect(reviewFnBody).not.toBe("");
-    // The only "verification"/"submission"-shaped references allowed here are the two delegate
-    // calls themselves — the actual safe rendering happens in renderTaskApiVerificationInfo()/
-    // renderHermesTaskSubmission(), asserted separately below.
-    expect(reviewFnBody).toMatch(/renderTaskApiVerificationInfo\(\);/);
-    expect(reviewFnBody).toMatch(/renderHermesTaskSubmission\(lastKnownTaskSubmissionState\.state, lastKnownTaskSubmissionState\.text, lastKnownTaskSubmissionState\.truncated\);/);
-    for (const forbidden of [/token/i, /endpoint/i, /\bhost\b/i, /\bport\b/i, /\bsocket\b/i, /provider/i, /\bmodel\b/i]) {
-      expect(reviewFnBody).not.toMatch(forbidden);
-    }
-  });
-
-  it("D-10 (remediated): renderTaskApiVerificationInfo shows only a fixed Verified/Not verified label — never a raw state string, never an IPC call of its own, and never writes the D-11 task-submission status text (that is renderHermesTaskSubmission()'s own, exclusive responsibility)", () => {
-    const fnBody = /function renderTaskApiVerificationInfo\(\): void \{[\s\S]*?\n\}/.exec(taskSource)?.[0] ?? "";
-    expect(fnBody).not.toBe("");
-    expect(fnBody).toMatch(/"Verified" : "Not verified"/);
-    expect(fnBody).not.toMatch(/task-review-task-sending/);
-    for (const forbidden of [/window\.vyronDesktop/, /api\.hermes/, /token/i, /endpoint/i, /\bhost\b/i, /\bport\b/i, /\bsocket\b/i]) {
-      expect(fnBody).not.toMatch(forbidden);
-    }
-  });
-
-  it("never calls api.workspace from anywhere in the task composer section, and calls api.hermes only for the three narrow, explicit D-11 send-review actions — never authorization/endpoint/verification methods", () => {
-    expect(taskSource).not.toMatch(/api\.workspace\./);
-    const hermesCalls = [...taskSource.matchAll(/api\.hermes\.(\w+)\(/g)].map((m) => m[1]);
-    expect(hermesCalls.length).toBeGreaterThan(0);
-    for (const method of hermesCalls) {
-      expect(["reviewTaskDraft", "sendReviewedTask", "clearTaskSubmission"]).toContain(method);
-    }
-  });
-
-  it("never references localStorage/sessionStorage/indexedDB/cookie for draft or context state", () => {
-    for (const forbidden of [/localStorage/, /sessionStorage/, /indexedDB/, /document\.cookie/]) {
-      expect(taskSource).not.toMatch(forbidden);
-    }
-  });
-
-  it("wires the task composer controls unconditionally in main(), independent of the desktop bridge (safe unavailable state)", () => {
-    const mainFnBody = /function main\(\): void \{[\s\S]*?\n\}/.exec(stripped)?.[0] ?? "";
-    const wireIndex = mainFnBody.indexOf("wireTaskControls();");
-    const apiCheckIndex = mainFnBody.indexOf("if (!api)");
-    expect(wireIndex).toBeGreaterThan(-1);
-    expect(apiCheckIndex).toBeGreaterThan(-1);
-    expect(wireIndex).toBeLessThan(apiCheckIndex);
+  it("no channel name is shared between the two namespaces", () => {
+    const all = [...Object.values(LOCAL_AI_IPC_CHANNELS), ...Object.values(HERMES_IPC_CHANNELS)];
+    expect(new Set(all).size).toBe(all.length);
   });
 });
 
-describe("electron/renderer.html — D-09 task section markup", () => {
-  const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
-  const lowerHtml = html.toLowerCase();
+describe("electron/preload.ts — narrow fixed bridge", () => {
+  const code = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", "preload.ts"), "utf8"));
 
-  it("declares the task panel section with profile group, draft textarea, and review actions", () => {
-    expect(html).toMatch(/<section id="task-panel">/);
-    expect(html).toMatch(/<div id="task-profiles"/);
-    expect(html).toMatch(/<textarea\s+id="task-draft-input"/);
-    expect(html).toMatch(/<button id="task-clear-draft-btn"/);
-    expect(html).toMatch(/<button id="task-review-btn"[^>]*disabled/);
+  it("imports only from 'electron' (no runtime relative import)", () => {
+    const imports = [...code.matchAll(/^\s*import\b[^;]*from\s+["']([^"']+)["']/gm)].map((m) => m[1]);
+    expect(imports).toEqual(["electron"]);
   });
 
-  it("the draft textarea declares an explicit maxlength matching the required draft bound", () => {
-    expect(html).toMatch(/<textarea\s+id="task-draft-input"\s+maxlength="4000"/);
+  it("exposes exactly one global, vyronDesktop, through contextBridge", () => {
+    expect([...code.matchAll(/exposeInMainWorld\(\s*"([^"]+)"/g)].map((m) => m[1])).toEqual(["vyronDesktop"]);
   });
 
-  it("declares the context summary controls — count, quick-add, clear-all, itemized list", () => {
-    expect(html).toMatch(/<p id="task-context-count"/);
-    expect(html).toMatch(/<button id="task-add-workspace-name-btn"/);
-    expect(html).toMatch(/<button id="task-add-git-summary-btn"/);
-    expect(html).toMatch(/<button id="task-add-profile-btn"/);
-    expect(html).toMatch(/<button id="task-clear-context-btn"[^>]*\bhidden\b/);
-    expect(html).toMatch(/<ul id="task-context-list"/);
+  it("exposes exactly the seven fixed methods and no generic invoke/send/on", () => {
+    const methods = [...code.matchAll(/^\s{4}(\w+):\s*(?:async\s*)?\(/gm)].map((m) => m[1]).sort();
+    expect(methods).toEqual(
+      [
+        "clearTaskSubmission",
+        "copyLocalAiDiagnostics",
+        "getLocalAiState",
+        "getTaskSubmissionState",
+        "retryLocalAiStartup",
+        "reviewTaskDraft",
+        "sendReviewedTask",
+      ].sort(),
+    );
+    expect(code).not.toMatch(/\b(send|on|once|invoke)\s*:/);
+    expect(code).not.toMatch(/exposeInMainWorld\([^)]*ipcRenderer/);
   });
 
-  it("declares the review surface hidden by default, with the required D-11 local-preview and send-scope disclosures", () => {
-    expect(html).toMatch(/<div id="task-review"[^>]*\bhidden\b/);
-    expect(lowerHtml).toMatch(/this is a local preview\. review the exact text below before sending anything\./);
-    expect(lowerHtml).toMatch(/only this task text will be sent\./);
-    expect(lowerHtml).toMatch(/no workspace, file, search result, git data or selected context is sent\./);
-    expect(lowerHtml).toMatch(/hermes tools and persistent task history are disabled for this connection\./);
+  it("carries no endpoint, credential, path, workspace, or process capability", () => {
+    expect(code).not.toMatch(/endpoint|apiKey|API_SERVER_KEY|workspace|process\.|require\(/i);
   });
 
-  it("declares the required review actions — back to draft, remove/clear context, close review", () => {
-    expect(html).toMatch(/<button id="task-review-back-btn"/);
-    expect(html).toMatch(/<button id="task-review-clear-context-btn"/);
-    expect(html).toMatch(/<button id="task-review-close-btn"/);
-    expect(html).toMatch(/<ul id="task-review-context-list"/);
-  });
-
-  it("carries the required 'nothing is sent automatically' composer disclosure text", () => {
-    expect(lowerHtml).toMatch(/nothing is sent automatically\./);
-    expect(lowerHtml).toMatch(/review your task and selected context before any future send action becomes available\./);
-  });
-
-  it("contains no Send/Submit/Execute/Start session/Attach-and-send button anywhere in the task panel markup", () => {
-    const sectionMatch = html.match(/<section id="task-panel">[\s\S]*?<\/section>/);
-    expect(sectionMatch).not.toBeNull();
-    const sectionHtml = sectionMatch?.[0] ?? "";
-    for (const forbidden of [
-      />\s*Send\s*</i,
-      />\s*Run\s*</i,
-      />\s*Execute\s*</i,
-      /start session/i,
-      /start agent/i,
-      /ask hermes/i,
-      /attach.and.send/i,
-      /connect and send/i,
-    ]) {
-      expect(sectionHtml).not.toMatch(forbidden);
+  it("duplicates the canonical channel strings exactly", () => {
+    for (const channel of [...Object.values(LOCAL_AI_IPC_CHANNELS), ...Object.values(HERMES_IPC_CHANNELS)]) {
+      expect(code).toContain(`"${channel}"`);
     }
-  });
-
-  it("the task panel never declares an endpoint/token/session/provider/model input control", () => {
-    const sectionMatch = html.match(/<section id="task-panel">[\s\S]*?<\/section>/);
-    const sectionHtml = sectionMatch?.[0] ?? "";
-    for (const forbidden of [/id="task-endpoint/i, /id="task-token/i, /id="task-session/i, /id="task-provider/i, /id="task-model/i, /type="password"/i]) {
-      expect(sectionHtml).not.toMatch(forbidden);
-    }
-  });
-
-  it("the task panel is a distinct section, not nested inside the workspace or Hermes panels", () => {
-    const taskIndex = html.indexOf('<section id="task-panel">');
-    const workspacePanelIndex = html.indexOf('<section id="workspace-panel"');
-    const hermesPanelIndex = html.indexOf('<section id="hermes-panel">');
-    expect(taskIndex).toBeGreaterThan(-1);
-    expect(workspacePanelIndex).toBeGreaterThan(-1);
-    expect(hermesPanelIndex).toBeGreaterThan(-1);
-    expect(taskIndex).toBeGreaterThan(workspacePanelIndex);
   });
 });
 
-describe("electron/renderer.html — D-10 (remediated) task review verification rows", () => {
-  const html = fs.readFileSync(path.join(__dirname, "..", "electron", "renderer.html"), "utf8");
+describe("electron/main.ts — local AI IPC wiring", () => {
+  const code = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", "main.ts"), "utf8"));
 
-  it("the task review surface declares the Hermes API verification / task submission informational rows, with the required fixed initial disclosure text", () => {
-    expect(html).toMatch(/<dt>Hermes API verification<\/dt>/);
-    expect(html).toMatch(/<dd id="task-review-hermes-verification">Not verified<\/dd>/);
-    expect(html).toMatch(/<dt>Task submission<\/dt>/);
-    expect(html).toMatch(/<dd id="task-review-task-sending">Not available in this build\.<\/dd>/);
+  it("registers exactly seven ipcMain handlers (three local AI, four task)", () => {
+    expect(code.match(/ipcMain\.handle\(/g)).toHaveLength(7);
   });
 
-  it("declares the D-11 send action, error, and response-display markup, all starting hidden/disabled/empty", () => {
-    expect(html).toMatch(/<button id="task-send-btn" type="button" disabled>Send reviewed task<\/button>/);
-    expect(html).toMatch(/<p id="task-send-error" class="muted" hidden><\/p>/);
-    expect(html).toMatch(/<div id="task-response-section" hidden>/);
-    expect(html).toMatch(/<p id="task-response-text"><\/p>/);
-    expect(html).toMatch(/<p id="task-response-truncated-note" class="muted" hidden>Response was truncated\.<\/p>/);
+  it("the three local AI handlers take no renderer-supplied argument", () => {
+    for (const method of ["localAi.getState()", "localAi.retry()", "localAi.copyDiagnostics()"]) {
+      expect(code).toContain("() => " + method);
+    }
+  });
+
+  it("starts the local AI manager after registering handlers and never exposes generic IPC", () => {
+    expect(code).toMatch(/registerLocalAiIpcHandlers\(\);[\s\S]*registerHermesIpcHandlers\(\);[\s\S]*localAi\.start\(\)/);
+    expect(code).not.toMatch(/ipcMain\.on\(/);
+  });
+
+  it("registers no workspace, manual authorization, or endpoint handler", () => {
+    expect(code).not.toMatch(/workspace|beginAuthorization|configureEndpoint|WORKSPACE_IPC_CHANNELS/i);
+  });
+
+  it("shuts the local AI down before quitting", () => {
+    expect(code).toMatch(/localAi\.shutdown\(\)/);
+  });
+});
+
+describe("electron/localAiLifecycle.ts and localAiAdapters.ts — placement", () => {
+  const dir = path.join(__dirname, "..", "electron");
+
+  it("neither module is imported by preload.ts, renderer.ts or shared-ipc-contract.ts", () => {
+    for (const file of ["preload.ts", "renderer.ts", "shared-ipc-contract.ts"]) {
+      const code = stripComments(fs.readFileSync(path.join(dir, file), "utf8"));
+      expect(code, file).not.toMatch(/localAiLifecycle|localAiAdapters/);
+    }
+  });
+
+  it("localAiAdapters.ts is imported only by main.ts", () => {
+    const importers = fs
+      .readdirSync(dir)
+      .filter((f) => f.endsWith(".ts") && f !== "localAiAdapters.ts")
+      .filter((f) => /from ["']\.\/localAiAdapters["']/.test(stripComments(fs.readFileSync(path.join(dir, f), "utf8"))));
+    expect(importers).toEqual(["main.ts"]);
   });
 });

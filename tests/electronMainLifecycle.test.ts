@@ -25,11 +25,14 @@ describe("electron/main.ts — BrowserWindow lifetime/reference policy", () => {
 });
 
 describe("electron/main.ts — exactly one intentional quit path, no finite-lifetime/auto-quit condition", () => {
-  it("calls app.quit() exactly once, from window-all-closed only", () => {
-    const quitCalls = stripped.match(/app\.quit\(\)/g) ?? [];
-    expect(quitCalls).toHaveLength(1);
+  it("calls app.quit() only inside quitAfterLocalAiShutdown, which window-all-closed and before-quit route through", () => {
+    const quitFn = /function quitAfterLocalAiShutdown\(\): void \{[\s\S]*?\r?\n\}/.exec(stripped)?.[0] ?? "";
+    expect(quitFn.length).toBeGreaterThan(0);
+    const total = stripped.match(/app\.quit\(\)/g) ?? [];
+    const inside = quitFn.match(/app\.quit\(\)/g) ?? [];
+    expect(total).toHaveLength(inside.length);
     const windowAllClosedBlock = /app\.on\("window-all-closed", \(\) => \{[\s\S]*?\}\);/.exec(stripped)?.[0] ?? "";
-    expect(windowAllClosedBlock).toMatch(/app\.quit\(\)/);
+    expect(windowAllClosedBlock).toMatch(/quitAfterLocalAiShutdown\(\)/);
   });
 
   it("the diagnostic heartbeat never calls app.quit/app.exit/process.exit/window close or destroy", () => {

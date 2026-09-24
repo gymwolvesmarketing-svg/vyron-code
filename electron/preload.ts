@@ -1,181 +1,36 @@
 /**
- * Electron preload script — the sole main↔renderer bridge. Runs in an isolated preload
- * context with Node access itself, but the renderer it serves must never receive any of
- * that access directly. VYRON_CODE_V02_D02B_ELECTRON_HARDENED_SCAFFOLD_AUTHORIZATION,
- * extended by VYRON_CODE_V02_D03_NATIVE_FOLDER_PICKER_AND_WORKSPACE_GRANT_AUTHORIZATION,
- * VYRON_CODE_V02_D03_PRELOAD_BRIDGE_INJECTION_DIAGNOSTIC_AND_FIX_AUTHORIZATION, and
- * VYRON_CODE_V02_MILESTONE_A_RUNTIME_STABILITY_AND_READONLY_WORKSPACE_AUTHORIZATION.
+ * Electron preload script - the sole main<->renderer bridge. Runs in an isolated preload context
+ * with Node access itself, but the renderer it serves must never receive any of that access.
+ * VYRON_CODE_V02_D02B_ELECTRON_HARDENED_SCAFFOLD_AUTHORIZATION, reduced to its final narrow shape by
+ * VYRON_CODE_ONE_CLICK_LOCAL_AI_STARTUP_AND_UX_DELIVERY.
  *
- * Exposes only static capability/security metadata plus the `workspace.*` methods, all via
- * `contextBridge`. `ipcRenderer` itself is never exposed on `window` — only these fixed,
- * single-hardcoded-channel wrapper closures are; each forwards at most one caller-supplied
- * string argument (a relative path or a search query) and nothing else. No generic
- * invoke/send/on surface, no EventEmitter, no filesystem/terminal/Git-write/token capability
- * of any kind.
+ * Exposes exactly two namespaces on `window.vyronDesktop`, via `contextBridge` only:
+ * - `localAi`: three parameter-free methods (state, explicit retry, sanitized diagnostics copy);
+ * - `hermes`: the four reviewed-task methods (D-11); only `reviewTaskDraft` takes an argument, a
+ *   single `{ draft }` object.
+ * `ipcRenderer` itself is never exposed on `window` - only these fixed, single-hardcoded-channel
+ * wrapper closures are. There is no generic invoke/send/on surface, no EventEmitter, and no
+ * command, path, environment, URL, host, port, credential or endpoint parameter anywhere.
  *
- * This file imports only from Electron's own built-in module — never a relative local file
- * (see VYRON_CODE_V02_D03_PRELOAD_BRIDGE_INJECTION_FIX_REPORT.md for why: a sandboxed preload
- * script runs in a more restricted environment than a normal Node/Electron main-process
- * module, and a local relative `require()` was the one remaining structural anomaly found
- * when `window.vyronDesktop` was observed missing at renderer startup). The channel-name
- * strings and types below are duplicated locally rather than imported from
- * `shared-ipc-contract.ts` for that same reason — that file remains their canonical source,
- * still imported normally by `electron/main.ts` and the test suite; keep the two in sync by
- * hand if the contract changes (a regression test cross-checks the actual invoked channel
- * strings against that canonical source — see tests/electronSecurityScaffold.test.ts).
+ * This file imports only from Electron's own built-in module - never a relative local file (a
+ * sandboxed preload runs in a more restricted environment; see
+ * VYRON_CODE_V02_D03_PRELOAD_BRIDGE_INJECTION_FIX_REPORT.md). The channel-name strings and types
+ * below are duplicated locally for that reason; `shared-ipc-contract.ts` remains their canonical
+ * source, and a regression test cross-checks the two.
  */
 import { contextBridge, ipcRenderer } from "electron";
 
-type WorkspaceGrantResultState = "no_workspace" | "granted" | "denied" | "cancelled" | "unavailable";
+type LocalAiStage = "checking" | "gateway" | "proxy" | "verifying";
+type SafeLocalAiFailureCategory = "hermes_start_failed" | "secure_connection_unverified" | "model_unresponsive" | "unavailable";
+type LocalAiState =
+  | { readonly state: "starting"; readonly stage: LocalAiStage }
+  | { readonly state: "ready" }
+  | { readonly state: "unavailable"; readonly category: SafeLocalAiFailureCategory };
 
-interface WorkspaceGrantState {
-  readonly state: WorkspaceGrantResultState;
-  readonly workspaceId: string | null;
-  readonly displayName: string | null;
-  readonly readOnly: true;
+interface SafeCopyResult {
+  readonly copied: boolean;
 }
 
-type ListEntriesResultState = "ok" | "no_workspace" | "invalid_path" | "not_a_directory" | "denied";
-
-interface WorkspaceExplorerEntry {
-  readonly name: string;
-  readonly relativePath: string;
-  readonly type: "dir" | "file";
-}
-
-interface ListEntriesResult {
-  readonly state: ListEntriesResultState;
-  readonly relativePath: string | null;
-  readonly entries: readonly WorkspaceExplorerEntry[];
-  readonly truncated: boolean;
-}
-
-type ReadTextFileResultState = "ok" | "no_workspace" | "invalid_path" | "not_a_file" | "binary" | "too_large" | "unreadable" | "denied";
-
-interface ReadTextFileResult {
-  readonly state: ReadTextFileResultState;
-  readonly relativePath: string | null;
-  readonly content: string | null;
-  readonly lineCount: number | null;
-  readonly truncated: boolean;
-}
-
-interface WorkspaceSearchMatch {
-  readonly relativePath: string;
-  readonly line: number;
-  readonly preview: string;
-}
-
-type SearchTextResultState = "ok" | "no_workspace" | "invalid_query";
-
-interface SearchTextResult {
-  readonly state: SearchTextResultState;
-  readonly query: string | null;
-  readonly matches: readonly WorkspaceSearchMatch[];
-  readonly truncated: boolean;
-}
-
-type GitSummaryResultState = "ok" | "no_workspace" | "not_a_repository" | "unavailable";
-
-interface GitSummaryResult {
-  readonly state: GitSummaryResultState;
-  readonly branch: string | null;
-  readonly detached: boolean;
-  readonly trackedChangesAvailable: boolean;
-  readonly modifiedCount: number | null;
-  readonly deletedCount: number | null;
-  readonly untrackedCount: number | null;
-  readonly truncated: boolean;
-}
-
-interface DesktopWorkspaceApi {
-  pickDirectory(): Promise<WorkspaceGrantState>;
-  getCurrent(): Promise<WorkspaceGrantState>;
-  clearCurrent(): Promise<WorkspaceGrantState>;
-  listEntries(relativePath: string): Promise<ListEntriesResult>;
-  readTextFile(relativePath: string): Promise<ReadTextFileResult>;
-  searchText(query: string): Promise<SearchTextResult>;
-  getGitSummary(): Promise<GitSummaryResult>;
-}
-
-// VYRON_CODE_V02_D08B_MEMORY_ONLY_HERMES_AUTHORIZATION_BOUNDARY_AUTHORIZATION — duplicated
-// locally for the same reason every other type here is (see file-header comment). Carries no
-// endpoint/host/port/session/protocol field anywhere; the credential itself is never part of
-// any of these types' own shape except as the one write-only field of the request below.
-type HermesAvailabilityState = "available" | "unavailable" | "not_configured";
-
-interface HermesAvailability {
-  readonly state: HermesAvailabilityState;
-}
-
-type HermesAuthorizationAmbientState = "not_authorized" | "authorized_memory_only";
-
-interface HermesAuthorizationState {
-  readonly state: HermesAuthorizationAmbientState;
-}
-
-interface HermesAuthorizationRequest {
-  readonly credential: string;
-}
-
-type HermesAuthorizationOutcomeState = "authorized_memory_only" | "revoked" | "not_authorized" | "safe_failure" | "unavailable";
-
-interface HermesAuthorizationResult {
-  readonly state: HermesAuthorizationOutcomeState;
-}
-
-// VYRON_CODE_V02_D08E_MEMORY_ONLY_HERMES_ENDPOINT_SETUP_AUTHORIZATION, re-scoped by
-// VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION onto the Hermes API Server — duplicated
-// locally for the same reason every other type here is. Carries no resolved URL/host/port/
-// protocol field anywhere; `HermesEndpointConfigurationRequest` carries only the raw,
-// caller-supplied string.
-type HermesEndpointAmbientState = "not_configured" | "configured_memory_only";
-
-interface HermesEndpointState {
-  readonly state: HermesEndpointAmbientState;
-}
-
-interface HermesEndpointConfigurationRequest {
-  readonly endpoint: string;
-}
-
-type HermesEndpointConfigurationOutcomeState =
-  | "configured_memory_only"
-  | "cleared"
-  | "not_configured"
-  | "policy_rejected"
-  | "invalid_configuration"
-  | "unavailable"
-  | "safe_failure";
-
-interface HermesEndpointConfigurationResult {
-  readonly state: HermesEndpointConfigurationOutcomeState;
-}
-
-// VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_AUTHORIZATION — duplicated locally for the same
-// reason every other type here is. Carries no endpoint/API-key/raw HTTP status/headers/body
-// field anywhere.
-type HermesApiServerAmbientState =
-  | "not_authorized"
-  | "endpoint_not_configured"
-  | "ready_to_verify"
-  | "verifying"
-  | "reachable"
-  | "unavailable"
-  | "safe_failure";
-
-interface HermesApiServerState {
-  readonly state: HermesApiServerAmbientState;
-}
-
-interface HermesApiServerResult {
-  readonly state: HermesApiServerAmbientState;
-}
-
-// VYRON_CODE_COMPLETE_LOCAL_HERMES_D11_DELIVERY_AUTHORIZATION — duplicated locally for the
-// same reason every other type here is. Carries no endpoint/API-key/raw HTTP status/headers/
-// body/session-id field anywhere; `text` is populated only in the "completed" state and is
-// always the already-bounded, plain-text-only assistant response.
 type HermesTaskSubmissionAmbientState =
   | "idle"
   | "review_ready"
@@ -197,17 +52,13 @@ interface HermesTaskDraftReviewRequest {
   readonly draft: string;
 }
 
+interface DesktopLocalAiApi {
+  getLocalAiState(): Promise<LocalAiState>;
+  retryLocalAiStartup(): Promise<LocalAiState>;
+  copyLocalAiDiagnostics(): Promise<SafeCopyResult>;
+}
+
 interface DesktopHermesApi {
-  getAvailability(): Promise<HermesAvailability>;
-  getAuthorizationState(): Promise<HermesAuthorizationState>;
-  beginAuthorization(request: HermesAuthorizationRequest): Promise<HermesAuthorizationResult>;
-  clearAuthorization(): Promise<HermesAuthorizationResult>;
-  getEndpointConfigurationState(): Promise<HermesEndpointState>;
-  configureEndpoint(request: HermesEndpointConfigurationRequest): Promise<HermesEndpointConfigurationResult>;
-  clearEndpointConfiguration(): Promise<HermesEndpointConfigurationResult>;
-  getApiServerVerificationState(): Promise<HermesApiServerState>;
-  verifyApiServerConnection(): Promise<HermesApiServerResult>;
-  clearApiServerVerification(): Promise<HermesApiServerResult>;
   getTaskSubmissionState(): Promise<HermesTaskSubmissionState>;
   reviewTaskDraft(request: HermesTaskDraftReviewRequest): Promise<HermesTaskSubmissionState>;
   sendReviewedTask(): Promise<HermesTaskSubmissionState>;
@@ -215,107 +66,27 @@ interface DesktopHermesApi {
 }
 
 interface DesktopApi {
-  readonly platform: "desktop";
-  readonly capabilities: {
-    readonly workspacePicker: true;
-    readonly workspaceRead: true;
-    readonly workspaceSearch: true;
-    readonly gitSummary: true;
-    readonly terminal: false;
-    readonly fileWrite: false;
-    readonly gitWrite: false;
-    readonly multimodelStart: false;
-    readonly hermesTokenStorage: false;
-  };
-  readonly security: {
-    readonly contextIsolation: true;
-    readonly nodeIntegration: false;
-    readonly sandbox: true;
-  };
-  readonly workspace: DesktopWorkspaceApi;
+  readonly localAi: DesktopLocalAiApi;
   readonly hermes: DesktopHermesApi;
 }
 
-// Duplicated from shared-ipc-contract.ts's WORKSPACE_IPC_CHANNELS — see the file-header note
-// above for why this file never imports that module at runtime.
-const WORKSPACE_PICK_DIRECTORY_CHANNEL = "workspace:pickDirectory";
-const WORKSPACE_GET_CURRENT_CHANNEL = "workspace:getCurrent";
-const WORKSPACE_CLEAR_CURRENT_CHANNEL = "workspace:clearCurrent";
-const WORKSPACE_LIST_CHANNEL = "workspace:list";
-const WORKSPACE_READ_TEXT_CHANNEL = "workspace:readText";
-const WORKSPACE_SEARCH_CHANNEL = "workspace:search";
-const WORKSPACE_GIT_SUMMARY_CHANNEL = "workspace:gitSummary";
-
-// Duplicated from shared-ipc-contract.ts's HERMES_IPC_CHANNELS — same reason as above.
-const HERMES_GET_AVAILABILITY_CHANNEL = "hermes:getAvailability";
-const HERMES_GET_AUTHORIZATION_STATE_CHANNEL = "hermes:getAuthorizationState";
-const HERMES_BEGIN_AUTHORIZATION_CHANNEL = "hermes:beginAuthorization";
-const HERMES_CLEAR_AUTHORIZATION_CHANNEL = "hermes:clearAuthorization";
-const HERMES_GET_ENDPOINT_CONFIGURATION_STATE_CHANNEL = "hermes:getEndpointConfigurationState";
-const HERMES_CONFIGURE_ENDPOINT_CHANNEL = "hermes:configureEndpoint";
-const HERMES_CLEAR_ENDPOINT_CONFIGURATION_CHANNEL = "hermes:clearEndpointConfiguration";
-const HERMES_GET_API_SERVER_VERIFICATION_STATE_CHANNEL = "hermes:getApiServerVerificationState";
-const HERMES_VERIFY_API_SERVER_CONNECTION_CHANNEL = "hermes:verifyApiServerConnection";
-const HERMES_CLEAR_API_SERVER_VERIFICATION_CHANNEL = "hermes:clearApiServerVerification";
+const LOCAL_AI_GET_STATE_CHANNEL = "localAi:getState";
+const LOCAL_AI_RETRY_CHANNEL = "localAi:retry";
+const LOCAL_AI_COPY_DIAGNOSTICS_CHANNEL = "localAi:copyDiagnostics";
 const HERMES_GET_TASK_SUBMISSION_STATE_CHANNEL = "hermes:getTaskSubmissionState";
 const HERMES_REVIEW_TASK_DRAFT_CHANNEL = "hermes:reviewTaskDraft";
 const HERMES_SEND_REVIEWED_TASK_CHANNEL = "hermes:sendReviewedTask";
 const HERMES_CLEAR_TASK_SUBMISSION_CHANNEL = "hermes:clearTaskSubmission";
 
 const vyronDesktop: DesktopApi = {
-  platform: "desktop",
-  capabilities: {
-    workspacePicker: true,
-    workspaceRead: true,
-    workspaceSearch: true,
-    gitSummary: true,
-    terminal: false,
-    fileWrite: false,
-    gitWrite: false,
-    multimodelStart: false,
-    hermesTokenStorage: false,
+  localAi: {
+    getLocalAiState: () => ipcRenderer.invoke(LOCAL_AI_GET_STATE_CHANNEL),
+    retryLocalAiStartup: () => ipcRenderer.invoke(LOCAL_AI_RETRY_CHANNEL),
+    copyLocalAiDiagnostics: () => ipcRenderer.invoke(LOCAL_AI_COPY_DIAGNOSTICS_CHANNEL),
   },
-  security: {
-    contextIsolation: true,
-    nodeIntegration: false,
-    sandbox: true,
-  },
-  workspace: {
-    pickDirectory: () => ipcRenderer.invoke(WORKSPACE_PICK_DIRECTORY_CHANNEL),
-    getCurrent: () => ipcRenderer.invoke(WORKSPACE_GET_CURRENT_CHANNEL),
-    clearCurrent: () => ipcRenderer.invoke(WORKSPACE_CLEAR_CURRENT_CHANNEL),
-    listEntries: (relativePath: string) => ipcRenderer.invoke(WORKSPACE_LIST_CHANNEL, relativePath),
-    readTextFile: (relativePath: string) => ipcRenderer.invoke(WORKSPACE_READ_TEXT_CHANNEL, relativePath),
-    searchText: (query: string) => ipcRenderer.invoke(WORKSPACE_SEARCH_CHANNEL, query),
-    getGitSummary: () => ipcRenderer.invoke(WORKSPACE_GIT_SUMMARY_CHANNEL),
-  },
-  // Each method forwards at most one caller-supplied plain object (the credential-submission
-  // request) and nothing else — same one-argument-only discipline as the workspace methods
-  // above. `beginAuthorization`'s request is forwarded verbatim, unexamined; this file never
-  // reads, logs, or otherwise touches the credential value itself.
   hermes: {
-    getAvailability: () => ipcRenderer.invoke(HERMES_GET_AVAILABILITY_CHANNEL),
-    getAuthorizationState: () => ipcRenderer.invoke(HERMES_GET_AUTHORIZATION_STATE_CHANNEL),
-    beginAuthorization: (request: HermesAuthorizationRequest) => ipcRenderer.invoke(HERMES_BEGIN_AUTHORIZATION_CHANNEL, request),
-    clearAuthorization: () => ipcRenderer.invoke(HERMES_CLEAR_AUTHORIZATION_CHANNEL),
-    // D-08E — configureEndpoint forwards exactly the caller's own single-field request
-    // ({endpoint: string}) verbatim, unexamined; this file never reads, logs, or otherwise
-    // touches the endpoint value itself. clearEndpointConfiguration takes no argument.
-    getEndpointConfigurationState: () => ipcRenderer.invoke(HERMES_GET_ENDPOINT_CONFIGURATION_STATE_CHANNEL),
-    configureEndpoint: (request: HermesEndpointConfigurationRequest) => ipcRenderer.invoke(HERMES_CONFIGURE_ENDPOINT_CHANNEL, request),
-    clearEndpointConfiguration: () => ipcRenderer.invoke(HERMES_CLEAR_ENDPOINT_CONFIGURATION_CHANNEL),
-    // D-10 (remediated) — no argument of any kind; no endpoint/API-key/path/method/header/
-    // body/options/model/provider/workspace/context field can ever be forwarded through these
-    // three closures.
-    getApiServerVerificationState: () => ipcRenderer.invoke(HERMES_GET_API_SERVER_VERIFICATION_STATE_CHANNEL),
-    verifyApiServerConnection: () => ipcRenderer.invoke(HERMES_VERIFY_API_SERVER_CONNECTION_CHANNEL),
-    clearApiServerVerification: () => ipcRenderer.invoke(HERMES_CLEAR_API_SERVER_VERIFICATION_CHANNEL),
-    // D-11 — getTaskSubmissionState/sendReviewedTask/clearTaskSubmission take no argument of
-    // any kind; reviewTaskDraft forwards exactly the caller's own single-field request
-    // ({draft: string}) verbatim, unexamined — this file never reads, logs, or otherwise
-    // touches the draft value itself.
     getTaskSubmissionState: () => ipcRenderer.invoke(HERMES_GET_TASK_SUBMISSION_STATE_CHANNEL),
-    reviewTaskDraft: (request: HermesTaskDraftReviewRequest) => ipcRenderer.invoke(HERMES_REVIEW_TASK_DRAFT_CHANNEL, request),
+    reviewTaskDraft: (request) => ipcRenderer.invoke(HERMES_REVIEW_TASK_DRAFT_CHANNEL, request),
     sendReviewedTask: () => ipcRenderer.invoke(HERMES_SEND_REVIEWED_TASK_CHANNEL),
     clearTaskSubmission: () => ipcRenderer.invoke(HERMES_CLEAR_TASK_SUBMISSION_CHANNEL),
   },
