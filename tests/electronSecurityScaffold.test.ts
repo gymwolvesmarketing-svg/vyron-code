@@ -116,7 +116,7 @@ describe("Electron scaffold source — no shell/child_process execution capabili
     }
   });
 
-  it("confirms exactly the nineteen expected scaffold .ts files exist, no more", () => {
+  it("confirms exactly the expected scaffold .ts files exist, no more", () => {
     expect(sourceFiles).toHaveLength(19);
     expect(sourceFiles.sort()).toEqual(
       [
@@ -132,7 +132,7 @@ describe("Electron scaffold source — no shell/child_process execution capabili
         "renderer.ts",
         "security-policy.ts",
         "shared-ipc-contract.ts",
-        "taskComposer.ts",
+        "workspace-model.ts",
         "workspace-grant.ts",
         "workspaceAccess.ts",
         "workspaceExplorer.ts",
@@ -500,70 +500,16 @@ describe("electron/main.ts — local-only content load", () => {
   });
 });
 
-describe("electron/taskComposer.ts — module isolation (D-09)", () => {
-  // taskComposer.ts is a REAL ES module (real `export` statements) — unlike renderer.ts, this
-  // is safe only because it must never be loaded via a <script> tag or `require`d by any
-  // compiled-for-renderer/preload/main file. It exists solely so its pure logic is directly
-  // unit-testable (tests/electronTaskComposer.test.ts) without a DOM. This describe block
-  // enforces the isolation that makes that safe.
-  const composerSource = fs.readFileSync(path.join(__dirname, "..", "electron", "taskComposer.ts"), "utf8");
-  const strippedComposer = stripComments(composerSource);
-  const electronDir = path.join(__dirname, "..", "electron");
-  const otherElectronFiles = fs
-    .readdirSync(electronDir)
-    .filter((f) => f.endsWith(".ts") && f !== "taskComposer.ts");
-  const rendererHtml = fs.readFileSync(path.join(electronDir, "renderer.html"), "utf8");
-
-  it("is never imported by any other electron/*.ts file (main.ts, preload.ts, renderer.ts included)", () => {
-    for (const file of otherElectronFiles) {
-      const code = stripComments(fs.readFileSync(path.join(electronDir, file), "utf8"));
-      expect(code, `${file} unexpectedly references taskComposer`).not.toMatch(/from ["']\.\/taskComposer["']/);
-    }
-  });
-
-  it("is never loaded via a <script> tag in renderer.html", () => {
-    expect(rendererHtml).not.toMatch(/taskComposer/);
-  });
-
-  it("has no DOM/Node/Electron/network/storage reference of any kind", () => {
-    for (const forbidden of [
-      /\bdocument\./,
-      /\bwindow\./,
-      /from ["']electron["']/,
-      /from ["']node:/,
-      /\bfetch\s*\(/,
-      /XMLHttpRequest/,
-      /WebSocket/,
-      /localStorage/,
-      /sessionStorage/,
-      /indexedDB/,
-      /document\.cookie/,
-      /ipcRenderer/,
-      /child_process/,
-    ]) {
-      expect(strippedComposer).not.toMatch(forbidden);
-    }
-  });
-
-  it("exposes no send/submit/execute/session/prompt export", () => {
-    for (const forbidden of [/export function send/i, /export function submit/i, /export function execute/i, /export function.*[sS]ession/, /export function.*[pP]rompt/]) {
-      expect(strippedComposer).not.toMatch(forbidden);
-    }
-  });
-});
-
-
-describe("IPC contract — exactly three local-AI methods plus the four existing task methods", () => {
+describe("IPC contract — exactly three local-AI methods plus the three direct-task methods", () => {
   it("LOCAL_AI_IPC_CHANNELS has exactly the three new channels", () => {
     expect(Object.values(LOCAL_AI_IPC_CHANNELS).sort()).toEqual(["localAi:copyDiagnostics", "localAi:getState", "localAi:retry"]);
   });
 
-  it("HERMES_IPC_CHANNELS has exactly the four existing task channels, and no manual authorization/endpoint channel", () => {
+  it("HERMES_IPC_CHANNELS has exactly the three direct-task channels (send, state, clear), no review channel, and no manual authorization/endpoint channel", () => {
     expect(Object.values(HERMES_IPC_CHANNELS).sort()).toEqual([
       "hermes:clearTaskSubmission",
       "hermes:getTaskSubmissionState",
-      "hermes:reviewTaskDraft",
-      "hermes:sendReviewedTask",
+      "hermes:sendTask",
     ]);
   });
 
@@ -585,7 +531,7 @@ describe("electron/preload.ts — narrow fixed bridge", () => {
     expect([...code.matchAll(/exposeInMainWorld\(\s*"([^"]+)"/g)].map((m) => m[1])).toEqual(["vyronDesktop"]);
   });
 
-  it("exposes exactly the seven fixed methods and no generic invoke/send/on", () => {
+  it("exposes exactly the six fixed methods and no generic invoke/send/on", () => {
     const methods = [...code.matchAll(/^\s{4}(\w+):\s*(?:async\s*)?\(/gm)].map((m) => m[1]).sort();
     expect(methods).toEqual(
       [
@@ -594,8 +540,7 @@ describe("electron/preload.ts — narrow fixed bridge", () => {
         "getLocalAiState",
         "getTaskSubmissionState",
         "retryLocalAiStartup",
-        "reviewTaskDraft",
-        "sendReviewedTask",
+        "sendTask",
       ].sort(),
     );
     expect(code).not.toMatch(/\b(send|on|once|invoke)\s*:/);
@@ -616,8 +561,8 @@ describe("electron/preload.ts — narrow fixed bridge", () => {
 describe("electron/main.ts — local AI IPC wiring", () => {
   const code = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", "main.ts"), "utf8"));
 
-  it("registers exactly seven ipcMain handlers (three local AI, four task)", () => {
-    expect(code.match(/ipcMain\.handle\(/g)).toHaveLength(7);
+  it("registers exactly six ipcMain handlers (three local AI, three task)", () => {
+    expect(code.match(/ipcMain\.handle\(/g)).toHaveLength(6);
   });
 
   it("the three local AI handlers take no renderer-supplied argument", () => {

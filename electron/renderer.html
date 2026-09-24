@@ -9,84 +9,249 @@
 </head>
 <body>
   <!--
-    Local renderer - VYRON_CODE_ONE_CLICK_LOCAL_AI_STARTUP_AND_UX_DELIVERY. The main process starts and
-    verifies the local AI services on its own; this page only shows their safe state and the
-    reviewed-task flow. The only text input is the task textarea. No fetch/network request is
-    possible from this page (its own CSP forbids connect-src).
+    Vyron Code workspace. Static structure only: lists, menus and pickers are built by renderer.js with
+    textContent (never innerHTML). All text is local; the page loads no remote resource. Local AI startup
+    is owned by the main process; this page only shows its state.
   -->
-  <header class="app-header">
-    <h1>Vyron Code</h1>
-    <p id="ai-status" class="ai-status ai-status-starting" role="status" aria-live="polite">
-      <span class="ai-status-dot" aria-hidden="true"></span>
-      <span id="ai-status-text">Yerel AI başlatılıyor</span>
-    </p>
-  </header>
-
-  <main>
-    <section id="view-startup" class="view" aria-labelledby="startup-title">
-      <h2 id="startup-title" tabindex="-1">Vyron Code hazırlanıyor</h2>
-      <p id="startup-message" class="lead">Yerel AI bağlantısı kontrol ediliyor…</p>
-      <div class="progress" role="progressbar" aria-label="Yerel AI hazırlanıyor" aria-busy="true">
-        <span class="progress-bar"></span>
+  <div id="app" class="app" data-sidebar="expanded">
+    <aside id="sidebar" class="sidebar" aria-label="Uygulama gezintisi">
+      <div class="sb-tools">
+        <button id="app-menu-btn" class="sb-brand" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Çalışma alanı menüsü">
+          <span class="brand-mark" data-icon="logo"></span>
+          <span class="brand-name">Vyron Code</span>
+          <span class="brand-caret" data-icon="chevron-down"></span>
+        </button>
+        <button id="sidebar-toggle-btn" class="icon-btn" type="button" aria-pressed="false" aria-label="Yan paneli daralt" title="Yan paneli daralt">
+          <span data-icon="panel"></span>
+        </button>
+        <button id="sidebar-search-btn" class="icon-btn" type="button" aria-expanded="false" aria-controls="sidebar-search" aria-label="Ara" title="Ara (Ctrl+K)">
+          <span data-icon="search"></span>
+        </button>
       </div>
-    </section>
 
-    <section id="view-ready" class="view" aria-labelledby="ready-title" hidden>
-      <h2 id="ready-title" tabindex="-1">Ne üzerinde çalışmak istiyorsun?</h2>
-      <label for="task-draft-input" class="visually-hidden">Task metni</label>
-      <textarea
-        id="task-draft-input"
-        maxlength="4000"
-        rows="9"
-        placeholder="Görevini buraya yaz…"
-        autocomplete="off"
-        spellcheck="true"
-        aria-describedby="task-draft-hint"
-      ></textarea>
-      <p id="task-draft-hint" class="muted">Yalnız bu metin gönderilir. Dosya, workspace, Git veya araç bağlamı paylaşılmaz.</p>
-      <p id="task-draft-error" class="error-text" role="alert" hidden></p>
-      <div class="actions">
-        <button id="task-review-btn" class="primary" type="button" disabled>Taslağı incele</button>
+      <div id="sidebar-search" class="sb-search" hidden>
+        <input id="sidebar-search-input" type="search" autocomplete="off" placeholder="Proje veya görev ara" aria-label="Proje veya görev ara" />
       </div>
-    </section>
 
-    <section id="view-review" class="view" aria-labelledby="review-title" hidden>
-      <h2 id="review-title" tabindex="-1">Göndermeden önce incele</h2>
-      <p class="lead">Hermes'e gönderilecek metin:</p>
-      <div id="task-review-text" class="reviewed-text"></div>
-      <p class="muted">Bu işlem:</p>
-      <ul class="check-list">
-        <li>Yalnız bu metni gönderir</li>
-        <li>Dosya, workspace, Git veya araç bağlamı göndermez</li>
-        <li>Araçlar ve MCP kapalıdır</li>
-        <li>Kalıcı task geçmişi oluşturmaz</li>
-      </ul>
-      <div class="actions">
-        <button id="task-review-back-btn" class="secondary" type="button">Geri dön</button>
-        <button id="task-send-btn" class="primary" type="button">İncelenen task'ı gönder</button>
+      <div class="seg" role="tablist" aria-label="Sol panel görünümü">
+        <button id="tab-projects" class="seg-btn" type="button" role="tab" aria-selected="true" aria-controls="panel-projects">Projeler</button>
+        <button id="tab-managers" class="seg-btn" type="button" role="tab" aria-selected="false" aria-controls="panel-managers" tabindex="-1">Managers</button>
       </div>
-      <p id="task-send-status" class="muted" role="status" aria-live="polite" hidden></p>
-      <section id="task-response-section" class="response" aria-labelledby="task-response-title" hidden>
-        <h3 id="task-response-title" tabindex="-1">Yanıt</h3>
-        <div id="task-response-text" class="response-text"></div>
-        <p id="task-response-truncated-note" class="muted" hidden>Yanıt kısaltıldı.</p>
-        <div class="actions">
-          <button id="task-clear-response-btn" class="secondary" type="button">Yanıtı temizle</button>
+
+      <nav class="sb-nav" aria-label="Ana gezinti">
+        <button id="nav-new-task" class="nav-item" type="button" data-nav="new-task" aria-current="page">
+          <span data-icon="plus-circle"></span><span class="nav-label">Yeni Görev</span>
+        </button>
+        <button id="nav-skills" class="nav-item" type="button" data-nav="skills">
+          <span data-icon="sparkles"></span><span class="nav-label">Yetenekler</span>
+        </button>
+        <button id="nav-connectors" class="nav-item" type="button" data-nav="connectors">
+          <span data-icon="plug"></span><span class="nav-label">Bağlayıcılar</span>
+        </button>
+        <button id="nav-sites" class="nav-item" type="button" data-nav="sites">
+          <span data-icon="globe"></span><span class="nav-label">Web sitesi yönetimi</span>
+        </button>
+      </nav>
+
+      <div class="sb-scroll">
+        <section id="panel-projects" role="tabpanel" aria-labelledby="tab-projects">
+          <div class="sb-section-head">
+            <h2 class="sb-section-title">Proje Listesi</h2>
+            <button id="add-project-btn" class="icon-btn small" type="button" aria-haspopup="dialog" aria-expanded="false" aria-label="Proje ekle" title="Proje ekle">
+              <span data-icon="folder-plus"></span>
+            </button>
+          </div>
+          <div id="project-list" class="project-list"></div>
+          <p id="project-search-empty" class="sb-empty" hidden>Eşleşen proje veya görev yok.</p>
+        </section>
+        <section id="panel-managers" role="tabpanel" aria-labelledby="tab-managers" hidden>
+          <div class="sb-section-head">
+            <h2 class="sb-section-title">Managers</h2>
+            <button id="add-manager-btn" class="icon-btn small" type="button" aria-haspopup="dialog" aria-expanded="false" aria-label="Manager ekle" title="Manager ekle">
+              <span data-icon="plus"></span>
+            </button>
+          </div>
+          <div id="manager-list" class="manager-list"></div>
+          <p id="manager-search-empty" class="sb-empty" hidden>Eşleşen manager yok.</p>
+        </section>
+      </div>
+
+      <div class="sb-footer">
+        <button id="account-btn" class="account" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Hesap menüsü">
+          <span class="avatar" aria-hidden="true">V</span>
+          <span class="account-name">Yerel kullanıcı</span>
+        </button>
+        <button id="settings-btn" class="icon-btn" type="button" aria-label="Ayarlar" title="Ayarlar">
+          <span data-icon="settings"></span>
+        </button>
+      </div>
+    </aside>
+
+    <main id="main" class="main">
+      <header class="topbar">
+        <h1 id="page-title" class="page-title">Yeni görev</h1>
+        <div id="ai-status" class="ai-status ai-status-starting" role="status">
+          <span class="ai-dot" aria-hidden="true"></span>
+          <span id="ai-status-text">Yerel AI başlatılıyor</span>
+        </div>
+      </header>
+
+      <div id="ai-banner" class="ai-banner" role="alert" hidden>
+        <span id="ai-banner-text" class="ai-banner-text"></span>
+        <span class="ai-banner-actions">
+          <button id="ai-retry-btn" class="btn" type="button">Tekrar dene</button>
+          <button id="ai-copy-diagnostics-btn" class="btn ghost" type="button">Tanılama bilgilerini kopyala</button>
+        </span>
+        <span id="ai-copy-status" class="ai-copy-status" role="status"></span>
+      </div>
+
+      <section id="view-new-task" class="view view-task" aria-labelledby="page-title">
+        <div id="task-scroll" class="task-scroll">
+          <div id="hero" class="hero">
+            <span class="hero-mark" data-icon="logo"></span>
+            <h2 id="hero-title" class="hero-title">Vyron ile üret</h2>
+          </div>
+          <div id="conversation" class="conversation" hidden aria-live="polite">
+            <p id="conversation-heading" class="conversation-heading"></p>
+            <div id="turns" class="turns"></div>
+            <div class="conversation-actions">
+              <button id="new-task-btn" class="btn" type="button">Yeni görev</button>
+              <button id="clear-response-btn" class="btn ghost" type="button" hidden>Yanıtı temizle</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="composer-wrap" class="composer-wrap">
+          <div class="context-row">
+            <button id="mode-btn" class="pill-select" type="button" aria-haspopup="menu" aria-expanded="false">
+              <span data-icon="monitor"></span><span id="mode-label">Yerel</span><span data-icon="chevron-down"></span>
+            </button>
+            <button id="project-btn" class="pill-select" type="button" aria-haspopup="menu" aria-expanded="false">
+              <span data-icon="folder"></span><span id="project-label">Proje seç veya oluştur</span><span data-icon="chevron-down"></span>
+            </button>
+          </div>
+
+          <div id="composer" class="composer" data-state="disabled">
+            <div id="chips" class="chips" aria-label="Seçimler"></div>
+            <textarea id="task-input" class="task-input" rows="3" maxlength="4000" aria-label="Görev metni" aria-describedby="composer-error" placeholder="Vyron'un ne üzerinde çalışmasını istersin?"></textarea>
+            <p id="composer-error" class="composer-error" role="alert" hidden></p>
+            <div class="toolbar">
+              <button id="plus-btn" class="tool-btn icon-only" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Ekle">
+                <span data-icon="plus"></span>
+              </button>
+              <button id="skills-btn" class="tool-btn" type="button" aria-haspopup="dialog" aria-expanded="false">
+                <span data-icon="sparkles"></span><span>Yetenekler</span>
+              </button>
+              <button id="connectors-btn" class="tool-btn" type="button" aria-haspopup="dialog" aria-expanded="false">
+                <span data-icon="plug"></span><span>Bağlayıcılar</span>
+              </button>
+              <span class="toolbar-spacer"></span>
+              <button id="plan-btn" class="tool-btn subtle" type="button" aria-haspopup="menu" aria-expanded="false">
+                <span data-icon="list-check"></span><span id="plan-label">Standart</span><span data-icon="chevron-down"></span>
+              </button>
+              <button id="send-btn" class="send-btn" type="button" aria-label="Gönder" title="Gönder (Ctrl+Enter)" disabled>
+                <span data-icon="arrow-up"></span>
+              </button>
+            </div>
+          </div>
+          <input id="file-input" type="file" multiple hidden tabindex="-1" aria-hidden="true" />
+
+          <div id="quick-starts" class="quick-starts" role="group" aria-label="Hızlı başlangıç"></div>
         </div>
       </section>
-    </section>
 
-    <section id="view-unavailable" class="view" aria-labelledby="unavailable-title" hidden>
-      <h2 id="unavailable-title" tabindex="-1">Yerel AI şu anda hazır değil.</h2>
-      <p id="unavailable-category" class="lead"></p>
-      <div class="actions">
-        <button id="ai-retry-btn" class="primary" type="button">Tekrar dene</button>
-        <button id="ai-copy-diagnostics-btn" class="secondary" type="button">Tanılama bilgilerini kopyala</button>
-      </div>
-      <p id="ai-copy-status" class="muted" role="status" aria-live="polite"></p>
-    </section>
-  </main>
+      <section id="view-skills" class="view view-page" aria-labelledby="page-title" hidden>
+        <div class="page-inner">
+          <p class="page-lead">Göreve eklenecek yetenekleri seç. Seçilen yetenekler görev alanında çip olarak görünür.</p>
+          <div class="page-tools">
+            <input id="skills-search" class="search-input" type="search" autocomplete="off" placeholder="Beceri ara" aria-label="Beceri ara" />
+            <span id="skills-count" class="page-count" role="status"></span>
+          </div>
+          <div id="skills-page-list" class="rows"></div>
+          <p id="skills-page-empty" class="empty-note" hidden>Sonuç bulunamadı.</p>
+        </div>
+      </section>
 
+      <section id="view-connectors" class="view view-page" aria-labelledby="page-title" hidden>
+        <div class="page-inner">
+          <p class="page-lead">Bağlayıcılar, görevin kullanabileceği hizmetleri listeler. Bağlı bir hizmeti görev alanından seçebilirsin.</p>
+          <div class="page-tools">
+            <input id="connectors-search" class="search-input" type="search" autocomplete="off" placeholder="Bağlayıcıları ara" aria-label="Bağlayıcıları ara" />
+            <button id="connector-add-toggle" class="btn" type="button" aria-expanded="false" aria-controls="connector-add-form">Bağlayıcı Ekle</button>
+          </div>
+          <form id="connector-add-form" class="inline-form" hidden>
+            <input id="connector-add-name" class="text-input" type="text" maxlength="40" autocomplete="off" placeholder="Bağlayıcı adı" aria-label="Bağlayıcı adı" />
+            <input id="connector-add-desc" class="text-input" type="text" maxlength="140" autocomplete="off" placeholder="Kısa açıklama (isteğe bağlı)" aria-label="Kısa açıklama" />
+            <button id="connector-add-submit" class="btn primary" type="submit">Ekle</button>
+          </form>
+          <div id="connectors-page-list" class="rows"></div>
+          <p id="connectors-page-empty" class="empty-note" hidden>Sonuç bulunamadı.</p>
+        </div>
+      </section>
+
+      <section id="view-sites" class="view view-page" aria-labelledby="page-title" hidden>
+        <div class="page-inner">
+          <p class="page-lead">Yönettiğin web sitelerini burada topla ve her biri için tek tıkla görev başlat.</p>
+          <form id="site-add-form" class="inline-form">
+            <input id="site-add-name" class="text-input" type="text" maxlength="40" autocomplete="off" placeholder="Site adı" aria-label="Site adı" />
+            <input id="site-add-address" class="text-input" type="text" maxlength="200" autocomplete="off" placeholder="Adres (örn. ornek.com)" aria-label="Site adresi" />
+            <button id="site-add-submit" class="btn primary" type="submit">Site ekle</button>
+          </form>
+          <p id="site-add-error" class="form-error" role="alert" hidden></p>
+          <div id="sites-list" class="rows"></div>
+          <p id="sites-empty" class="empty-note" hidden>Henüz web sitesi eklenmedi.</p>
+        </div>
+      </section>
+
+      <section id="view-manager" class="view view-page" aria-labelledby="page-title" hidden>
+        <div class="page-inner">
+          <div id="manager-detail" class="detail"></div>
+        </div>
+      </section>
+
+      <section id="view-settings" class="view view-page" aria-labelledby="page-title" hidden>
+        <div class="page-inner">
+          <div class="settings-block">
+            <h2 class="settings-title">Yerel AI</h2>
+            <p id="settings-ai-status" class="settings-text"></p>
+            <div class="settings-actions">
+              <button id="settings-retry-btn" class="btn" type="button">Tekrar dene</button>
+              <button id="settings-copy-btn" class="btn ghost" type="button">Tanılama bilgilerini kopyala</button>
+            </div>
+          </div>
+          <div class="settings-block">
+            <h2 class="settings-title">Görünüm</h2>
+            <label class="check-row">
+              <input id="settings-compact" type="checkbox" />
+              <span>Yan paneli kompakt göster</span>
+            </label>
+          </div>
+          <div class="settings-block">
+            <h2 class="settings-title">Çalışma alanı verisi</h2>
+            <p class="settings-text">Projeler, görev başlıkları, seçimler ve bağlayıcı durumları bu bilgisayarda saklanır. Görev metinleri ve yanıtlar saklanmaz.</p>
+            <div class="settings-actions">
+              <button id="settings-reset-btn" class="btn danger" type="button">Çalışma alanını sıfırla</button>
+              <button id="settings-reset-confirm" class="btn danger" type="button" hidden>Evet, sıfırla</button>
+              <button id="settings-reset-cancel" class="btn ghost" type="button" hidden>Vazgeç</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="startup-overlay" class="startup-overlay" role="status" aria-live="polite">
+    <div class="startup-card">
+      <span class="startup-mark" data-icon="logo"></span>
+      <h2 id="startup-title" class="startup-title" tabindex="-1">Vyron Code hazırlanıyor</h2>
+      <p id="startup-message" class="startup-message">Yerel AI bağlantısı kontrol ediliyor…</p>
+      <div class="progress" aria-hidden="true"><div class="progress-bar"></div></div>
+    </div>
+  </div>
+
+  <div id="menu-layer" class="menu-layer"></div>
+
+  <script src="workspace-model.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
