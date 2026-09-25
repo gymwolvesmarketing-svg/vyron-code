@@ -232,6 +232,7 @@ const VyronModel = (() => {
     return [
       { id: "genel", name: "Genel", description: "Her tür görev için genel amaçlı yardımcı. Görevler doğrudan yerel AI'ya gider.", tag: "Varsayılan", custom: false, agent: null },
       { id: "vyron-helper", name: "Vyron Helper", description: "Vyron Code kullanımı ve iş akışları konusunda araştırıp yardım eder.", tag: "Yardımcı", custom: false, agent: "researcher" },
+      { id: "coder", name: "Coder", description: "Kod yazar, düzenler ve hata ayıklar. Kod modeli grubunu kullanır.", tag: "Kod", custom: false, agent: "coder" },
       { id: "multi-model-planner", name: "Multi-Model Planner", description: "Büyük işleri en fazla üç bağımsız parçaya böler, ajanlarla paralel yürütür ve sonuçları birleştirir.", tag: "Paralel", custom: false, agent: "task-orchestrator" },
       { id: "reviewer", name: "Reviewer", description: "Çıktıları gözden geçirir ve iyileştirme önerir.", tag: "İnceleme", custom: false, agent: "reviewer" },
     ];
@@ -415,7 +416,8 @@ const VyronModel = (() => {
       view: "new-task",
       projects: projects ?? base.projects,
       tasks: tasks ?? base.tasks,
-      managers: managers && managers.length > 0 ? managers : base.managers,
+      // Built-in managers always exist (a saved list from an older version gains the new ones); custom ones follow.
+      managers: managers && managers.length > 0 ? seedManagers().map((seed) => managers.find((m) => m.id === seed.id) ?? seed).concat(managers.filter((m) => m.custom)) : base.managers,
       connectors: connectors ?? base.connectors,
       sites: sites ?? base.sites,
       activeProjectId: null,

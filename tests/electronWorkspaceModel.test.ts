@@ -56,7 +56,7 @@ describe("seed content", () => {
   it("seeds the required projects, managers, connectors, skills and quick starts", () => {
     const state = model.defaultState();
     expect(state.projects.map((p: any) => p.name)).toEqual(["new-project", "AETHERIS", "HANGIKARGOO"]);
-    expect(state.managers.map((m: any) => m.name)).toEqual(["Genel", "Vyron Helper", "Multi-Model Planner", "Reviewer"]);
+    expect(state.managers.map((m: any) => m.name)).toEqual(["Genel", "Vyron Helper", "Coder", "Multi-Model Planner", "Reviewer"]);
     expect(state.connectors.map((c: any) => c.name)).toEqual(["GitHub", "Supabase", "Vercel", "Stripe", "Slack", "Gmail", "Notion"]);
     expect(state.connectors.every((c: any) => c.status === "disconnected")).toBe(true);
     expect(model.SKILLS.map((s) => s.name)).toEqual(["Confirmed Data Analysis", "Create Image", "Design Then Build", "Find Skills", "Frontend Design", "Skill Creator"]);
@@ -304,5 +304,16 @@ describe("model choice per slot", () => {
     const old = JSON.parse(JSON.stringify(model.defaultState()));
     delete old.models;
     expect(model.sanitizeState(old).models).toEqual(model.defaultState().models);
+  });
+});
+
+describe("built-in managers survive older saves", () => {
+  it("adds the Coder manager to a saved list that predates it, keeping custom managers", () => {
+    const old = JSON.parse(JSON.stringify(model.defaultState()));
+    old.managers = old.managers.filter((m: any) => m.id !== "coder");
+    old.managers.push({ id: "m-ozel", name: "Özel", description: "x", tag: "Özel", custom: true, agent: "tester" });
+    const loaded = model.sanitizeState(old);
+    expect(loaded.managers.map((m: any) => m.name)).toEqual(["Genel", "Vyron Helper", "Coder", "Multi-Model Planner", "Reviewer", "Özel"]);
+    expect(loaded.managers.find((m: any) => m.id === "coder").agent).toBe("coder");
   });
 });

@@ -250,7 +250,7 @@ describe("navigation between workspace views", () => {
     expect(h.el("panel-projects").hidden).toBe(true);
     expect(h.el("tab-managers").getAttribute("aria-selected")).toBe("true");
     const managers = Array.from(h.doc.querySelectorAll("#manager-list .manager-name")).map((n) => n.textContent);
-    expect(managers).toEqual(["Genel", "Vyron Helper", "Multi-Model Planner", "Reviewer"]);
+    expect(managers).toEqual(["Genel", "Vyron Helper", "Coder", "Multi-Model Planner", "Reviewer"]);
     h.click(h.el("tab-projects"));
     expect(h.el("panel-projects").hidden).toBe(false);
   });
@@ -717,7 +717,7 @@ describe("+ menu, SubAgent, Plan and Terminal", () => {
     h.click(h.el("plus-btn"));
     h.click(item(h, "SubAgent"));
     expect(h.openMenus()).toHaveLength(2);
-    expect(h.menuLabels().slice(4)).toEqual(["SubAgent kullanma", "Genel" + "Varsayılan", "Vyron Helper" + "Yardımcı", "Multi-Model Planner" + "Paralel", "Reviewer" + "İnceleme"]);
+    expect(h.menuLabels().slice(4)).toEqual(["SubAgent kullanma", "Genel" + "Varsayılan", "Vyron Helper" + "Yardımcı", "Coder" + "Kod", "Multi-Model Planner" + "Paralel", "Reviewer" + "İnceleme"]);
     h.click(item(h, "Reviewer"));
     expect(h.openMenus()).toHaveLength(0);
     const chip = h.doc.querySelector("#chips .chip")!;
