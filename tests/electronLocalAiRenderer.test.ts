@@ -3,6 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { ready, setup, errorsOf, html, rendererSource, modelSource, type Harness } from "./workspaceHarness";
 
+/** The default per-slot model choice the settings start with; every request carries it. */
+const MODELS = { assistant: "vyron-assistant", code: "vyron-code", research: "vyron-research" };
+
 // Workspace product tests: the real renderer.html + workspace-model + renderer.ts running in jsdom
 // against a fake `window.vyronDesktop` bridge.
 
@@ -456,7 +459,7 @@ describe("composer typing, empty state and direct send", () => {
   it("the send button sends the task directly: one call, no review step, and the workspace stays put", async () => {
     const h = await start();
     await sendTask(h, "Merhaba dünya");
-    expect(h.calls.send).toEqual([{ draft: "Merhaba dünya" }]);
+    expect(h.calls.send).toEqual([{ draft: "Merhaba dünya", models: MODELS }]);
     expect(h.visibleViews()).toEqual(["new-task"]);
     expect(h.el("view-new-task").dataset.mode).toBe("conversation");
     expect(h.doc.body.textContent).not.toMatch(/Taslağı incele|Göndermeden önce incele|İncelenen task|Hermes'e gönderilecek metin/);
@@ -473,13 +476,13 @@ describe("composer typing, empty state and direct send", () => {
     const ctrl = h.key(h.el("task-input"), "Enter", { ctrlKey: true });
     expect(ctrl.defaultPrevented).toBe(true);
     await h.flush();
-    expect(h.calls.send).toEqual([{ draft: "Klavye ile" }]);
+    expect(h.calls.send).toEqual([{ draft: "Klavye ile", models: MODELS }]);
 
     h.click(h.el("new-task-btn"));
     h.type("Mac ile");
     h.key(h.el("task-input"), "Enter", { metaKey: true });
     await h.flush();
-    expect(h.calls.send).toEqual([{ draft: "Klavye ile" }, { draft: "Mac ile" }]);
+    expect(h.calls.send).toEqual([{ draft: "Klavye ile", models: MODELS }, { draft: "Mac ile", models: MODELS }]);
   });
 
   it("Enter inserts a newline instead of sending: a multi-line draft is sent whole", async () => {
@@ -550,7 +553,7 @@ describe("composer typing, empty state and direct send", () => {
   it("without any selection, exactly the user's text is sent (nothing added)", async () => {
     const h = await start();
     await sendTask(h, "Sadece bu");
-    expect(h.calls.send[0]).toEqual({ draft: "Sadece bu" });
+    expect(h.calls.send[0]).toEqual({ draft: "Sadece bu", models: MODELS });
   });
 
   it("blocks a send whose composed text would exceed the limit because of the selections", async () => {
@@ -723,7 +726,7 @@ describe("+ menu, SubAgent, Plan and Terminal", () => {
     h.click(h.el("tab-managers"));
     expect(h.doc.querySelector('.manager-main[data-manager-id="reviewer"]')?.getAttribute("aria-pressed")).toBe("true");
     await sendTask(h, "İncele");
-    expect(h.calls.send[0]).toEqual({ draft: "İncele", agent: "reviewer" });
+    expect(h.calls.send[0]).toEqual({ draft: "İncele", agent: "reviewer", models: MODELS });
     h.click(h.doc.querySelector<HTMLElement>('#chips .chip-remove[aria-label="Reviewer seçimini kaldır"]') ?? h.doc.querySelector<HTMLElement>("#chips .chip-remove"));
     expect(h.doc.querySelector("#chips")?.textContent).toBe("");
   });
@@ -1411,19 +1414,19 @@ describe("managers run through Ruflo roles", () => {
     h.click(item(h, "SubAgent"));
     h.click(item(h, "Genel"));
     await sendTask(h, "Doğrudan");
-    expect(h.calls.send[0]).toEqual({ draft: ["Rol: Genel.", "", "Doğrudan"].join(String.fromCharCode(10)) });
+    expect(h.calls.send[0]).toEqual({ draft: ["Rol: Genel.", "", "Doğrudan"].join(String.fromCharCode(10)), models: MODELS });
     h.click(h.el("plus-btn"));
     h.click(item(h, "SubAgent"));
     h.click(item(h, "Multi-Model Planner"));
     await sendTask(h, "Plan yap");
-    expect(h.calls.send[1]).toEqual({ draft: "Plan yap", agent: "task-orchestrator" });
+    expect(h.calls.send[1]).toEqual({ draft: "Plan yap", agent: "task-orchestrator", models: MODELS });
     expect(h.calls.send[1]!.draft).not.toContain("Rol:");
   });
 
   it("no manager selected sends the plain draft with no agent", async () => {
     const h = await start();
     await sendTask(h, "Yalnız metin");
-    expect(h.calls.send[0]).toEqual({ draft: "Yalnız metin" });
+    expect(h.calls.send[0]).toEqual({ draft: "Yalnız metin", models: MODELS });
   });
 
   it("a retry re-sends with the same role", async () => {
@@ -1437,8 +1440,8 @@ describe("managers run through Ruflo roles", () => {
     h.click(h.doc.querySelector<HTMLElement>("#turns .turn-error button"));
     await h.flush();
     expect(h.calls.send).toEqual([
-      { draft: "Araştır", agent: "researcher" },
-      { draft: "Araştır", agent: "researcher" },
+      { draft: "Araştır", agent: "researcher", models: MODELS },
+      { draft: "Araştır", agent: "researcher", models: MODELS },
     ]);
   });
 
@@ -1490,12 +1493,12 @@ describe("project memory and the parallel team", () => {
     h.click(item(h, "Reviewer"));
     h.click(h.doc.querySelector<HTMLElement>('.project-add[aria-label="AETHERIS projesinde yeni görev"]'));
     await sendTask(h, "Projeye özel");
-    expect(h.calls.send[0]).toEqual({ draft: "Projeye özel", agent: "reviewer", project: "aetheris" });
+    expect(h.calls.send[0]).toEqual({ draft: "Projeye özel", agent: "reviewer", project: "aetheris", models: MODELS });
     h.click(h.el("new-task-btn"));
     h.click(h.el("project-btn"));
     h.click(item(h, "Projesiz"));
     await sendTask(h, "Projesiz görev");
-    expect(h.calls.send[1]).toEqual({ draft: "Projesiz görev", agent: "reviewer" });
+    expect(h.calls.send[1]).toEqual({ draft: "Projesiz görev", agent: "reviewer", models: MODELS });
   });
 
   it("Multi-Model Planner is the parallel team: its detail says so and its task carries the orchestrator role", async () => {
@@ -1598,14 +1601,14 @@ describe("approved tools (workspace folder + tool mode)", () => {
     await h.flush();
     await chooseTools(h);
     await sendTask(h, "Bir dosya yaz");
-    expect(h.calls.send[0]).toEqual({ draft: "Bir dosya yaz", tools: true });
+    expect(h.calls.send[0]).toEqual({ draft: "Bir dosya yaz", tools: true, models: MODELS });
     h.click(h.el("new-task-btn"));
     h.click(h.el("plus-btn"));
     h.click(item(h, "SubAgent"));
     h.click(item(h, "Reviewer"));
     h.click(h.doc.querySelector<HTMLElement>('.project-add[aria-label="AETHERIS projesinde yeni görev"]'));
     await sendTask(h, "Yöneticiyle yaz");
-    expect(h.calls.send[1]).toEqual({ draft: "Yöneticiyle yaz", agent: "reviewer", project: "aetheris", tools: true });
+    expect(h.calls.send[1]).toEqual({ draft: "Yöneticiyle yaz", agent: "reviewer", project: "aetheris", tools: true, models: MODELS });
   });
 
   it("without the tools mode the request never carries tools", async () => {
@@ -1613,7 +1616,7 @@ describe("approved tools (workspace folder + tool mode)", () => {
     h.click(h.el("workspace-btn"));
     await h.flush();
     await sendTask(h, "Sadece metin");
-    expect(h.calls.send[0]).toEqual({ draft: "Sadece metin" });
+    expect(h.calls.send[0]).toEqual({ draft: "Sadece metin", models: MODELS });
   });
 
   it("removing the folder while tools are on blocks sending again", async () => {

@@ -52,6 +52,7 @@ if (!REQUIRED_KEY) {
 
 const PUBLIC_PATHS = new Set(["/health", "/v1/health"]);
 const AUTHENTICATED_PATHS = new Set(["/v1/chat/completions"]);
+const ROUTED_MODELS = ["vyron-assistant", "vyron-code", "vyron-research"]; // fixed OmniRoute combo names (mirrors electron/modelRouting.ts)
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MiB — generous for one plain-text task draft, still bounded.
 
 function timingSafeEqual(a, b) {
@@ -117,7 +118,19 @@ const server = http.createServer((req, res) => {
   });
   req.on("end", () => {
     if (aborted) return;
-    const body = Buffer.concat(chunks);
+    let body = Buffer.concat(chunks);
+    // Hermes only honours a per-request model when a provider is named too: for the fixed Vyron combo names add it.
+    if (method === "POST" && path === "/v1/chat/completions") {
+      try {
+        const parsed = JSON.parse(body.toString("utf8"));
+        if (parsed && typeof parsed === "object" && ROUTED_MODELS.includes(parsed.model) && parsed.provider === undefined) {
+          parsed.provider = "custom";
+          body = Buffer.from(JSON.stringify(parsed), "utf8");
+        }
+      } catch {
+        /* not JSON: forwarded unchanged */
+      }
+    }
     const forwardHeaders = { "Content-Type": "application/json" };
     if (isAuthenticated) forwardHeaders["Authorization"] = `Bearer ${REQUIRED_KEY}`;
     const upstreamReq = http.request(

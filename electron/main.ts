@@ -169,8 +169,8 @@ const ruflo = createProductionRufloBridge({
   resourcesPath: process.resourcesPath,
   isPackaged: app.isPackaged,
 });
-setTaskAgentExecutor((agentType, prompt, project) => ruflo.run(agentType, prompt, project));
-setAgentAsk((agentType, prompt) => ruflo.ask(agentType, prompt));
+setTaskAgentExecutor((agentType, prompt, project, models) => ruflo.run(agentType, prompt, project, models));
+setAgentAsk((agentType, prompt, models) => ruflo.ask(agentType, prompt, models));
 // Approved tools: workspace folder from a native dialog, native approval dialogs, confined executors.
 const tools = createProductionToolRunner(() => mainWindow);
 setToolRunner((task, ask) => tools.run(task, ask));

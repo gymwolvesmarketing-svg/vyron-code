@@ -19,6 +19,10 @@ type WsSidebarTab = "projects" | "managers";
 type WsPlanMode = "standard" | "plan" | "deep";
 
 type WsTerminalMode = "off" | "suggest" | "tools";
+/** A model combo of the local router (OmniRoute), or "" for the Hermes default. Mirrors electron/modelRouting.ts. */
+type WsModelId = "" | "vyron-assistant" | "vyron-code" | "vyron-research";
+type WsModelSlot = "assistant" | "code" | "research";
+type WsModelChoice = Record<WsModelSlot, WsModelId>;
 
 type WsWorkMode = "local" | "brief";
 
@@ -99,6 +103,7 @@ interface WsWorkspaceState {
   planMode: WsPlanMode;
   terminalMode: WsTerminalMode;
   workMode: WsWorkMode;
+  models: WsModelChoice;
 }
 
 interface WsStorageLike {
@@ -125,6 +130,31 @@ type WsResponseBlock =
 const VyronModel = (() => {
   const STORAGE_KEY = "vyron.workspace.v1";
   const STATE_VERSION = 1;
+
+  const MODEL_SLOTS: ReadonlyArray<{ id: WsModelSlot; label: string; description: string }> = [
+    { id: "assistant", label: "Asistan", description: "Genel yanıtlar, planlama ve görev yönetimi" },
+    { id: "code", label: "Kod", description: "Kod yazan, inceleyen ve test eden Managers" },
+    { id: "research", label: "Araştırma", description: "Araştırmacı Managers" },
+  ];
+  const MODEL_OPTIONS: ReadonlyArray<{ id: WsModelId; label: string }> = [
+    { id: "", label: "Varsayılan (Hermes)" },
+    { id: "vyron-assistant", label: "vyron-assistant (ChatGPT Web → Claude Web → Nemotron)" },
+    { id: "vyron-code", label: "vyron-code (Claude Web → Nemotron → ChatGPT Web)" },
+    { id: "vyron-research", label: "vyron-research (Perplexity → ChatGPT Web)" },
+  ];
+  function defaultModels(): WsModelChoice {
+    return { assistant: "vyron-assistant", code: "vyron-code", research: "vyron-research" };
+  }
+  function sanitizeModels(raw: unknown): WsModelChoice {
+    const out = defaultModels();
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return out;
+    for (const slot of MODEL_SLOTS) {
+      const value = (raw as Record<string, unknown>)[slot.id];
+      const match = MODEL_OPTIONS.find((option) => option.id === value);
+      if (match) out[slot.id] = match.id;
+    }
+    return out;
+  }
   const MAX_DRAFT_LENGTH = 4000;
   const MAX_TASKS = 300;
   const COLLAPSED_TASK_COUNT = 4;
@@ -269,6 +299,7 @@ const VyronModel = (() => {
       planMode: "standard",
       terminalMode: "off",
       workMode: "local",
+      models: defaultModels(),
     };
   }
 
@@ -395,6 +426,7 @@ const VyronModel = (() => {
       planMode: pick(raw.planMode, ["standard", "plan", "deep"] as const, "standard"),
       terminalMode: pick(raw.terminalMode, ["off", "suggest", "tools"] as const, "off"),
       workMode: pick(raw.workMode, ["local", "brief"] as const, "local"),
+      models: sanitizeModels(raw.models),
     };
     if (typeof raw.activeProjectId === "string" && state.projects.some((p) => p.id === raw.activeProjectId)) state.activeProjectId = raw.activeProjectId;
     if (typeof raw.selectedManagerId === "string" && state.managers.some((m) => m.id === raw.selectedManagerId)) state.selectedManagerId = raw.selectedManagerId;
@@ -707,6 +739,8 @@ const VyronModel = (() => {
     PLAN_MODES,
     TERMINAL_MODES,
     WORK_MODES,
+    MODEL_SLOTS,
+    MODEL_OPTIONS,
     defaultState,
     sanitizeState,
     loadState,

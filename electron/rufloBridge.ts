@@ -42,6 +42,7 @@ export function isRufloAgentType(value: unknown): value is RufloAgentType {
 export const ALLOWED_RUFLO_TOOLS = ["agent_spawn", "agent_execute", "agent_terminate", "memory_search", "memory_store"] as const;
 type RufloTool = (typeof ALLOWED_RUFLO_TOOLS)[number];
 
+import { modelForRole, type ModelChoice } from "./modelRouting";
 import {
   MAX_RECALLED_MEMORIES,
   MEMORY_SIMILARITY_THRESHOLD,
@@ -94,11 +95,11 @@ export type RufloResult =
 
 export interface RufloBridge {
   getState(): RufloState;
-  run(agentType: unknown, prompt: unknown, project?: unknown): Promise<RufloResult>;
+  run(agentType: unknown, prompt: unknown, project?: unknown, models?: ModelChoice): Promise<RufloResult>;
   /** Stops the runtime and deletes the persistent project memory. Resolves true when nothing is left. */
   clearMemory(): Promise<boolean>;
   /** One raw agent turn (no memory, bigger prompt allowance) for the approved-tool loop. null = failed. */
-  ask(agentType: unknown, prompt: unknown): Promise<string | null>;
+  ask(agentType: unknown, prompt: unknown, models?: ModelChoice): Promise<string | null>;
   shutdown(): Promise<void>;
 }
 
@@ -236,10 +237,11 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
   }
 
   /** Spawns a tracked agent, runs one prompt on it and cleans it up. null = failed; "gone" = the child died. */
-  async function executeAgent(agentType: RufloAgentType, prompt: string): Promise<string | null | "gone"> {
+  async function executeAgent(agentType: RufloAgentType, prompt: string, models?: ModelChoice): Promise<string | null | "gone"> {
     counter += 1;
     const agentId = "vyron-" + agentType + "-" + String(counter);
-    const spawned = await callTool("agent_spawn", { agentType, agentId }, timings.callMs);
+    const model = modelForRole(models, agentType);
+    const spawned = await callTool("agent_spawn", model === undefined ? { agentType, agentId } : { agentType, agentId, model }, timings.callMs);
     if (!spawned || spawned.success !== true) return childGone() ? "gone" : null;
     const executed = await callTool("agent_execute", { agentId, prompt, maxTokens: 2048 }, timings.executeMs);
     // Best-effort cleanup of the tracked agent record; its result never matters to the caller.
@@ -265,20 +267,20 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
     );
   }
 
-  async function runTeam(prompt: string, snippets: string[]): Promise<RufloResult> {
-    const planned = await executeAgent("planner", plannerPrompt(prompt, snippets));
+  async function runTeam(prompt: string, snippets: string[], models?: ModelChoice): Promise<RufloResult> {
+    const planned = await executeAgent("planner", plannerPrompt(prompt, snippets), models);
     if (planned === "gone") return { ok: false, reason: "unavailable" };
     let subtasks = planned === null ? [] : parsePlan(planned);
     if (subtasks.length === 0) subtasks = fallbackPlan(prompt);
     // The workers run at the same time; each is an independent tracked agent on the same Ruflo process.
-    const settled = await Promise.all(subtasks.map((subtask) => executeAgent(subtask.role, workerPrompt(subtask, prompt, snippets))));
+    const settled = await Promise.all(subtasks.map((subtask) => executeAgent(subtask.role, workerPrompt(subtask, prompt, snippets), models)));
     if (settled.some((value) => value === "gone")) return { ok: false, reason: "unavailable" };
     const results: SubTaskResult[] = subtasks.map((subtask, index) => {
       const value = settled[index];
       return { title: subtask.title, role: subtask.role, text: typeof value === "string" ? value : null };
     });
     if (results.every((entry) => entry.text === null)) return { ok: false, reason: "failed" };
-    const merged = await executeAgent("task-orchestrator", synthesisPrompt(prompt, results));
+    const merged = await executeAgent("task-orchestrator", synthesisPrompt(prompt, results), models);
     if (merged === "gone") return { ok: false, reason: "unavailable" };
     const answer =
       merged !== null && merged.trim().length > 0
@@ -290,15 +292,15 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
     return { ok: true, text: (answer + teamFooter(results)).slice(0, MAX_RUFLO_OUTPUT_CHARS), note: answer };
   }
 
-  async function runOnce(agentType: RufloAgentType, prompt: string, project: unknown): Promise<RufloResult> {
+  async function runOnce(agentType: RufloAgentType, prompt: string, project: unknown, models?: ModelChoice): Promise<RufloResult> {
     if (!(await ensureStarted())) return { ok: false, reason: "unavailable" };
     const namespace = memoryNamespace(project);
     const snippets = await recall(namespace, prompt);
     let outcome: RufloResult;
     if (agentType === "task-orchestrator") {
-      outcome = await runTeam(prompt, snippets);
+      outcome = await runTeam(prompt, snippets, models);
     } else {
-      const text = await executeAgent(agentType, withMemory(prompt, snippets));
+      const text = await executeAgent(agentType, withMemory(prompt, snippets), models);
       if (text === "gone") return { ok: false, reason: "unavailable" };
       outcome = text === null ? { ok: false, reason: "failed" } : { ok: true, text: text.slice(0, MAX_RUFLO_OUTPUT_CHARS), note: text };
     }
@@ -308,16 +310,16 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
 
   return {
     getState: () => state,
-    async run(agentType, prompt, project) {
+    async run(agentType, prompt, project, models) {
       if (shuttingDown) return { ok: false, reason: "unavailable" };
       if (!isRufloAgentType(agentType)) return { ok: false, reason: "failed" };
       if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > MAX_RUFLO_PROMPT_CHARS) return { ok: false, reason: "failed" };
       if (busy) return { ok: false, reason: "failed" };
       busy = true;
       try {
-        let result = await runOnce(agentType, prompt, project);
+        let result = await runOnce(agentType, prompt, project, models);
         // A run may restart the child once if it died or never came up; there is no restart loop.
-        if (!result.ok && result.reason === "unavailable" && !shuttingDown) result = await runOnce(agentType, prompt, project);
+        if (!result.ok && result.reason === "unavailable" && !shuttingDown) result = await runOnce(agentType, prompt, project, models);
         return result;
       } catch {
         return { ok: false, reason: "failed" };
@@ -325,15 +327,15 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
         busy = false;
       }
     },
-    async ask(agentType, prompt) {
+    async ask(agentType, prompt, models) {
       if (shuttingDown || !isRufloAgentType(agentType)) return null;
       if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > MAX_RUFLO_ASK_CHARS) return null;
       if (busy) return null;
       busy = true;
       try {
         let text: string | null | "gone" = "gone";
-        if (await ensureStarted()) text = await executeAgent(agentType, prompt);
-        if (text === "gone" && !shuttingDown && (await ensureStarted())) text = await executeAgent(agentType, prompt);
+        if (await ensureStarted()) text = await executeAgent(agentType, prompt, models);
+        if (text === "gone" && !shuttingDown && (await ensureStarted())) text = await executeAgent(agentType, prompt, models);
         return typeof text === "string" && text !== "gone" ? text : null;
       } catch {
         return null;

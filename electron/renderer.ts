@@ -34,6 +34,7 @@ interface HermesTaskRequest {
   readonly agent?: string;
   readonly project?: string;
   readonly tools?: boolean;
+  readonly models?: { readonly assistant?: string; readonly code?: string; readonly research?: string };
 }
 
 interface DesktopLocalAiApi {
@@ -987,6 +988,7 @@ function showView(view: WsNavView): void {
   setText("page-title", title);
   document.title = title === "Yeni görev" ? "Vyron Code" : title + " - Vyron Code";
   renderSidebar();
+  if (view === "settings") renderModelSettings();
   if (view === "skills") renderSkillsPage();
   else if (view === "connectors") renderConnectorsPage();
   else if (view === "sites") renderSitesPage();
@@ -1442,13 +1444,63 @@ async function runTurn(taskId: string, turn: Turn): Promise<void> {
   refreshIfActive(taskId);
 }
 
+/** The slots the user chose a model group for (the default "" is left out: the main process then uses the Hermes default). */
+function chosenModels(): { assistant?: string; code?: string; research?: string } | null {
+  const out: { assistant?: string; code?: string; research?: string } = {};
+  for (const slot of VyronModel.MODEL_SLOTS) {
+    const value = ws.models[slot.id];
+    if (value !== "") out[slot.id] = value;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 /** The direct request, or (for a Manager with a Ruflo role) the request that also carries its role and project. */
 function taskRequest(turn: Turn): HermesTaskRequest {
   const project = turn.project;
   const withProject = project !== null && /^[a-z0-9][a-z0-9-]{0,79}$/.test(project);
-  if (!turn.agent) return turn.tools ? { draft: turn.composed, tools: true } : { draft: turn.composed };
-  const base = withProject ? { draft: turn.composed, agent: turn.agent, project } : { draft: turn.composed, agent: turn.agent };
+  const models = chosenModels();
+  const withModels = models ? { models } : {};
+  if (!turn.agent) return turn.tools ? { draft: turn.composed, tools: true, ...withModels } : { draft: turn.composed, ...withModels };
+  const base = withProject ? { draft: turn.composed, agent: turn.agent, project, ...withModels } : { draft: turn.composed, agent: turn.agent, ...withModels };
   return turn.tools ? { ...base, tools: true } : base;
+}
+
+/** Builds the three model pickers of the settings page (once) and keeps them in sync with the saved choice. */
+function renderModelSettings(): void {
+  const host = el("settings-models");
+  if (!host) return;
+  if (host.childElementCount === 0) {
+    for (const slot of VyronModel.MODEL_SLOTS) {
+      const row = document.createElement("div");
+      row.className = "model-row";
+      const label = document.createElement("label");
+      label.htmlFor = "settings-model-" + slot.id;
+      label.textContent = slot.label;
+      const hint = document.createElement("span");
+      hint.className = "hint";
+      hint.textContent = slot.description;
+      const select = document.createElement("select");
+      select.id = "settings-model-" + slot.id;
+      for (const option of VyronModel.MODEL_OPTIONS) {
+        const item = document.createElement("option");
+        item.value = option.id;
+        item.textContent = option.label;
+        select.appendChild(item);
+      }
+      select.addEventListener("change", () => {
+        const chosen = VyronModel.MODEL_OPTIONS.find((option) => option.id === select.value);
+        if (!chosen) return;
+        ws.models[slot.id] = chosen.id;
+        persist();
+      });
+      row.append(label, hint, select);
+      host.appendChild(row);
+    }
+  }
+  for (const slot of VyronModel.MODEL_SLOTS) {
+    const select = el<HTMLSelectElement>("settings-model-" + slot.id);
+    if (select) select.value = ws.models[slot.id];
+  }
 }
 
 function refreshIfActive(taskId: string): void {

@@ -396,7 +396,7 @@ describe("sendTask - Manager (agent) tasks run through the injected executor", (
     setTaskAgentExecutor(executor);
     const result = await sendTask({ draft: VALID_DRAFT, agent: "planner" });
     expect(result).toEqual({ state: "completed", text: "from ruflo", truncated: false });
-    expect(executor).toHaveBeenCalledWith("planner", VALID_DRAFT, undefined);
+    expect(executor).toHaveBeenCalledWith("planner", VALID_DRAFT, undefined, undefined);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -439,9 +439,9 @@ describe("sendTask - Manager (agent) tasks run through the injected executor", (
     const executor = vi.fn(async () => ({ ok: true as const, text: "ok" }));
     setTaskAgentExecutor(executor);
     expect((await sendTask({ draft: VALID_DRAFT, agent: "planner", project: "aetheris" })).state).toBe("completed");
-    expect(executor).toHaveBeenLastCalledWith("planner", VALID_DRAFT, "aetheris");
+    expect(executor).toHaveBeenLastCalledWith("planner", VALID_DRAFT, "aetheris", undefined);
     expect((await sendTask({ draft: VALID_DRAFT, agent: "planner" })).state).toBe("completed");
-    expect(executor).toHaveBeenLastCalledWith("planner", VALID_DRAFT, undefined);
+    expect(executor).toHaveBeenLastCalledWith("planner", VALID_DRAFT, undefined, undefined);
     executor.mockClear();
     for (const project of ["../x", "A", "", "a b", 5, null, "x".repeat(81)]) {
       expect((await sendTask({ draft: VALID_DRAFT, agent: "planner", project })).state, String(project)).toBe("safe_failure");
@@ -606,5 +606,40 @@ describe("sendTask - approved tools (tools: true)", () => {
     clearTaskSubmission();
     release();
     expect((await pending).state).not.toBe("completed");
+  });
+});
+
+describe("sendTask - per-role model choice", () => {
+  afterEach(() => {
+    setTaskAgentExecutor(null);
+    setAgentAsk(null);
+  });
+
+  const MODELS = { assistant: "vyron-assistant", code: "vyron-code", research: "vyron-research" };
+
+  it("sends the assistant combo as `model` on a direct task, and no model when none was chosen", async () => {
+    await authorizeAndConfigure();
+    fetchMock.mockResolvedValueOnce(okResponse("tamam"));
+    await sendTask({ draft: VALID_DRAFT, models: MODELS });
+    expect(JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body).model).toBe("vyron-assistant");
+    fetchMock.mockResolvedValueOnce(okResponse("tamam"));
+    await sendTask({ draft: VALID_DRAFT });
+    expect("model" in JSON.parse((fetchMock.mock.calls[1]![1] as { body: string }).body)).toBe(false);
+  });
+
+  it("rejects free-form or malformed model choices without calling anything", async () => {
+    await authorizeAndConfigure();
+    for (const models of [{ assistant: "gpt-4o" }, { extra: "vyron-code" }, "vyron-code", ["vyron-code"], null, { code: 5 }]) {
+      expect(await sendTask({ draft: VALID_DRAFT, models })).toEqual({ state: "safe_failure", text: null, truncated: false });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("passes the whole choice on to the Manager executor (Ruflo picks the combo per role)", async () => {
+    await authorizeAndConfigure();
+    const executor = vi.fn(async () => ({ ok: true as const, text: "x" }));
+    setTaskAgentExecutor(executor);
+    await sendTask({ draft: VALID_DRAFT, agent: "coder", models: MODELS });
+    expect(executor).toHaveBeenCalledWith("coder", VALID_DRAFT, undefined, MODELS);
   });
 });

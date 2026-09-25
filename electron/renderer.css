@@ -299,6 +299,11 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible), textarea:focu
 .settings-title { margin-bottom: 8px; font-size: 14px; font-weight: 650; }
 .settings-text { margin-bottom: 12px; color: var(--text-2); }
 .settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.model-rows { display: grid; gap: 10px; }
+.model-row { display: grid; gap: 4px; }
+.model-row label { font-size: 13px; font-weight: 600; color: var(--text); }
+.model-row .hint { font-size: 12px; color: var(--muted); }
+.model-row select { height: 32px; max-width: 100%; padding: 0 8px; background: var(--surface-2, var(--surface-3)); color: var(--text); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
 .check-row { display: flex; align-items: center; gap: 10px; color: var(--text-2); }
 .check-row input { width: 16px; height: 16px; accent-color: var(--accent); }
 

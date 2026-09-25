@@ -626,3 +626,24 @@ describe("raw agent turns for the tool loop (bridge.ask)", () => {
     expect(await bridge.ask("coder", "üç")).toBeNull();
   });
 });
+
+describe("per-role model choice", () => {
+  const spawnArgs = (t: FakeTransport) =>
+    t.sent.filter((m) => m.method === "tools/call").map((m) => m.params as { name: string; arguments: Record<string, unknown> }).filter((c) => c.name === "agent_spawn").map((c) => c.arguments);
+
+  it("spawns each agent with the combo of its role's slot", async () => {
+    const { deps, started } = makeDeps(goodHandler());
+    const bridge = createRufloBridge(deps);
+    const models = { assistant: "vyron-assistant", code: "vyron-code", research: "vyron-research" } as const;
+    await bridge.run("coder", "yaz", undefined, models);
+    await bridge.run("researcher", "ara", undefined, models);
+    await bridge.run("planner", "planla", undefined, models);
+    expect(spawnArgs(started[0]!).map((a) => a.model)).toEqual(["vyron-code", "vyron-research", "vyron-assistant"]);
+  });
+
+  it("does not send a model at all when none was chosen", async () => {
+    const { deps, started } = makeDeps(goodHandler());
+    await createRufloBridge(deps).run("coder", "yaz");
+    expect(spawnArgs(started[0]!).every((a) => !("model" in a))).toBe(true);
+  });
+});

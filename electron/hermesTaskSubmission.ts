@@ -22,6 +22,7 @@
  *   - The renderer only ever receives the fixed `HermesTaskSubmissionState` enum plus the one
  *     bounded, plain-text response field, never a raw status, header, body, endpoint or credential.
  */
+import { modelForRole, parseModelChoice, type ModelChoice } from "./modelRouting";
 import type { HermesTaskSubmissionState } from "./shared-ipc-contract";
 import { getAuthorizationState, getCurrentCredential } from "./hermesAuthorization";
 import { resolveTrustedEndpoint } from "./hermesEndpoint";
@@ -40,7 +41,7 @@ export type ToolRunnerFn = (
 ) => Promise<{ readonly ok: true; readonly text: string } | { readonly ok: false }>;
 
 /** One raw Ruflo agent turn (no memory, larger prompt allowance) used by tool runs with a Manager. */
-export type AgentAskFn = (agentType: string, prompt: string) => Promise<string | null>;
+export type AgentAskFn = (agentType: string, prompt: string, models?: ModelChoice) => Promise<string | null>;
 
 let toolRunner: ToolRunnerFn | null = null;
 let agentAsk: AgentAskFn | null = null;
@@ -61,7 +62,7 @@ const MAX_TOOL_RESPONSE_CHARS = 8_000;
  * The role is validated against a fixed allowlist here; the executor never receives anything else from the
  * renderer.
  */
-export type TaskAgentExecutor = (agentType: string, prompt: string, project: string | undefined) => Promise<{ readonly ok: true; readonly text: string } | { readonly ok: false }>;
+export type TaskAgentExecutor = (agentType: string, prompt: string, project: string | undefined, models?: ModelChoice) => Promise<{ readonly ok: true; readonly text: string } | { readonly ok: false }>;
 
 let agentExecutor: TaskAgentExecutor | null = null;
 
@@ -165,7 +166,8 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
   const keys = Object.keys(request as Record<string, unknown>);
   const hasAgent = keys.indexOf("agent") >= 0;
   const hasTools = keys.indexOf("tools") >= 0;
-  const allowedKeys = ["draft"].concat(hasAgent ? ["agent", "project"] : [], hasTools ? ["tools"] : []);
+  const hasModels = keys.indexOf("models") >= 0;
+  const allowedKeys = ["draft"].concat(hasAgent ? ["agent", "project"] : [], hasTools ? ["tools"] : [], hasModels ? ["models"] : []);
   if (keys.indexOf("draft") < 0 || keys.some((key) => allowedKeys.indexOf(key) < 0)) return safeState("safe_failure");
   const draft = (request as Record<string, unknown>).draft;
   if (typeof draft !== "string" || !validateDraft(draft)) return safeState("safe_failure");
@@ -177,6 +179,10 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
   const projectField = hasAgent ? (request as Record<string, unknown>).project : undefined;
   if (projectField !== undefined && (typeof projectField !== "string" || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(projectField))) return safeState("safe_failure");
   const project = typeof projectField === "string" ? projectField : undefined;
+  // Optional per-role model choice: strictly allowlisted combo names, never a free-form model string.
+  const models = hasModels ? parseModelChoice((request as Record<string, unknown>).models) : null;
+  if (hasModels && models === null) return safeState("safe_failure");
+  const directModel = modelForRole(models ?? undefined, agent === null ? null : (agent as string));
 
   const endpoint = getConfiguredEndpoint() ?? resolveTrustedEndpoint();
   if (endpoint.kind !== "trusted") return safeState("unavailable");
@@ -198,7 +204,7 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
     if (hasTools && toolRunner !== null) {
       responseLimit = MAX_TOOL_RESPONSE_CHARS;
       const ask = async (messages: readonly ChatMessage[]): Promise<string | null> => {
-        if (hasAgent && agentAsk !== null) return agentAsk(agent as string, flattenTranscript(messages));
+        if (hasAgent && agentAsk !== null) return agentAsk(agent as string, flattenTranscript(messages), models ?? undefined);
         const stepController = new AbortController();
         const stepTimer = setTimeout(() => stepController.abort(), SEND_TIMEOUT_MS);
         try {
@@ -206,7 +212,7 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
             method: "POST",
             redirect: "error",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}` },
-            body: JSON.stringify({ messages: messages.map((m) => ({ role: m.role, content: m.content })), stream: false }),
+            body: JSON.stringify({ messages: messages.map((m) => ({ role: m.role, content: m.content })), stream: false, ...(directModel ? { model: directModel } : {}) }),
             signal: stepController.signal,
           });
           if (!stepResponse.ok) return null;
@@ -224,7 +230,7 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
       sendInFlight = false;
     } else if (hasAgent && agentExecutor !== null) {
       // Manager task: Ruflo runs the agent (its own bounded timeouts apply); the reply is reduced exactly like a direct one.
-      const outcome = await agentExecutor(agent as string, draft, project);
+      const outcome = await agentExecutor(agent as string, draft, project, models ?? undefined);
       text = outcome.ok ? outcome.text : null;
       clearTimeout(timer);
       if (generation !== generationAtStart) return getTaskSubmissionState();
@@ -240,6 +246,7 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
         body: JSON.stringify({
           messages: [{ role: "user", content: draft }],
           stream: false,
+          ...(directModel ? { model: directModel } : {}),
         }),
         signal: controller.signal,
       });

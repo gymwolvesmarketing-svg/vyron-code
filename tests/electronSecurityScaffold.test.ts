@@ -117,7 +117,7 @@ describe("Electron scaffold source — no shell/child_process execution capabili
   });
 
   it("confirms exactly the expected scaffold .ts files exist, no more", () => {
-    expect(sourceFiles).toHaveLength(26);
+    expect(sourceFiles).toHaveLength(27);
     expect(sourceFiles.sort()).toEqual(
       [
         "hermesApiServer.ts",
@@ -128,6 +128,7 @@ describe("Electron scaffold source — no shell/child_process execution capabili
         "localAiAdapters.ts",
         "localAiLifecycle.ts",
         "main.ts",
+        "modelRouting.ts",
         "rufloAdapters.ts",
         "rufloBridge.ts",
         "rufloTeam.ts",
