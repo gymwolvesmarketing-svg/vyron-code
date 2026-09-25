@@ -128,6 +128,9 @@
             <button id="project-btn" class="pill-select" type="button" aria-haspopup="menu" aria-expanded="false">
               <span data-icon="folder"></span><span id="project-label">Proje seç veya oluştur</span><span data-icon="chevron-down"></span>
             </button>
+            <button id="workspace-btn" class="pill-select" type="button" aria-haspopup="menu" aria-expanded="false">
+              <span data-icon="folder-plus"></span><span id="workspace-label">Çalışma klasörü seç</span><span data-icon="chevron-down"></span>
+            </button>
           </div>
 
           <div id="composer" class="composer" data-state="disabled">
@@ -224,6 +227,16 @@
               <input id="settings-compact" type="checkbox" />
               <span>Yan paneli kompakt göster</span>
             </label>
+          </div>
+          <div class="settings-block">
+            <h2 class="settings-title">Araç izinleri</h2>
+            <p class="settings-text">Araçlar açıkken yapay zeka yalnızca seçtiğin çalışma klasöründe dosya okuyabilir. Dosya yazma ve komut çalıştırma için her seferinde izin sorulur; "Her zaman izin ver" dediklerin burada sayılır ve sıfırlanabilir.</p>
+            <p id="settings-tools-count" class="settings-text" role="status"></p>
+            <div class="settings-actions">
+              <button id="settings-tools-clear" class="btn danger" type="button">İzinleri sıfırla</button>
+              <button id="settings-tools-confirm" class="btn danger" type="button" hidden>Evet, sıfırla</button>
+              <button id="settings-tools-cancel" class="btn ghost" type="button" hidden>Vazgeç</button>
+            </div>
           </div>
           <div class="settings-block">
             <h2 class="settings-title">Manager hafızası</h2>

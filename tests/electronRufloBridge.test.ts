@@ -584,3 +584,45 @@ describe("rufloTeam pure helpers", () => {
     expect(teamFooter([{ title: "A", role: "coder", text: "x" }, { title: "B", role: "tester", text: null }])).toContain("2 alt görev paralel çalıştı (coder, tester), 1 tanesi tamamlandı");
   });
 });
+
+describe("raw agent turns for the tool loop (bridge.ask)", () => {
+  it("runs one agent turn with a large prompt allowance, no memory calls, and returns the text", async () => {
+    const { deps, started } = makeDeps(goodHandler("ham yanıt"));
+    const bridge = createRufloBridge(deps);
+    expect(await bridge.ask("coder", "x".repeat(20_000))).toBe("ham yanıt");
+    const names = started[0]!.sent.filter((m) => m.method === "tools/call").map((m) => (m.params as { name: string }).name);
+    expect(names).toEqual(["agent_spawn", "agent_execute", "agent_terminate"]);
+    expect(names.some((n) => n.startsWith("memory"))).toBe(false);
+  });
+
+  it("validates the role and the prompt, and returns null instead of throwing", async () => {
+    const { deps, started } = makeDeps(goodHandler());
+    const bridge = createRufloBridge(deps);
+    for (const [role, prompt] of [["hacker", "x"], ["coder", ""], ["coder", "  "], ["coder", 5], [undefined, "x"], ["coder", "x".repeat(40_001)]] as const) {
+      expect(await bridge.ask(role, prompt)).toBeNull();
+    }
+    expect(started).toHaveLength(0);
+    const down = createRufloBridge({ readApiKey: async () => null, start: () => null, stop: async () => undefined });
+    expect(await down.ask("coder", "x")).toBeNull();
+  });
+
+  it("is refused after shutdown and while another run is active", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const { deps } = makeDeps((m, t) => {
+      if (m.method === "tools/call" && (m.params as { name: string }).name === "agent_execute") {
+        void gate.then(() => t.emit({ jsonrpc: "2.0", id: m.id, result: toolText({ success: true, output: "ok" }) }));
+        return;
+      }
+      goodHandler()(m, t);
+    });
+    const bridge = createRufloBridge(deps);
+    const first = bridge.ask("coder", "bir");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await bridge.ask("coder", "iki")).toBeNull();
+    release();
+    expect(await first).toBe("ok");
+    await bridge.shutdown();
+    expect(await bridge.ask("coder", "üç")).toBeNull();
+  });
+});

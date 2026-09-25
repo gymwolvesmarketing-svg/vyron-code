@@ -33,6 +33,7 @@ interface HermesTaskRequest {
   readonly draft: string;
   readonly agent?: string;
   readonly project?: string;
+  readonly tools?: boolean;
 }
 
 interface DesktopLocalAiApi {
@@ -52,10 +53,23 @@ interface DesktopAppApi {
   clearAgentMemory(): Promise<boolean>;
 }
 
+interface ToolWorkspaceInfo {
+  readonly folderName: string | null;
+  readonly alwaysCount: number;
+}
+
+interface DesktopToolsApi {
+  getWorkspace(): Promise<ToolWorkspaceInfo>;
+  pickWorkspace(): Promise<ToolWorkspaceInfo>;
+  clearWorkspace(): Promise<ToolWorkspaceInfo>;
+  clearPermissions(): Promise<ToolWorkspaceInfo>;
+}
+
 interface DesktopApi {
   readonly localAi: DesktopLocalAiApi;
   readonly hermes: DesktopHermesApi;
   readonly app: DesktopAppApi;
+  readonly tools: DesktopToolsApi;
 }
 
 interface Window {
@@ -232,6 +246,7 @@ interface Turn {
   readonly labels: string[];
   readonly agent: string | null;
   readonly project: string | null;
+  readonly tools: boolean;
   status: "running" | "done" | "error";
   text: string | null;
   truncated: boolean;
@@ -747,6 +762,7 @@ function selectionLabels(): string[] {
   for (const connector of selectedConnectors()) labels.push(connector.name);
   if (ws.planMode !== "standard") labels.push("Plan: " + planLabel());
   if (ws.terminalMode === "suggest") labels.push("Terminal: komut önerisi");
+  if (ws.terminalMode === "tools") labels.push("Terminal: araçlar (onaylı)");
   if (ws.workMode !== "local") labels.push(workModeLabel());
   return labels;
 }
@@ -979,8 +995,10 @@ function showView(view: WsNavView): void {
     renderSettingsAi();
     resetConfirming = false;
     memoryConfirming = false;
+    toolsConfirming = false;
     renderResetControls();
     renderMemoryControls();
+    renderToolsControls();
   } else renderTaskView();
 }
 
@@ -1135,6 +1153,16 @@ function renderChips(): void {
       }),
     );
   }
+  if (ws.terminalMode === "tools") {
+    box.appendChild(
+      makeChip("terminal", "Terminal", "araçlar (onaylı)", "Araçları kapat", () => {
+        ws.terminalMode = "off";
+        persist();
+        renderChips();
+        updateComposer();
+      }),
+    );
+  }
   for (const file of attachments) {
     box.appendChild(
       makeChip(file.name.match(/\.(png|jpe?g|gif|webp|bmp|svg)$/i) ? "image" : "paperclip", file.name, VyronModel.formatFileSize(file.size), file.name + " ekini kaldır", () => {
@@ -1153,6 +1181,57 @@ function refreshSelectionViews(): void {
   if (ws.view === "connectors") renderConnectorsPage();
 }
 
+let workspaceFolder: string | null = null;
+let toolPermissionCount = 0;
+let toolsConfirming = false;
+
+/** Tools are on for the next task only when the mode is chosen AND a workspace folder has been granted. */
+function toolsActive(): boolean {
+  return ws.terminalMode === "tools" && workspaceFolder !== null;
+}
+
+function toolsNeedFolder(): boolean {
+  return ws.terminalMode === "tools" && workspaceFolder === null;
+}
+
+function applyWorkspaceInfo(info: ToolWorkspaceInfo | null): void {
+  workspaceFolder = info && typeof info.folderName === "string" ? info.folderName : null;
+  toolPermissionCount = info && typeof info.alwaysCount === "number" ? info.alwaysCount : 0;
+  setText("workspace-label", workspaceFolder ?? "Çalışma klasörü seç");
+  must("workspace-btn").classList.toggle("has-selection", workspaceFolder !== null);
+  renderToolsControls();
+  updateComposer();
+}
+
+async function callTools(method: "getWorkspace" | "pickWorkspace" | "clearWorkspace" | "clearPermissions"): Promise<void> {
+  const api = window.vyronDesktop;
+  if (!api) return;
+  try {
+    applyWorkspaceInfo(await api.tools[method]());
+  } catch {
+    // The folder state simply stays as it was; nothing is exposed.
+  }
+}
+
+function openWorkspaceMenu(trigger: HTMLElement): void {
+  openMenuWith("workspace", trigger, (menu) => {
+    menu.setAttribute("aria-label", "Çalışma klasörü");
+    menu.appendChild(makeMenuItem({ label: "Klasörü değiştir…", icon: "folder", onSelect: () => void callTools("pickWorkspace") }));
+    menu.appendChild(makeMenuItem({ label: "Klasörü kaldır", icon: "x", onSelect: () => void callTools("clearWorkspace") }));
+  });
+}
+
+function renderToolsControls(): void {
+  setText(
+    "settings-tools-count",
+    toolPermissionCount === 0 ? "Kayıtlı kalıcı izin yok." : String(toolPermissionCount) + " kalıcı izin kayıtlı.",
+  );
+  must("settings-tools-clear").hidden = toolsConfirming;
+  must("settings-tools-confirm").hidden = !toolsConfirming;
+  must("settings-tools-cancel").hidden = !toolsConfirming;
+  must<HTMLButtonElement>("settings-tools-clear").disabled = toolPermissionCount === 0;
+}
+
 function currentDraftProblem(): WsDraftProblem {
   const raw = must<HTMLTextAreaElement>("task-input").value;
   const base = VyronModel.draftProblem(raw);
@@ -1165,7 +1244,7 @@ function updateComposer(): void {
   const problem = currentDraftProblem();
   const send = must<HTMLButtonElement>("send-btn");
   const composer = must("composer");
-  const canSend = problem === "ok" && aiPhase === "ready" && !sendInFlight;
+  const canSend = problem === "ok" && aiPhase === "ready" && !sendInFlight && !toolsNeedFolder();
 
   send.disabled = !canSend;
   const state = sendInFlight ? "sending" : canSend ? "ready" : "disabled";
@@ -1176,6 +1255,7 @@ function updateComposer(): void {
   let message = "";
   if (problem === "too_long") message = DRAFT_TOO_LONG_TEXT;
   else if (problem === "invalid") message = DRAFT_INVALID_TEXT;
+  else if (problem === "ok" && toolsNeedFolder()) message = "Araçlar için önce bir çalışma klasörü seç.";
   else if (problem === "ok" && aiPhase !== "ready") message = WAIT_FOR_AI_TEXT;
   const error = must("composer-error");
   error.textContent = message;
@@ -1296,7 +1376,7 @@ async function sendCurrent(): Promise<void> {
   if (sendInFlight) return;
   const input = must<HTMLTextAreaElement>("task-input");
   const raw = input.value;
-  if (currentDraftProblem() !== "ok" || aiPhase !== "ready") {
+  if (currentDraftProblem() !== "ok" || aiPhase !== "ready" || toolsNeedFolder()) {
     updateComposer();
     return;
   }
@@ -1315,6 +1395,7 @@ async function sendCurrent(): Promise<void> {
     labels: selectionLabels(),
     agent: selectedAgent(),
     project: ws.activeProjectId,
+    tools: toolsActive(),
     status: "running",
     text: null,
     truncated: false,
@@ -1363,10 +1444,11 @@ async function runTurn(taskId: string, turn: Turn): Promise<void> {
 
 /** The direct request, or (for a Manager with a Ruflo role) the request that also carries its role and project. */
 function taskRequest(turn: Turn): HermesTaskRequest {
-  if (!turn.agent) return { draft: turn.composed };
   const project = turn.project;
-  if (project !== null && /^[a-z0-9][a-z0-9-]{0,79}$/.test(project)) return { draft: turn.composed, agent: turn.agent, project };
-  return { draft: turn.composed, agent: turn.agent };
+  const withProject = project !== null && /^[a-z0-9][a-z0-9-]{0,79}$/.test(project);
+  if (!turn.agent) return turn.tools ? { draft: turn.composed, tools: true } : { draft: turn.composed };
+  const base = withProject ? { draft: turn.composed, agent: turn.agent, project } : { draft: turn.composed, agent: turn.agent };
+  return turn.tools ? { ...base, tools: true } : base;
 }
 
 function refreshIfActive(taskId: string): void {
@@ -2298,6 +2380,17 @@ function wire(): void {
   wireRootTrigger("skills-btn", "skills", openSkillsPicker);
   wireRootTrigger("connectors-btn", "connectors", openConnectorsPicker);
   wireRootTrigger("plan-btn", "plan", openPlanMenu);
+  {
+    const workspaceButton = must("workspace-btn");
+    workspaceButton.addEventListener("click", () => {
+      if (workspaceFolder === null) {
+        closeAllMenus(false);
+        void callTools("pickWorkspace");
+        return;
+      }
+      toggleRootMenu("workspace", workspaceButton, () => openWorkspaceMenu(workspaceButton));
+    });
+  }
   wireRootTrigger("app-menu-btn", "app", openAppMenu);
   wireRootTrigger("account-btn", "account", openAccountMenu);
   wireRootTrigger("add-project-btn", "project-create", openProjectCreate);
@@ -2396,6 +2489,21 @@ function wire(): void {
     focusSoon(el("settings-reset-btn"));
   });
   on("settings-reset-confirm", "click", resetWorkspace);
+  on("settings-tools-clear", "click", () => {
+    toolsConfirming = true;
+    renderToolsControls();
+    focusSoon(el("settings-tools-confirm"));
+  });
+  on("settings-tools-cancel", "click", () => {
+    toolsConfirming = false;
+    renderToolsControls();
+    focusSoon(el("settings-tools-clear"));
+  });
+  on("settings-tools-confirm", "click", () => {
+    toolsConfirming = false;
+    void callTools("clearPermissions");
+    focusSoon(el("settings-tools-clear"));
+  });
   on("settings-memory-clear", "click", () => {
     memoryConfirming = true;
     setText("settings-memory-status", "");
@@ -2421,6 +2529,7 @@ function main(): void {
   wire();
   showView("new-task");
   bestEffortClearTask();
+  void callTools("getWorkspace");
   startPolling();
 }
 

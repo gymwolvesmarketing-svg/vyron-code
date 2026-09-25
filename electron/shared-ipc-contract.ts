@@ -278,6 +278,8 @@ export interface HermesTaskRequest {
   readonly agent?: string;
   /** Optional project id (a plain slug) that scopes the Manager's persistent memory; only with `agent`. */
   readonly project?: string;
+  /** Optional: run with approved tools (workspace folder + native approval dialogs). Only the literal `true`. */
+  readonly tools?: boolean;
 }
 
 /**
@@ -338,11 +340,26 @@ export interface DesktopAppApi {
   clearAgentMemory(): Promise<boolean>;
 }
 
+/** What the renderer may know about the tool workspace: the folder's display name and how many permissions are saved. */
+export interface ToolWorkspaceInfo {
+  readonly folderName: string | null;
+  readonly alwaysCount: number;
+}
+
+/** The tool workspace bridge - four methods, none takes an argument (the folder is chosen in a native dialog). */
+export interface DesktopToolsApi {
+  getWorkspace(): Promise<ToolWorkspaceInfo>;
+  pickWorkspace(): Promise<ToolWorkspaceInfo>;
+  clearWorkspace(): Promise<ToolWorkspaceInfo>;
+  clearPermissions(): Promise<ToolWorkspaceInfo>;
+}
+
 /** The full shape of `window.vyronDesktop`, as exposed by electron/preload.ts. */
 export interface DesktopApi {
   readonly localAi: DesktopLocalAiApi;
   readonly hermes: DesktopHermesApi;
   readonly app: DesktopAppApi;
+  readonly tools: DesktopToolsApi;
 }
 
 /** Local AI lifecycle IPC channels - wired to real `ipcMain.handle` handlers in electron/main.ts. */
@@ -364,7 +381,15 @@ export const HERMES_IPC_CHANNELS = {
   HERMES_CLEAR_TASK_SUBMISSION: "hermes:clearTaskSubmission",
 } as const;
 
-/** The single window-bridge channel (no arguments, no return value). */
+/** Tool workspace channels (no arguments). */
+export const TOOLS_IPC_CHANNELS = {
+  TOOLS_GET_WORKSPACE: "tools:getWorkspace",
+  TOOLS_PICK_WORKSPACE: "tools:pickWorkspace",
+  TOOLS_CLEAR_WORKSPACE: "tools:clearWorkspace",
+  TOOLS_CLEAR_PERMISSIONS: "tools:clearPermissions",
+} as const;
+
+/** The window-bridge channels (no arguments). */
 export const APP_IPC_CHANNELS = {
   APP_TOGGLE_DEV_TOOLS: "app:toggleDevTools",
   APP_CLEAR_AGENT_MEMORY: "app:clearAgentMemory",

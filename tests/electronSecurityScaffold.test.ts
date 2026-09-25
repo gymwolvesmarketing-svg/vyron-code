@@ -88,8 +88,8 @@ describe("Electron scaffold source — no shell/child_process execution capabili
   const FILES_ALLOWED_FETCH = new Set(["hermesApiServer.ts", "hermesTaskSubmission.ts", "localAiAdapters.ts"]);
   // localAiAdapters.ts is the one main-process module that starts the two local services
   // (fixed spawn of the Hermes gateway and the auth proxy, taskkill for cleanup) and probes them.
-  const FILES_ALLOWED_CHILD_PROCESS = new Set(["localAiAdapters.ts", "rufloAdapters.ts"]);
-  const FILES_ALLOWED_ENV_FS = new Set(["localAiAdapters.ts", "rufloAdapters.ts"]);
+  const FILES_ALLOWED_CHILD_PROCESS = new Set(["localAiAdapters.ts", "rufloAdapters.ts", "toolExecutors.ts"]);
+  const FILES_ALLOWED_ENV_FS = new Set(["localAiAdapters.ts", "rufloAdapters.ts", "toolExecutors.ts", "toolAdapters.ts"]);
   const forbiddenPatterns: Array<[string, RegExp, (file: string) => boolean]> = [
     ["child_process import", /child_process/, (file) => !FILES_ALLOWED_CHILD_PROCESS.has(file)],
     ["exec( call", /\bexec\s*\(/, (file) => !FILES_ALLOWED_CHILD_PROCESS.has(file)],
@@ -117,7 +117,7 @@ describe("Electron scaffold source — no shell/child_process execution capabili
   });
 
   it("confirms exactly the expected scaffold .ts files exist, no more", () => {
-    expect(sourceFiles).toHaveLength(22);
+    expect(sourceFiles).toHaveLength(26);
     expect(sourceFiles.sort()).toEqual(
       [
         "hermesApiServer.ts",
@@ -131,6 +131,10 @@ describe("Electron scaffold source — no shell/child_process execution capabili
         "rufloAdapters.ts",
         "rufloBridge.ts",
         "rufloTeam.ts",
+        "toolAdapters.ts",
+        "toolExecutors.ts",
+        "toolLoop.ts",
+        "toolPolicy.ts",
         "preload.ts",
         "renderer.ts",
         "security-policy.ts",
@@ -534,7 +538,7 @@ describe("electron/preload.ts — narrow fixed bridge", () => {
     expect([...code.matchAll(/exposeInMainWorld\(\s*"([^"]+)"/g)].map((m) => m[1])).toEqual(["vyronDesktop"]);
   });
 
-  it("exposes exactly the eight fixed methods and no generic invoke/send/on", () => {
+  it("exposes exactly the twelve fixed methods and no generic invoke/send/on", () => {
     const methods = [...code.matchAll(/^\s{4}(\w+):\s*(?:async\s*)?\(/gm)].map((m) => m[1]).sort();
     expect(methods).toEqual(
       [
@@ -546,6 +550,10 @@ describe("electron/preload.ts — narrow fixed bridge", () => {
         "sendTask",
         "toggleDevTools",
         "clearAgentMemory",
+        "clearPermissions",
+        "clearWorkspace",
+        "getWorkspace",
+        "pickWorkspace",
       ].sort(),
     );
     expect(code).not.toMatch(/\b(send|on|once|invoke)\s*:/);
@@ -553,7 +561,7 @@ describe("electron/preload.ts — narrow fixed bridge", () => {
   });
 
   it("carries no endpoint, credential, path, workspace, or process capability", () => {
-    expect(code).not.toMatch(/endpoint|apiKey|API_SERVER_KEY|workspace|process\.|require\(/i);
+    expect(code).not.toMatch(/endpoint|apiKey|API_SERVER_KEY|process\.|require\(/i);
   });
 
   it("duplicates the canonical channel strings exactly", () => {
@@ -566,8 +574,8 @@ describe("electron/preload.ts — narrow fixed bridge", () => {
 describe("electron/main.ts — local AI IPC wiring", () => {
   const code = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", "main.ts"), "utf8"));
 
-  it("registers exactly eight ipcMain handlers (three local AI, three task, two window bridge)", () => {
-    expect(code.match(/ipcMain\.handle\(/g)).toHaveLength(8);
+  it("registers exactly twelve ipcMain handlers (three local AI, three task, two window bridge, four tool workspace)", () => {
+    expect(code.match(/ipcMain\.handle\(/g)).toHaveLength(12);
   });
 
   it("the three local AI handlers take no renderer-supplied argument", () => {
@@ -582,7 +590,7 @@ describe("electron/main.ts — local AI IPC wiring", () => {
   });
 
   it("registers no workspace, manual authorization, or endpoint handler", () => {
-    expect(code).not.toMatch(/workspace|beginAuthorization|configureEndpoint|WORKSPACE_IPC_CHANNELS/i);
+    expect(code).not.toMatch(/beginAuthorization|configureEndpoint|WORKSPACE_IPC_CHANNELS/i);
   });
 
   it("shuts the local AI down before quitting", () => {
@@ -605,6 +613,6 @@ describe("electron/localAiLifecycle.ts and localAiAdapters.ts — placement", ()
       .readdirSync(dir)
       .filter((f) => f.endsWith(".ts") && f !== "localAiAdapters.ts")
       .filter((f) => /from ["']\.\/localAiAdapters["']/.test(stripComments(fs.readFileSync(path.join(dir, f), "utf8"))));
-    expect(importers).toEqual(["main.ts", "rufloAdapters.ts"]);
+    expect(importers).toEqual(["main.ts", "rufloAdapters.ts", "toolExecutors.ts"]);
   });
 });

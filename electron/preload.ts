@@ -51,6 +51,7 @@ interface HermesTaskRequest {
   readonly draft: string;
   readonly agent?: string;
   readonly project?: string;
+  readonly tools?: boolean;
 }
 
 interface DesktopLocalAiApi {
@@ -70,10 +71,23 @@ interface DesktopAppApi {
   clearAgentMemory(): Promise<boolean>;
 }
 
+interface ToolWorkspaceInfo {
+  readonly folderName: string | null;
+  readonly alwaysCount: number;
+}
+
+interface DesktopToolsApi {
+  getWorkspace(): Promise<ToolWorkspaceInfo>;
+  pickWorkspace(): Promise<ToolWorkspaceInfo>;
+  clearWorkspace(): Promise<ToolWorkspaceInfo>;
+  clearPermissions(): Promise<ToolWorkspaceInfo>;
+}
+
 interface DesktopApi {
   readonly localAi: DesktopLocalAiApi;
   readonly hermes: DesktopHermesApi;
   readonly app: DesktopAppApi;
+  readonly tools: DesktopToolsApi;
 }
 
 const LOCAL_AI_GET_STATE_CHANNEL = "localAi:getState";
@@ -84,6 +98,10 @@ const HERMES_SEND_TASK_CHANNEL = "hermes:sendTask";
 const HERMES_CLEAR_TASK_SUBMISSION_CHANNEL = "hermes:clearTaskSubmission";
 const APP_TOGGLE_DEV_TOOLS_CHANNEL = "app:toggleDevTools";
 const APP_CLEAR_AGENT_MEMORY_CHANNEL = "app:clearAgentMemory";
+const TOOLS_GET_WORKSPACE_CHANNEL = "tools:getWorkspace";
+const TOOLS_PICK_WORKSPACE_CHANNEL = "tools:pickWorkspace";
+const TOOLS_CLEAR_WORKSPACE_CHANNEL = "tools:clearWorkspace";
+const TOOLS_CLEAR_PERMISSIONS_CHANNEL = "tools:clearPermissions";
 
 const vyronDesktop: DesktopApi = {
   localAi: {
@@ -99,6 +117,12 @@ const vyronDesktop: DesktopApi = {
   app: {
     toggleDevTools: () => ipcRenderer.invoke(APP_TOGGLE_DEV_TOOLS_CHANNEL),
     clearAgentMemory: () => ipcRenderer.invoke(APP_CLEAR_AGENT_MEMORY_CHANNEL),
+  },
+  tools: {
+    getWorkspace: () => ipcRenderer.invoke(TOOLS_GET_WORKSPACE_CHANNEL),
+    pickWorkspace: () => ipcRenderer.invoke(TOOLS_PICK_WORKSPACE_CHANNEL),
+    clearWorkspace: () => ipcRenderer.invoke(TOOLS_CLEAR_WORKSPACE_CHANNEL),
+    clearPermissions: () => ipcRenderer.invoke(TOOLS_CLEAR_PERMISSIONS_CHANNEL),
   },
 };
 

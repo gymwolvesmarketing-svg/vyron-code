@@ -27,6 +27,33 @@ import { getAuthorizationState, getCurrentCredential } from "./hermesAuthorizati
 import { resolveTrustedEndpoint } from "./hermesEndpoint";
 import { getConfiguredEndpoint } from "./hermesEndpointSetup";
 import { isRufloAgentType } from "./rufloBridge";
+import { flattenTranscript, type ChatMessage } from "./toolPolicy";
+
+/**
+ * Approved-tool runner (injected by electron/main.ts): runs the model/tool loop for a task that asked for tools. It gets
+ * an `ask` function that sends a transcript to the model (directly to Hermes, or through a Manager's Ruflo agent) and
+ * returns its plain-text reply; the runner does everything else (parsing, user approval, confined execution).
+ */
+export type ToolRunnerFn = (
+  task: string,
+  ask: (messages: readonly ChatMessage[]) => Promise<string | null>,
+) => Promise<{ readonly ok: true; readonly text: string } | { readonly ok: false }>;
+
+/** One raw Ruflo agent turn (no memory, larger prompt allowance) used by tool runs with a Manager. */
+export type AgentAskFn = (agentType: string, prompt: string) => Promise<string | null>;
+
+let toolRunner: ToolRunnerFn | null = null;
+let agentAsk: AgentAskFn | null = null;
+
+export function setToolRunner(runner: ToolRunnerFn | null): void {
+  toolRunner = runner;
+}
+
+export function setAgentAsk(ask: AgentAskFn | null): void {
+  agentAsk = ask;
+}
+
+const MAX_TOOL_RESPONSE_CHARS = 8_000;
 
 /**
  * Optional executor for Manager (SubAgent) tasks, injected by electron/main.ts. When a request names an agent
@@ -137,12 +164,15 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
   if (typeof request !== "object" || request === null || Array.isArray(request)) return safeState("safe_failure");
   const keys = Object.keys(request as Record<string, unknown>);
   const hasAgent = keys.indexOf("agent") >= 0;
-  const allowedKeys = hasAgent ? ["draft", "agent", "project"] : ["draft"];
+  const hasTools = keys.indexOf("tools") >= 0;
+  const allowedKeys = ["draft"].concat(hasAgent ? ["agent", "project"] : [], hasTools ? ["tools"] : []);
   if (keys.indexOf("draft") < 0 || keys.some((key) => allowedKeys.indexOf(key) < 0)) return safeState("safe_failure");
   const draft = (request as Record<string, unknown>).draft;
   if (typeof draft !== "string" || !validateDraft(draft)) return safeState("safe_failure");
   const agent = hasAgent ? (request as Record<string, unknown>).agent : null;
   if (hasAgent && (!isRufloAgentType(agent) || agentExecutor === null)) return safeState("safe_failure");
+  // Tools: only the literal `true`, only when a runner is installed (and, with a Manager, a raw agent turn is available).
+  if (hasTools && ((request as Record<string, unknown>).tools !== true || toolRunner === null || (hasAgent && agentAsk === null))) return safeState("safe_failure");
   // Optional project id (memory scope): a plain slug or nothing; anything else is rejected, never sanitized silently.
   const projectField = hasAgent ? (request as Record<string, unknown>).project : undefined;
   if (projectField !== undefined && (typeof projectField !== "string" || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(projectField))) return safeState("safe_failure");
@@ -164,7 +194,35 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
 
   try {
     let text: string | null;
-    if (hasAgent && agentExecutor !== null) {
+    let responseLimit = MAX_RESPONSE_CHARS;
+    if (hasTools && toolRunner !== null) {
+      responseLimit = MAX_TOOL_RESPONSE_CHARS;
+      const ask = async (messages: readonly ChatMessage[]): Promise<string | null> => {
+        if (hasAgent && agentAsk !== null) return agentAsk(agent as string, flattenTranscript(messages));
+        const stepController = new AbortController();
+        const stepTimer = setTimeout(() => stepController.abort(), SEND_TIMEOUT_MS);
+        try {
+          const stepResponse = await fetch(`${endpoint.url.origin}/v1/chat/completions`, {
+            method: "POST",
+            redirect: "error",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}` },
+            body: JSON.stringify({ messages: messages.map((m) => ({ role: m.role, content: m.content })), stream: false }),
+            signal: stepController.signal,
+          });
+          if (!stepResponse.ok) return null;
+          return extractSafeResponseText(await stepResponse.json());
+        } catch {
+          return null;
+        } finally {
+          clearTimeout(stepTimer);
+        }
+      };
+      const outcome = await toolRunner(draft, ask);
+      text = outcome.ok ? outcome.text : null;
+      clearTimeout(timer);
+      if (generation !== generationAtStart) return getTaskSubmissionState();
+      sendInFlight = false;
+    } else if (hasAgent && agentExecutor !== null) {
       // Manager task: Ruflo runs the agent (its own bounded timeouts apply); the reply is reduced exactly like a direct one.
       const outcome = await agentExecutor(agent as string, draft, project);
       text = outcome.ok ? outcome.text : null;
@@ -207,8 +265,8 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
       ambientState = "safe_failure";
       return safeState("safe_failure");
     }
-    const truncated = text.length > MAX_RESPONSE_CHARS;
-    lastCompletedText = truncated ? text.slice(0, MAX_RESPONSE_CHARS) : text;
+    const truncated = text.length > responseLimit;
+    lastCompletedText = truncated ? text.slice(0, responseLimit) : text;
     lastCompletedTruncated = truncated;
     ambientState = "completed";
     return safeState("completed");

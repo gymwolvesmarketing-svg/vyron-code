@@ -763,7 +763,7 @@ describe("+ menu, SubAgent, Plan and Terminal", () => {
     const h = await start();
     h.click(h.el("plus-btn"));
     h.click(item(h, "Terminal"));
-    expect(h.menuLabels().slice(4).map((l) => l.slice(0, 15))).toEqual(["Terminal kapalı", "Komut önerisi i"]);
+    expect(h.menuLabels().slice(4).map((l) => l.slice(0, 15))).toEqual(["Terminal kapalı", "Komut önerisi i", "Araçlar (onaylı"]);
     h.click(item(h, "Komut önerisi iste"));
     expect(h.doc.querySelector("#chips")?.textContent).toContain("komut önerisi");
     await sendTask(h, "Bir betik yaz");
@@ -1544,5 +1544,124 @@ describe("project memory and the parallel team", () => {
     second.click(second.doc.querySelector<HTMLElement>('.manager-main[data-manager-id="multi-model-planner"]'));
     expect(second.el("manager-detail").textContent).toContain("(paralel ekip)");
     second.close();
+  });
+});
+
+describe("approved tools (workspace folder + tool mode)", () => {
+  async function chooseTools(h: Harness): Promise<void> {
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "Terminal"));
+    h.click(item(h, "Araçlar (onaylı)"));
+  }
+
+  it("offers the third Terminal choice, shows a chip, and asks for a folder before it can send", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "Terminal"));
+    expect(h.menuLabels().slice(4).map((l) => l.slice(0, 15))).toEqual(["Terminal kapalı", "Komut önerisi i", "Araçlar (onaylı"]);
+    h.click(item(h, "Araçlar (onaylı)"));
+    expect(h.doc.querySelector("#chips")?.textContent).toContain("araçlar (onaylı)");
+    h.type("Dosya oluştur");
+    expect(h.el<HTMLButtonElement>("send-btn").disabled).toBe(true);
+    expect(h.el("composer-error").textContent).toBe("Araçlar için önce bir çalışma klasörü seç.");
+    h.key(h.el("task-input"), "Enter", { ctrlKey: true });
+    await h.flush();
+    expect(h.calls.send).toHaveLength(0);
+  });
+
+  it("the workspace pill starts empty, picks a folder through the native dialog and shows only its name", async () => {
+    const h = await start();
+    expect(h.el("workspace-label").textContent).toBe("Çalışma klasörü seç");
+    h.click(h.el("workspace-btn"));
+    await h.flush();
+    expect(h.calls.picks).toBe(1);
+    expect(h.el("workspace-label").textContent).toBe("ProjeKlasoru");
+    expect(h.el("workspace-btn").classList.contains("has-selection")).toBe(true);
+    expect(h.doc.body.textContent).not.toMatch(/[A-Za-z]:\\/);
+  });
+
+  it("the pill offers to change or remove the folder once one is chosen", async () => {
+    const h = await start();
+    h.click(h.el("workspace-btn"));
+    await h.flush();
+    h.click(h.el("workspace-btn"));
+    expect(h.menuLabels()).toEqual(["Klasörü değiştir…", "Klasörü kaldır"]);
+    h.click(item(h, "Klasörü kaldır"));
+    await h.flush();
+    expect(h.calls.workspaceClears).toBe(1);
+    expect(h.el("workspace-label").textContent).toBe("Çalışma klasörü seç");
+  });
+
+  it("with a folder chosen, the task is sent with tools: true (and keeps its Manager role and project)", async () => {
+    const h = await start();
+    h.click(h.el("workspace-btn"));
+    await h.flush();
+    await chooseTools(h);
+    await sendTask(h, "Bir dosya yaz");
+    expect(h.calls.send[0]).toEqual({ draft: "Bir dosya yaz", tools: true });
+    h.click(h.el("new-task-btn"));
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "Reviewer"));
+    h.click(h.doc.querySelector<HTMLElement>('.project-add[aria-label="AETHERIS projesinde yeni görev"]'));
+    await sendTask(h, "Yöneticiyle yaz");
+    expect(h.calls.send[1]).toEqual({ draft: "Yöneticiyle yaz", agent: "reviewer", project: "aetheris", tools: true });
+  });
+
+  it("without the tools mode the request never carries tools", async () => {
+    const h = await start();
+    h.click(h.el("workspace-btn"));
+    await h.flush();
+    await sendTask(h, "Sadece metin");
+    expect(h.calls.send[0]).toEqual({ draft: "Sadece metin" });
+  });
+
+  it("removing the folder while tools are on blocks sending again", async () => {
+    const h = await start();
+    h.click(h.el("workspace-btn"));
+    await h.flush();
+    await chooseTools(h);
+    h.type("x");
+    expect(h.el<HTMLButtonElement>("send-btn").disabled).toBe(false);
+    h.click(h.el("workspace-btn"));
+    h.click(item(h, "Klasörü kaldır"));
+    await h.flush();
+    expect(h.el<HTMLButtonElement>("send-btn").disabled).toBe(true);
+  });
+
+  it("the tools mode chip removes the mode, and the mode is remembered", async () => {
+    const h = await start();
+    await chooseTools(h);
+    expect(JSON.parse(h.storageText() as string).terminalMode).toBe("tools");
+    h.click(h.doc.querySelector<HTMLElement>('#chips .chip-remove[aria-label="Araçları kapat"]'));
+    expect(h.doc.querySelector("#chips")?.textContent).toBe("");
+    expect(JSON.parse(h.storageText() as string).terminalMode).toBe("off");
+  });
+
+  it("the settings page shows the saved-permission count and resets it only after a confirmation", async () => {
+    const h = setup({ ai: { state: "ready" } });
+    await h.flush();
+    h.behavior.alwaysCount = 2;
+    h.click(h.el("workspace-btn"));
+    await h.flush();
+    h.click(h.el("settings-btn"));
+    expect(h.el("settings-tools-count").textContent).toBe("2 kalıcı izin kayıtlı.");
+    h.click(h.el("settings-tools-clear"));
+    expect(h.el("settings-tools-confirm").hidden).toBe(false);
+    expect(h.calls.permissionClears).toBe(0);
+    h.click(h.el("settings-tools-cancel"));
+    expect(h.calls.permissionClears).toBe(0);
+    h.click(h.el("settings-tools-clear"));
+    h.click(h.el("settings-tools-confirm"));
+    await h.flush();
+    expect(h.calls.permissionClears).toBe(1);
+    expect(h.el("settings-tools-count").textContent).toBe("Kayıtlı kalıcı izin yok.");
+    h.close();
+  });
+
+  it("the renderer can neither read nor add permissions or paths: only the four argument-free workspace methods exist", () => {
+    const calls = new Set([...rendererSource.matchAll(/api\.tools\[(\w+)\]|callTools\("(\w+)"\)/g)].map((m) => m[2] ?? m[1]));
+    expect([...calls].sort()).toEqual(["clearPermissions", "clearWorkspace", "getWorkspace", "method", "pickWorkspace"].sort());
+    expect(rendererSource).not.toMatch(/tools\.(add|grant|allow|setPermission|write|exec)/);
   });
 });

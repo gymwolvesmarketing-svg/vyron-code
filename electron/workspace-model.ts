@@ -18,7 +18,7 @@ type WsSidebarTab = "projects" | "managers";
 
 type WsPlanMode = "standard" | "plan" | "deep";
 
-type WsTerminalMode = "off" | "suggest";
+type WsTerminalMode = "off" | "suggest" | "tools";
 
 type WsWorkMode = "local" | "brief";
 
@@ -174,6 +174,7 @@ const VyronModel = (() => {
   const TERMINAL_MODES: ReadonlyArray<{ id: WsTerminalMode; label: string; description: string; prefix: string }> = [
     { id: "off", label: "Terminal kapalı", description: "Komut önerisi istenmez.", prefix: "" },
     { id: "suggest", label: "Komut önerisi iste", description: "Terminal komutlarını önerir; hiçbir şey çalıştırılmaz.", prefix: "Gerekirse terminal komutlarını yalnızca öner; hiçbir komut çalıştırma." },
+    { id: "tools", label: "Araçlar (onaylı)", description: "Çalışma klasöründe dosya okur/yazar, komut çalıştırır. Yazma ve komut için her seferinde izin sorar.", prefix: "" },
   ];
 
   const WORK_MODES: ReadonlyArray<{ id: WsWorkMode; label: string; description: string; prefix: string }> = [
@@ -392,7 +393,7 @@ const VyronModel = (() => {
       selectedSkillIds: [],
       selectedConnectorIds: [],
       planMode: pick(raw.planMode, ["standard", "plan", "deep"] as const, "standard"),
-      terminalMode: pick(raw.terminalMode, ["off", "suggest"] as const, "off"),
+      terminalMode: pick(raw.terminalMode, ["off", "suggest", "tools"] as const, "off"),
       workMode: pick(raw.workMode, ["local", "brief"] as const, "local"),
     };
     if (typeof raw.activeProjectId === "string" && state.projects.some((p) => p.id === raw.activeProjectId)) state.activeProjectId = raw.activeProjectId;

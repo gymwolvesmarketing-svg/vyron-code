@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
-import { getTaskSubmissionState, sendTask, clearTaskSubmission, setTaskAgentExecutor } from "../electron/hermesTaskSubmission";
+import { getTaskSubmissionState, sendTask, clearTaskSubmission, setTaskAgentExecutor, setToolRunner, setAgentAsk } from "../electron/hermesTaskSubmission";
 import { beginAuthorization, clearAuthorization } from "../electron/hermesAuthorization";
 import { configureEndpoint, clearEndpointConfiguration } from "../electron/hermesEndpointSetup";
 
@@ -470,6 +470,129 @@ describe("sendTask - Manager (agent) tasks run through the injected executor", (
       return { ok: true as const, text: "late" };
     });
     const pending = sendTask({ draft: VALID_DRAFT, agent: "coder" });
+    clearTaskSubmission();
+    release();
+    expect((await pending).state).not.toBe("completed");
+  });
+});
+
+describe("sendTask - approved tools (tools: true)", () => {
+  afterEach(() => {
+    setToolRunner(null);
+    setAgentAsk(null);
+    setTaskAgentExecutor(null);
+  });
+
+  it("runs the tool loop with an ask function that posts the whole transcript directly to Hermes", async () => {
+    await authorizeAndConfigure();
+    let captured: ((messages: Array<{ role: "system" | "user" | "assistant"; content: string }>) => Promise<string | null>) | null = null;
+    setToolRunner(async (task, ask) => {
+      captured = ask as never;
+      const first = await ask([{ role: "system", content: "KURAL" }, { role: "user", content: task }]);
+      return { ok: true as const, text: "runner:" + String(first) };
+    });
+    fetchMock.mockResolvedValueOnce(okResponse("model yanıtı"));
+    const result = await sendTask({ draft: VALID_DRAFT, tools: true });
+    expect(result).toEqual({ state: "completed", text: "runner:model yanıtı", truncated: false });
+    expect(captured).not.toBeNull();
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:19130/v1/chat/completions");
+    expect(JSON.parse(options.body as string)).toEqual({
+      messages: [
+        { role: "system", content: "KURAL" },
+        { role: "user", content: VALID_DRAFT },
+      ],
+      stream: false,
+    });
+    expect((options.headers as Record<string, string>).Authorization).toBe("Bearer " + PLACEHOLDER_CREDENTIAL);
+  });
+
+  it("a failed model step is reported to the loop as null, never as an exception", async () => {
+    await authorizeAndConfigure();
+    setToolRunner(async (_task, ask) => {
+      const first = await ask([{ role: "user", content: "x" }]);
+      return first === null ? { ok: false as const } : { ok: true as const, text: "?" };
+    });
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
+    expect((await sendTask({ draft: VALID_DRAFT, tools: true })).state).toBe("safe_failure");
+    fetchMock.mockRejectedValueOnce(new Error("boom"));
+    expect((await sendTask({ draft: VALID_DRAFT, tools: true })).state).toBe("safe_failure");
+  });
+
+  it("with a Manager, the transcript goes through the raw agent turn (flattened) instead of Hermes directly", async () => {
+    await authorizeAndConfigure();
+    const agentAskMock = vi.fn(async () => "agent yanıtı");
+    setAgentAsk(agentAskMock);
+    setTaskAgentExecutor(async () => ({ ok: true as const, text: "unused" }));
+    setToolRunner(async (task, ask) => ({ ok: true as const, text: String(await ask([{ role: "system", content: "K" }, { role: "user", content: task }])) }));
+    const result = await sendTask({ draft: VALID_DRAFT, agent: "coder", project: "aetheris", tools: true });
+    expect(result.text).toBe("agent yanıtı");
+    expect(agentAskMock).toHaveBeenCalledTimes(1);
+    const [role, prompt] = agentAskMock.mock.calls[0] as unknown as [string, string];
+    expect(role).toBe("coder");
+    expect(prompt).toContain("[Kurallar]\nK");
+    expect(prompt).toContain(VALID_DRAFT);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("allows a longer answer for tool runs (the log footer must not be cut off) and still truncates beyond it", async () => {
+    await authorizeAndConfigure();
+    setToolRunner(async () => ({ ok: true as const, text: "z".repeat(7000) }));
+    expect((await sendTask({ draft: VALID_DRAFT, tools: true })).truncated).toBe(false);
+    setToolRunner(async () => ({ ok: true as const, text: "z".repeat(9000) }));
+    const long = await sendTask({ draft: VALID_DRAFT, tools: true });
+    expect(long.truncated).toBe(true);
+    expect(long.text).toHaveLength(8000);
+  });
+
+  it.each([
+    ["tools: false", { draft: VALID_DRAFT, tools: false }],
+    ["tools: 1", { draft: VALID_DRAFT, tools: 1 }],
+    ['tools: "true"', { draft: VALID_DRAFT, tools: "true" }],
+    ["an extra field", { draft: VALID_DRAFT, tools: true, cwd: "C:\\" }],
+  ])("rejects %s without running anything", async (_label, request) => {
+    await authorizeAndConfigure();
+    const runner = vi.fn(async () => ({ ok: true as const, text: "no" }));
+    setToolRunner(runner);
+    expect((await sendTask(request)).state).toBe("safe_failure");
+    expect(runner).not.toHaveBeenCalled();
+  });
+
+  it("rejects a tool task when no runner is installed, or a Manager tool task without a raw agent turn", async () => {
+    await authorizeAndConfigure();
+    expect((await sendTask({ draft: VALID_DRAFT, tools: true })).state).toBe("safe_failure");
+    setToolRunner(async () => ({ ok: true as const, text: "x" }));
+    setTaskAgentExecutor(async () => ({ ok: true as const, text: "x" }));
+    setAgentAsk(null);
+    expect((await sendTask({ draft: VALID_DRAFT, agent: "coder", tools: true })).state).toBe("safe_failure");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the auth preconditions and the one-in-flight guard for tool tasks", async () => {
+    setToolRunner(async () => ({ ok: true as const, text: "x" }));
+    expect((await sendTask({ draft: VALID_DRAFT, tools: true })).state).toBe("unauthorized");
+    await authorizeAndConfigure();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    setToolRunner(async () => {
+      await gate;
+      return { ok: true as const, text: "bitti" };
+    });
+    const first = sendTask({ draft: VALID_DRAFT, tools: true });
+    expect((await sendTask({ draft: VALID_DRAFT, tools: true })).state).toBe("sending");
+    release();
+    expect((await first).state).toBe("completed");
+  });
+
+  it("a stale tool run cannot restore completed after clearTaskSubmission()", async () => {
+    await authorizeAndConfigure();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    setToolRunner(async () => {
+      await gate;
+      return { ok: true as const, text: "geç" };
+    });
+    const pending = sendTask({ draft: VALID_DRAFT, tools: true });
     clearTaskSubmission();
     release();
     expect((await pending).state).not.toBe("completed");

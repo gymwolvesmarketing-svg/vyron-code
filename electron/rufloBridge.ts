@@ -59,6 +59,7 @@ import {
 } from "./rufloTeam";
 
 export const MAX_RUFLO_PROMPT_CHARS = 4_000;
+export const MAX_RUFLO_ASK_CHARS = 40_000;
 export const MAX_RUFLO_OUTPUT_CHARS = 20_000;
 
 export interface RufloTransport {
@@ -96,6 +97,8 @@ export interface RufloBridge {
   run(agentType: unknown, prompt: unknown, project?: unknown): Promise<RufloResult>;
   /** Stops the runtime and deletes the persistent project memory. Resolves true when nothing is left. */
   clearMemory(): Promise<boolean>;
+  /** One raw agent turn (no memory, bigger prompt allowance) for the approved-tool loop. null = failed. */
+  ask(agentType: unknown, prompt: unknown): Promise<string | null>;
   shutdown(): Promise<void>;
 }
 
@@ -318,6 +321,22 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
         return result;
       } catch {
         return { ok: false, reason: "failed" };
+      } finally {
+        busy = false;
+      }
+    },
+    async ask(agentType, prompt) {
+      if (shuttingDown || !isRufloAgentType(agentType)) return null;
+      if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > MAX_RUFLO_ASK_CHARS) return null;
+      if (busy) return null;
+      busy = true;
+      try {
+        let text: string | null | "gone" = "gone";
+        if (await ensureStarted()) text = await executeAgent(agentType, prompt);
+        if (text === "gone" && !shuttingDown && (await ensureStarted())) text = await executeAgent(agentType, prompt);
+        return typeof text === "string" && text !== "gone" ? text : null;
+      } catch {
+        return null;
       } finally {
         busy = false;
       }

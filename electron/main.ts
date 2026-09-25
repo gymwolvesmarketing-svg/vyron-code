@@ -40,10 +40,11 @@
 import { app, BrowserWindow, ipcMain, Menu, powerMonitor } from "electron";
 import path from "node:path";
 import { HARDENED_WEB_PREFERENCES, isNavigationAllowed, isNewWindowAllowed } from "./security-policy";
-import { APP_IPC_CHANNELS, HERMES_IPC_CHANNELS, LOCAL_AI_IPC_CHANNELS } from "./shared-ipc-contract";
-import { getTaskSubmissionState, sendTask, clearTaskSubmission, setTaskAgentExecutor } from "./hermesTaskSubmission";
+import { APP_IPC_CHANNELS, HERMES_IPC_CHANNELS, LOCAL_AI_IPC_CHANNELS, TOOLS_IPC_CHANNELS } from "./shared-ipc-contract";
+import { getTaskSubmissionState, sendTask, clearTaskSubmission, setTaskAgentExecutor, setToolRunner, setAgentAsk } from "./hermesTaskSubmission";
 import { createProductionLocalAiManager } from "./localAiAdapters";
 import { createProductionRufloBridge } from "./rufloAdapters";
+import { createProductionToolRunner } from "./toolAdapters";
 
 /**
  * Explicit, disabled-by-default opt-in for the lifecycle diagnostics below —
@@ -169,6 +170,10 @@ const ruflo = createProductionRufloBridge({
   isPackaged: app.isPackaged,
 });
 setTaskAgentExecutor((agentType, prompt, project) => ruflo.run(agentType, prompt, project));
+setAgentAsk((agentType, prompt) => ruflo.ask(agentType, prompt));
+// Approved tools: workspace folder from a native dialog, native approval dialogs, confined executors.
+const tools = createProductionToolRunner(() => mainWindow);
+setToolRunner((task, ask) => tools.run(task, ask));
 
 /** Stops only what this app started: the Ruflo runtime and the local AI services. */
 function shutdownServices(): Promise<unknown> {
@@ -202,6 +207,15 @@ function registerHermesIpcHandlers(): void {
 }
 
 /** The one window-bridge handler: takes no argument and only ever acts on the app's own main window. */
+function registerToolsIpcHandlers(): void {
+  const fromOwnWindow = (event: Electron.IpcMainInvokeEvent): boolean => mainWindow !== null && event.sender === mainWindow.webContents;
+  const none = { folderName: null, alwaysCount: 0 };
+  ipcMain.handle(TOOLS_IPC_CHANNELS.TOOLS_GET_WORKSPACE, (event) => (fromOwnWindow(event) ? tools.getWorkspace() : none));
+  ipcMain.handle(TOOLS_IPC_CHANNELS.TOOLS_PICK_WORKSPACE, (event) => (fromOwnWindow(event) ? tools.pickWorkspace() : none));
+  ipcMain.handle(TOOLS_IPC_CHANNELS.TOOLS_CLEAR_WORKSPACE, (event) => (fromOwnWindow(event) ? tools.clearWorkspace() : none));
+  ipcMain.handle(TOOLS_IPC_CHANNELS.TOOLS_CLEAR_PERMISSIONS, (event) => (fromOwnWindow(event) ? tools.clearPermissions() : none));
+}
+
 function registerAppIpcHandlers(): void {
   ipcMain.handle(APP_IPC_CHANNELS.APP_TOGGLE_DEV_TOOLS, (event) => {
     if (mainWindow && event.sender === mainWindow.webContents) mainWindow.webContents.toggleDevTools();
@@ -309,6 +323,7 @@ app.whenReady().then(() => {
   registerLocalAiIpcHandlers();
   registerHermesIpcHandlers();
   registerAppIpcHandlers();
+  registerToolsIpcHandlers();
   // Non-blocking: the window is already open and shows the startup state while this runs.
   void localAi.start();
   registerPowerMonitorDiagnostics();

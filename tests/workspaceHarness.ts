@@ -35,7 +35,7 @@ export interface Harness {
   dom: JSDOM;
   win: Window & typeof globalThis;
   doc: Document;
-  calls: { getState: number; retry: number; copy: number; send: Array<{ draft: string }>; clear: number; devTools: number; memoryClears: number };
+  calls: { getState: number; retry: number; copy: number; send: Array<{ draft: string }>; clear: number; devTools: number; memoryClears: number; picks: number; workspaceClears: number; permissionClears: number };
   behavior: {
     aiState: FakeAiState;
     retryState: FakeAiState;
@@ -44,6 +44,9 @@ export interface Harness {
     sendGate: Promise<void> | null;
     sendThrows: boolean;
     memoryClearResult: boolean;
+    folderName: string | null;
+    pickFolderName: string | null;
+    alwaysCount: number;
   };
   el<T extends HTMLElement = HTMLElement>(id: string): T;
   flush(): Promise<void>;
@@ -66,7 +69,7 @@ export interface SetupOptions {
 
 export function setup(options: SetupOptions = {}): Harness {
   const errors: unknown[] = [];
-  const calls = { getState: 0, retry: 0, copy: 0, send: [] as Array<{ draft: string }>, clear: 0, devTools: 0, memoryClears: 0 };
+  const calls = { getState: 0, retry: 0, copy: 0, send: [] as Array<{ draft: string }>, clear: 0, devTools: 0, memoryClears: 0, picks: 0, workspaceClears: 0, permissionClears: 0 };
   const behavior: Harness["behavior"] = {
     aiState: options.ai ?? { state: "ready" },
     retryState: { state: "starting", stage: "checking" },
@@ -75,6 +78,9 @@ export function setup(options: SetupOptions = {}): Harness {
     sendGate: null,
     sendThrows: false,
     memoryClearResult: true,
+    folderName: null,
+    pickFolderName: "ProjeKlasoru",
+    alwaysCount: 0,
   };
   const dom = new JSDOM(html.replace(/<script src="[^"]+"><\/script>/g, ""), {
     url: "http://localhost/renderer.html",
@@ -107,6 +113,24 @@ export function setup(options: SetupOptions = {}): Harness {
             clearAgentMemory: async () => {
               calls.memoryClears += 1;
               return behavior.memoryClearResult;
+            },
+          },
+          tools: {
+            getWorkspace: async () => ({ folderName: behavior.folderName, alwaysCount: behavior.alwaysCount }),
+            pickWorkspace: async () => {
+              calls.picks += 1;
+              behavior.folderName = behavior.pickFolderName;
+              return { folderName: behavior.folderName, alwaysCount: behavior.alwaysCount };
+            },
+            clearWorkspace: async () => {
+              calls.workspaceClears += 1;
+              behavior.folderName = null;
+              return { folderName: null, alwaysCount: behavior.alwaysCount };
+            },
+            clearPermissions: async () => {
+              calls.permissionClears += 1;
+              behavior.alwaysCount = 0;
+              return { folderName: behavior.folderName, alwaysCount: 0 };
             },
           },
           hermes: {
