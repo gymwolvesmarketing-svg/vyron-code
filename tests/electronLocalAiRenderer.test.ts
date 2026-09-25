@@ -465,16 +465,14 @@ describe("composer typing, empty state and direct send", () => {
     expect(h.doc.body.textContent).not.toMatch(/Taslağı incele|Göndermeden önce incele|İncelenen task|Hermes'e gönderilecek metin/);
   });
 
-  it("Ctrl+Enter sends, Cmd+Enter (metaKey) sends, and plain Enter does not send", async () => {
+  it("Enter sends, Shift+Enter inserts a newline, and Ctrl/Cmd+Enter still send", async () => {
     const h = await start();
     h.type("Klavye ile");
-    const plain = h.key(h.el("task-input"), "Enter");
-    expect(plain.defaultPrevented).toBe(false);
-    expect(h.calls.send).toHaveLength(0);
     const shift = h.key(h.el("task-input"), "Enter", { shiftKey: true });
     expect(shift.defaultPrevented).toBe(false);
-    const ctrl = h.key(h.el("task-input"), "Enter", { ctrlKey: true });
-    expect(ctrl.defaultPrevented).toBe(true);
+    expect(h.calls.send).toHaveLength(0);
+    const plain = h.key(h.el("task-input"), "Enter");
+    expect(plain.defaultPrevented).toBe(true);
     await h.flush();
     expect(h.calls.send).toEqual([{ draft: "Klavye ile", models: MODELS }]);
 
@@ -482,21 +480,25 @@ describe("composer typing, empty state and direct send", () => {
     h.type("Mac ile");
     h.key(h.el("task-input"), "Enter", { metaKey: true });
     await h.flush();
-    expect(h.calls.send).toEqual([{ draft: "Klavye ile", models: MODELS }, { draft: "Mac ile", models: MODELS }]);
+    h.click(h.el("new-task-btn"));
+    h.type("Win ile");
+    h.key(h.el("task-input"), "Enter", { ctrlKey: true });
+    await h.flush();
+    expect(h.calls.send.map((r: any) => r.draft)).toEqual(["Klavye ile", "Mac ile", "Win ile"]);
   });
 
-  it("Enter inserts a newline instead of sending: a multi-line draft is sent whole", async () => {
+  it("Shift+Enter inserts a newline instead of sending: a multi-line draft is sent whole", async () => {
     const h = await start();
     h.type("satır bir\nsatır iki\n\tsatır üç");
-    expect(h.key(h.el("task-input"), "Enter").defaultPrevented).toBe(false);
+    expect(h.key(h.el("task-input"), "Enter", { shiftKey: true }).defaultPrevented).toBe(false);
     h.click(h.el("send-btn"));
     await h.flush();
     expect(h.calls.send[0]?.draft).toBe("satır bir\nsatır iki\n\tsatır üç");
   });
 
-  it("Ctrl+Enter does nothing for an empty draft", async () => {
+  it("Enter does nothing for an empty draft", async () => {
     const h = await start();
-    h.key(h.el("task-input"), "Enter", { ctrlKey: true });
+    h.key(h.el("task-input"), "Enter");
     await h.flush();
     expect(h.calls.send).toHaveLength(0);
   });

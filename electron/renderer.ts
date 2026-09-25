@@ -1534,7 +1534,8 @@ function handleClearResponse(): void {
 }
 
 function onTaskInputKeydown(event: KeyboardEvent): void {
-  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+  // Enter (or Ctrl/Cmd+Enter) sends; Shift+Enter inserts a newline. Enter while an IME is composing is left alone.
+  if (event.key === "Enter" && !event.shiftKey && !event.altKey && !event.isComposing) {
     event.preventDefault();
     void sendCurrent();
   }
