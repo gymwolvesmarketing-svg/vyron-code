@@ -274,7 +274,7 @@ async function waitForExit(handle: ChildHandle, timeoutMs: number): Promise<bool
   return handle.hasExited();
 }
 
-function runTaskkill(args: string[]): Promise<void> {
+export function runTaskkill(args: string[]): Promise<void> {
   const executable = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
   return new Promise((resolve) => {
     execFile(executable, args, { windowsHide: true, timeout: 5_000 }, () => resolve());
@@ -299,7 +299,7 @@ async function stopChild(handle: ChildHandle): Promise<void> {
   await waitForExit(handle, FORCE_STOP_WAIT_MS);
 }
 
-async function readApiKey(): Promise<string | null> {
+export async function readApiKey(): Promise<string | null> {
   const home = hermesHome();
   if (!home) return null;
   try {

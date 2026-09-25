@@ -31,6 +31,7 @@ interface HermesTaskSubmissionState {
 
 interface HermesTaskRequest {
   readonly draft: string;
+  readonly agent?: string;
 }
 
 interface DesktopLocalAiApi {
@@ -227,6 +228,7 @@ interface Turn {
   readonly prompt: string;
   readonly composed: string;
   readonly labels: string[];
+  readonly agent: string | null;
   status: "running" | "done" | "error";
   text: string | null;
   truncated: boolean;
@@ -684,9 +686,25 @@ function openMenuWith(id: string, trigger: HTMLElement, build: (menu: HTMLElemen
 // Selectors used by the composer and sidebar
 // ---------------------------------------------------------------------------------------------
 
+function selectedManager(): WsManager | null {
+  return ws.managers.find((m) => m.id === ws.selectedManagerId) ?? null;
+}
+
+/** The Ruflo role that runs the selected Manager's tasks (null = direct local AI task). */
+function selectedAgent(): string | null {
+  const manager = selectedManager();
+  return manager ? manager.agent : null;
+}
+
+/** A Manager with a Ruflo role is expressed through that role, so no "Rol:" line is added to the text. */
 function managerName(): string | null {
-  const manager = ws.managers.find((m) => m.id === ws.selectedManagerId);
-  return manager ? manager.name : null;
+  const manager = selectedManager();
+  return manager && manager.agent === null ? manager.name : null;
+}
+
+function agentLabel(agent: string | null): string {
+  if (agent === null) return "Doğrudan yerel AI";
+  return "Ruflo · " + (VyronModel.AGENT_ROLES.find((role) => role.id === agent)?.label ?? agent);
 }
 
 function selectedSkills(): WsSkill[] {
@@ -719,8 +737,8 @@ function composedPrompt(draft: string): string {
 
 function selectionLabels(): string[] {
   const labels: string[] = [];
-  const manager = managerName();
-  if (manager) labels.push("SubAgent: " + manager);
+  const manager = selectedManager();
+  if (manager) labels.push("SubAgent: " + manager.name);
   for (const skill of selectedSkills()) labels.push(skill.name);
   for (const connector of selectedConnectors()) labels.push(connector.name);
   if (ws.planMode !== "standard") labels.push("Plan: " + planLabel());
@@ -1289,6 +1307,7 @@ async function sendCurrent(): Promise<void> {
     prompt: raw,
     composed,
     labels: selectionLabels(),
+    agent: selectedAgent(),
     status: "running",
     text: null,
     truncated: false,
@@ -1316,7 +1335,7 @@ async function runTurn(taskId: string, turn: Turn): Promise<void> {
   let result: HermesTaskSubmissionState | null = null;
   if (api) {
     try {
-      result = await api.hermes.sendTask({ draft: turn.composed });
+      result = await api.hermes.sendTask(turn.agent ? { draft: turn.composed, agent: turn.agent } : { draft: turn.composed });
     } catch {
       result = null;
     }
@@ -1398,7 +1417,7 @@ function openModeMenu(trigger: HTMLElement): void {
   });
 }
 
-function openNameForm(id: string, trigger: HTMLElement, options: { title: string; placeholder: string; submit: string; withDescription?: boolean; onSubmit: (name: string, description: string) => boolean }): void {
+function openNameForm(id: string, trigger: HTMLElement, options: { title: string; placeholder: string; submit: string; withDescription?: boolean; withRole?: boolean; onSubmit: (name: string, description: string, role: string) => boolean }): void {
   closeAllMenus(false);
   const panel = make("div", "menu panel-form");
   panel.setAttribute("role", "dialog");
@@ -1422,6 +1441,17 @@ function openNameForm(id: string, trigger: HTMLElement, options: { title: string
     description.setAttribute("aria-label", "Kısa açıklama");
     form.appendChild(description);
   }
+  let role: HTMLSelectElement | null = null;
+  if (options.withRole) {
+    role = make("select", "text-input");
+    role.setAttribute("aria-label", "Çalışma rolü (Ruflo)");
+    for (const entry of VyronModel.AGENT_ROLES) {
+      const option = make("option", "", "Ruflo · " + entry.label);
+      option.value = entry.id;
+      role.appendChild(option);
+    }
+    form.appendChild(role);
+  }
   const error = make("p", "form-error");
   error.setAttribute("role", "alert");
   error.hidden = true;
@@ -1434,7 +1464,7 @@ function openNameForm(id: string, trigger: HTMLElement, options: { title: string
   form.appendChild(actions);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    const ok = options.onSubmit(name.value, description ? description.value : "");
+    const ok = options.onSubmit(name.value, description ? description.value : "", role ? role.value : "");
     if (ok) {
       closeAllMenus(true);
     } else {
@@ -2027,6 +2057,7 @@ function renderManagerDetail(): void {
   box.appendChild(make("p", "detail-desc", manager.description));
   const meta = make("div", "detail-meta");
   meta.appendChild(make("span", "tag", manager.tag));
+  meta.appendChild(make("span", "tag", agentLabel(manager.agent)));
   meta.appendChild(make("span", "badge connected", "Hazır"));
   if (selected) meta.appendChild(make("span", "tag", "Görevlerde seçili"));
   box.appendChild(meta);
@@ -2162,8 +2193,9 @@ function openAddManager(trigger: HTMLElement): void {
     placeholder: "Manager adı",
     submit: "Oluştur",
     withDescription: true,
-    onSubmit: (name, description) => {
-      const manager = VyronModel.createManager(ws, name, description);
+    withRole: true,
+    onSubmit: (name, description, role) => {
+      const manager = VyronModel.createManager(ws, name, description, role);
       if (!manager) return false;
       persist();
       openManager(manager.id);

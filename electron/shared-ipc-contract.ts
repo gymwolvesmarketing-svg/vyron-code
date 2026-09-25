@@ -274,6 +274,8 @@ export interface HermesTaskSubmissionState {
  */
 export interface HermesTaskRequest {
   readonly draft: string;
+  /** Optional fixed Manager role (validated by the main process); absent = direct local AI task. */
+  readonly agent?: string;
 }
 
 /**

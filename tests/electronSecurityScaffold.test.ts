@@ -88,8 +88,8 @@ describe("Electron scaffold source — no shell/child_process execution capabili
   const FILES_ALLOWED_FETCH = new Set(["hermesApiServer.ts", "hermesTaskSubmission.ts", "localAiAdapters.ts"]);
   // localAiAdapters.ts is the one main-process module that starts the two local services
   // (fixed spawn of the Hermes gateway and the auth proxy, taskkill for cleanup) and probes them.
-  const FILES_ALLOWED_CHILD_PROCESS = new Set(["localAiAdapters.ts"]);
-  const FILES_ALLOWED_ENV_FS = new Set(["localAiAdapters.ts"]);
+  const FILES_ALLOWED_CHILD_PROCESS = new Set(["localAiAdapters.ts", "rufloAdapters.ts"]);
+  const FILES_ALLOWED_ENV_FS = new Set(["localAiAdapters.ts", "rufloAdapters.ts"]);
   const forbiddenPatterns: Array<[string, RegExp, (file: string) => boolean]> = [
     ["child_process import", /child_process/, (file) => !FILES_ALLOWED_CHILD_PROCESS.has(file)],
     ["exec( call", /\bexec\s*\(/, (file) => !FILES_ALLOWED_CHILD_PROCESS.has(file)],
@@ -117,7 +117,7 @@ describe("Electron scaffold source — no shell/child_process execution capabili
   });
 
   it("confirms exactly the expected scaffold .ts files exist, no more", () => {
-    expect(sourceFiles).toHaveLength(19);
+    expect(sourceFiles).toHaveLength(21);
     expect(sourceFiles.sort()).toEqual(
       [
         "hermesApiServer.ts",
@@ -128,6 +128,8 @@ describe("Electron scaffold source — no shell/child_process execution capabili
         "localAiAdapters.ts",
         "localAiLifecycle.ts",
         "main.ts",
+        "rufloAdapters.ts",
+        "rufloBridge.ts",
         "preload.ts",
         "renderer.ts",
         "security-policy.ts",
@@ -596,11 +598,11 @@ describe("electron/localAiLifecycle.ts and localAiAdapters.ts — placement", ()
     }
   });
 
-  it("localAiAdapters.ts is imported only by main.ts", () => {
+  it("localAiAdapters.ts is imported only by main.ts and rufloAdapters.ts (which reuses its credential reader and taskkill helper)", () => {
     const importers = fs
       .readdirSync(dir)
       .filter((f) => f.endsWith(".ts") && f !== "localAiAdapters.ts")
       .filter((f) => /from ["']\.\/localAiAdapters["']/.test(stripComments(fs.readFileSync(path.join(dir, f), "utf8"))));
-    expect(importers).toEqual(["main.ts"]);
+    expect(importers).toEqual(["main.ts", "rufloAdapters.ts"]);
   });
 });

@@ -41,8 +41,9 @@ import { app, BrowserWindow, ipcMain, Menu, powerMonitor } from "electron";
 import path from "node:path";
 import { HARDENED_WEB_PREFERENCES, isNavigationAllowed, isNewWindowAllowed } from "./security-policy";
 import { APP_IPC_CHANNELS, HERMES_IPC_CHANNELS, LOCAL_AI_IPC_CHANNELS } from "./shared-ipc-contract";
-import { getTaskSubmissionState, sendTask, clearTaskSubmission } from "./hermesTaskSubmission";
+import { getTaskSubmissionState, sendTask, clearTaskSubmission, setTaskAgentExecutor } from "./hermesTaskSubmission";
 import { createProductionLocalAiManager } from "./localAiAdapters";
+import { createProductionRufloBridge } from "./rufloAdapters";
 
 /**
  * Explicit, disabled-by-default opt-in for the lifecycle diagnostics below —
@@ -161,6 +162,18 @@ function createMainWindow(): BrowserWindow {
  * auth proxy; see electron/localAiLifecycle.ts and electron/localAiAdapters.ts.
  */
 const localAi = createProductionLocalAiManager();
+// Ruflo (Manager orchestration) starts lazily on the first Manager task and is stopped with the app.
+const ruflo = createProductionRufloBridge({
+  workRoot: path.join(app.getPath("userData"), "ruflo"),
+  resourcesPath: process.resourcesPath,
+  isPackaged: app.isPackaged,
+});
+setTaskAgentExecutor((agentType, prompt) => ruflo.run(agentType, prompt));
+
+/** Stops only what this app started: the Ruflo runtime and the local AI services. */
+function shutdownServices(): Promise<unknown> {
+  return Promise.all([ruflo.shutdown(), localAi.shutdown()]);
+}
 
 /**
  * Registers the three local AI lifecycle IPC handlers. None accepts a renderer-supplied argument:
@@ -275,7 +288,7 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"] as const) {
   process.on(signal, () => {
     logLifecycle("process signal", signal);
     // Stop only the services this app started, then exit regardless of the outcome.
-    void localAi.shutdown().finally(() => process.exit(0));
+    void shutdownServices().finally(() => process.exit(0));
   });
 }
 
@@ -317,7 +330,7 @@ function quitAfterLocalAiShutdown(): void {
   }
   if (localAiShutdownStarted) return;
   localAiShutdownStarted = true;
-  void localAi.shutdown().finally(() => {
+  void shutdownServices().finally(() => {
     localAiShutdownDone = true;
     app.quit();
   });

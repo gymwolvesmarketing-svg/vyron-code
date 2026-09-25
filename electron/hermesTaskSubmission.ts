@@ -26,6 +26,21 @@ import type { HermesTaskSubmissionState } from "./shared-ipc-contract";
 import { getAuthorizationState, getCurrentCredential } from "./hermesAuthorization";
 import { resolveTrustedEndpoint } from "./hermesEndpoint";
 import { getConfiguredEndpoint } from "./hermesEndpointSetup";
+import { isRufloAgentType } from "./rufloBridge";
+
+/**
+ * Optional executor for Manager (SubAgent) tasks, injected by electron/main.ts. When a request names an agent
+ * role, the task is run through it (Ruflo -> local auth proxy -> Hermes) instead of the direct Hermes request.
+ * The role is validated against a fixed allowlist here; the executor never receives anything else from the
+ * renderer.
+ */
+export type TaskAgentExecutor = (agentType: string, prompt: string) => Promise<{ readonly ok: true; readonly text: string } | { readonly ok: false }>;
+
+let agentExecutor: TaskAgentExecutor | null = null;
+
+export function setTaskAgentExecutor(executor: TaskAgentExecutor | null): void {
+  agentExecutor = executor;
+}
 
 /** Duplicated from electron/taskComposer.ts's own `MAX_DRAFT_LENGTH`/control-character rule
  * (that module is never imported here — see its own header on why every consumer duplicates
@@ -121,9 +136,12 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
   if (sendInFlight) return safeState("sending");
   if (typeof request !== "object" || request === null || Array.isArray(request)) return safeState("safe_failure");
   const keys = Object.keys(request as Record<string, unknown>);
-  if (keys.length !== 1 || keys[0] !== "draft") return safeState("safe_failure");
+  const hasAgent = keys.length === 2 && keys.indexOf("draft") >= 0 && keys.indexOf("agent") >= 0;
+  if (!hasAgent && (keys.length !== 1 || keys[0] !== "draft")) return safeState("safe_failure");
   const draft = (request as Record<string, unknown>).draft;
   if (typeof draft !== "string" || !validateDraft(draft)) return safeState("safe_failure");
+  const agent = hasAgent ? (request as Record<string, unknown>).agent : null;
+  if (hasAgent && (!isRufloAgentType(agent) || agentExecutor === null)) return safeState("safe_failure");
 
   const endpoint = getConfiguredEndpoint() ?? resolveTrustedEndpoint();
   if (endpoint.kind !== "trusted") return safeState("unavailable");
@@ -140,22 +158,39 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
   const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
 
   try {
-    const response = await fetch(`${endpoint.url.origin}/v1/chat/completions`, {
-      method: "POST",
-      redirect: "error",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${credential}`,
-      },
-      body: JSON.stringify({
-        messages: [{ role: "user", content: draft }],
-        stream: false,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    if (generation !== generationAtStart) return getTaskSubmissionState();
-    sendInFlight = false;
+    let text: string | null;
+    if (hasAgent && agentExecutor !== null) {
+      // Manager task: Ruflo runs the agent (its own bounded timeouts apply); the reply is reduced exactly like a direct one.
+      const outcome = await agentExecutor(agent as string, draft);
+      text = outcome.ok ? outcome.text : null;
+      clearTimeout(timer);
+      if (generation !== generationAtStart) return getTaskSubmissionState();
+      sendInFlight = false;
+    } else {
+      const response = await fetch(`${endpoint.url.origin}/v1/chat/completions`, {
+        method: "POST",
+        redirect: "error",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${credential}`,
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: draft }],
+          stream: false,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (generation !== generationAtStart) return getTaskSubmissionState();
+      sendInFlight = false;
+      if (!response.ok) {
+        text = null;
+      } else {
+        const body: unknown = await response.json();
+        if (generation !== generationAtStart) return getTaskSubmissionState();
+        text = extractSafeResponseText(body);
+      }
+    }
     // Defensive re-check: authorization/endpoint may have been revoked without this module's own
     // clear path running. A completed answer is never committed once either precondition is gone.
     const preconditionAfterFetch = currentPreconditionState();
@@ -163,13 +198,6 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
       resetToIdle();
       return safeState(preconditionAfterFetch);
     }
-    if (!response.ok) {
-      ambientState = "safe_failure";
-      return safeState("safe_failure");
-    }
-    const body: unknown = await response.json();
-    if (generation !== generationAtStart) return getTaskSubmissionState();
-    const text = extractSafeResponseText(body);
     if (text === null) {
       ambientState = "safe_failure";
       return safeState("safe_failure");

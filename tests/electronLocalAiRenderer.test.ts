@@ -723,7 +723,7 @@ describe("+ menu, SubAgent, Plan and Terminal", () => {
     h.click(h.el("tab-managers"));
     expect(h.doc.querySelector('.manager-main[data-manager-id="reviewer"]')?.getAttribute("aria-pressed")).toBe("true");
     await sendTask(h, "İncele");
-    expect(h.calls.send[0]!.draft).toContain("Rol: Reviewer.");
+    expect(h.calls.send[0]).toEqual({ draft: "İncele", agent: "reviewer" });
     h.click(h.doc.querySelector<HTMLElement>('#chips .chip-remove[aria-label="Reviewer seçimini kaldır"]') ?? h.doc.querySelector<HTMLElement>("#chips .chip-remove"));
     expect(h.doc.querySelector("#chips")?.textContent).toBe("");
   });
@@ -1401,5 +1401,83 @@ describe("logo-only startup and welcome screens, single menu", () => {
     expect(main).toContain("Menu.setApplicationMenu(null)");
     expect(main).toContain("before-input-event");
     expect(main).toContain("toggleDevTools()");
+  });
+});
+
+describe("managers run through Ruflo roles", () => {
+  it("Genel sends a direct task with a role line and no agent; Ruflo-backed managers send their role and no role line", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "Genel"));
+    await sendTask(h, "Doğrudan");
+    expect(h.calls.send[0]).toEqual({ draft: ["Rol: Genel.", "", "Doğrudan"].join(String.fromCharCode(10)) });
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "Multi-Model Planner"));
+    await sendTask(h, "Plan yap");
+    expect(h.calls.send[1]).toEqual({ draft: "Plan yap", agent: "planner" });
+    expect(h.calls.send[1]!.draft).not.toContain("Rol:");
+  });
+
+  it("no manager selected sends the plain draft with no agent", async () => {
+    const h = await start();
+    await sendTask(h, "Yalnız metin");
+    expect(h.calls.send[0]).toEqual({ draft: "Yalnız metin" });
+  });
+
+  it("a retry re-sends with the same role", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "Vyron Helper"));
+    h.behavior.sendResult = { state: "safe_failure", text: null, truncated: false };
+    await sendTask(h, "Araştır");
+    h.behavior.sendResult = { state: "completed", text: "tamam", truncated: false };
+    h.click(h.doc.querySelector<HTMLElement>("#turns .turn-error button"));
+    await h.flush();
+    expect(h.calls.send).toEqual([
+      { draft: "Araştır", agent: "researcher" },
+      { draft: "Araştır", agent: "researcher" },
+    ]);
+  });
+
+  it("the manager detail shows which engine runs it", async () => {
+    const h = await start();
+    h.click(h.el("tab-managers"));
+    h.click(h.doc.querySelector<HTMLElement>('.manager-main[data-manager-id="reviewer"]'));
+    expect(h.el("manager-detail").textContent).toContain("Ruflo · Gözden geçirici");
+    h.click(h.doc.querySelector<HTMLElement>('.manager-main[data-manager-id="genel"]'));
+    expect(h.el("manager-detail").textContent).toContain("Doğrudan yerel AI");
+  });
+
+  it("a custom manager gets the chosen Ruflo role", async () => {
+    const h = await start();
+    h.click(h.el("tab-managers"));
+    h.click(h.el("add-manager-btn"));
+    const inputs = h.doc.querySelectorAll<HTMLInputElement>("#menu-layer input");
+    inputs[0]!.value = "Denetçi";
+    const role = h.doc.querySelector<HTMLSelectElement>("#menu-layer select")!;
+    expect(Array.from(role.options).map((o) => o.value)).toEqual(["coder", "reviewer", "tester", "planner", "researcher", "system-architect", "security-auditor", "task-orchestrator"]);
+    role.value = "security-auditor";
+    h.doc.querySelector("#menu-layer form")!.dispatchEvent(new h.win.Event("submit", { bubbles: true, cancelable: true }));
+    expect(h.el("manager-detail").textContent).toContain("Ruflo · Güvenlik denetçisi");
+    expect(JSON.parse(h.storageText()!).managers.find((m: { name: string }) => m.name === "Denetçi").agent).toBe("security-auditor");
+  });
+
+  it("older stored managers without a role get the seeded roles", async () => {
+    const h = await start();
+    h.click(h.el("sidebar-toggle-btn"));
+    const legacy = JSON.parse(h.storageText() as string);
+    legacy.managers = legacy.managers.map((m: Record<string, unknown>) => {
+      const copy = { ...m };
+      delete copy.agent;
+      return copy;
+    });
+    const second = await ready({ storage: JSON.stringify(legacy) });
+    second.click(second.el("tab-managers"));
+    second.click(second.doc.querySelector<HTMLElement>('.manager-main[data-manager-id="multi-model-planner"]'));
+    expect(second.el("manager-detail").textContent).toContain("Ruflo · Planlayıcı");
+    second.close();
   });
 });

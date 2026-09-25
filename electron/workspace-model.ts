@@ -46,6 +46,8 @@ interface WsManager {
   description: string;
   tag: string;
   custom: boolean;
+  /** Ruflo role that runs this Manager's tasks; null = the task goes straight to the local AI. */
+  agent: string | null;
 }
 
 interface WsSkill {
@@ -179,13 +181,34 @@ const VyronModel = (() => {
     { id: "brief", label: "Yerel · Kısa yanıt", description: "Kısa ve doğrudan yanıtlar.", prefix: "Kısa ve doğrudan yanıtla." },
   ];
 
+  /** Ruflo roles a Manager can use (must stay identical to RUFLO_AGENT_TYPES in electron/rufloBridge.ts). */
+  const AGENT_ROLES: ReadonlyArray<{ id: string; label: string }> = [
+    { id: "coder", label: "Kodlayıcı" },
+    { id: "reviewer", label: "Gözden geçirici" },
+    { id: "tester", label: "Test uzmanı" },
+    { id: "planner", label: "Planlayıcı" },
+    { id: "researcher", label: "Araştırmacı" },
+    { id: "system-architect", label: "Sistem mimarı" },
+    { id: "security-auditor", label: "Güvenlik denetçisi" },
+    { id: "task-orchestrator", label: "Görev yöneticisi" },
+  ];
+
+  function isAgentRole(value: unknown): value is string {
+    return typeof value === "string" && AGENT_ROLES.some((role) => role.id === value);
+  }
+
   function seedManagers(): WsManager[] {
     return [
-      { id: "genel", name: "Genel", description: "Her tür görev için genel amaçlı yardımcı.", tag: "Varsayılan", custom: false },
-      { id: "vyron-helper", name: "Vyron Helper", description: "Vyron Code kullanımı ve iş akışları konusunda yardım eder.", tag: "Yardımcı", custom: false },
-      { id: "multi-model-planner", name: "Multi-Model Planner", description: "Büyük işleri parçalara ayırıp plana dönüştürür.", tag: "Planlama", custom: false },
-      { id: "reviewer", name: "Reviewer", description: "Çıktıları gözden geçirir ve iyileştirme önerir.", tag: "İnceleme", custom: false },
+      { id: "genel", name: "Genel", description: "Her tür görev için genel amaçlı yardımcı. Görevler doğrudan yerel AI'ya gider.", tag: "Varsayılan", custom: false, agent: null },
+      { id: "vyron-helper", name: "Vyron Helper", description: "Vyron Code kullanımı ve iş akışları konusunda araştırıp yardım eder.", tag: "Yardımcı", custom: false, agent: "researcher" },
+      { id: "multi-model-planner", name: "Multi-Model Planner", description: "Büyük işleri parçalara ayırıp plana dönüştürür.", tag: "Planlama", custom: false, agent: "planner" },
+      { id: "reviewer", name: "Reviewer", description: "Çıktıları gözden geçirir ve iyileştirme önerir.", tag: "İnceleme", custom: false, agent: "reviewer" },
     ];
+  }
+
+  function seedAgentFor(id: string, custom: boolean): string | null {
+    if (custom) return "coder";
+    return seedManagers().find((m) => m.id === id)?.agent ?? null;
   }
 
   function seedConnectors(): WsConnector[] {
@@ -314,7 +337,9 @@ const VyronModel = (() => {
         const id = cleanText(item.id, 80);
         const name = cleanText(item.name, 40);
         if (!id || !name) return null;
-        return { id, name, description: cleanText(item.description, 140) ?? "Özel manager.", tag: cleanText(item.tag, 20) ?? "Özel", custom: item.custom === true };
+        const custom = item.custom === true;
+        const agent = "agent" in item ? (item.agent === null || isAgentRole(item.agent) ? (item.agent as string | null) : seedAgentFor(id, custom)) : seedAgentFor(id, custom);
+        return { id, name, description: cleanText(item.description, 140) ?? "Özel manager.", tag: cleanText(item.tag, 20) ?? "Özel", custom, agent };
       },
       50,
     );
@@ -480,7 +505,7 @@ const VyronModel = (() => {
     return task;
   }
 
-  function createManager(state: WsWorkspaceState, rawName: string, rawDescription: string): WsManager | null {
+  function createManager(state: WsWorkspaceState, rawName: string, rawDescription: string, rawAgent: string = "coder"): WsManager | null {
     const name = cleanName(rawName, 40);
     if (name === null) return null;
     const existing = state.managers.find((m) => normalizeQuery(m.name) === normalizeQuery(name));
@@ -491,6 +516,7 @@ const VyronModel = (() => {
       description: cleanName(rawDescription, 140) ?? "Özel manager.",
       tag: "Özel",
       custom: true,
+      agent: isAgentRole(rawAgent) ? rawAgent : "coder",
     };
     state.managers.push(manager);
     return manager;
@@ -694,6 +720,7 @@ const VyronModel = (() => {
     cleanName,
     createProject,
     createTask,
+    AGENT_ROLES,
     createManager,
     removeManager,
     createConnector,

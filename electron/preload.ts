@@ -49,6 +49,7 @@ interface HermesTaskSubmissionState {
 
 interface HermesTaskRequest {
   readonly draft: string;
+  readonly agent?: string;
 }
 
 interface DesktopLocalAiApi {

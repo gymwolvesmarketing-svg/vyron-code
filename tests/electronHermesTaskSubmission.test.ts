@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
-import { getTaskSubmissionState, sendTask, clearTaskSubmission } from "../electron/hermesTaskSubmission";
+import { getTaskSubmissionState, sendTask, clearTaskSubmission, setTaskAgentExecutor } from "../electron/hermesTaskSubmission";
 import { beginAuthorization, clearAuthorization } from "../electron/hermesAuthorization";
 import { configureEndpoint, clearEndpointConfiguration } from "../electron/hermesEndpointSetup";
 
@@ -374,5 +374,88 @@ describe("security regressions", () => {
     fetchMock.mockRejectedValueOnce(new Error("boom " + VALID_DRAFT));
     const result = await sendTask({ draft: VALID_DRAFT });
     expect(JSON.stringify(result)).not.toContain(VALID_DRAFT);
+  });
+});
+
+describe("sendTask - Manager (agent) tasks run through the injected executor", () => {
+  afterEach(() => setTaskAgentExecutor(null));
+
+  it("runs the task through the executor with the role and the exact draft, and never calls Hermes directly", async () => {
+    await authorizeAndConfigure();
+    const executor = vi.fn(async () => ({ ok: true as const, text: "from ruflo" }));
+    setTaskAgentExecutor(executor);
+    const result = await sendTask({ draft: VALID_DRAFT, agent: "planner" });
+    expect(result).toEqual({ state: "completed", text: "from ruflo", truncated: false });
+    expect(executor).toHaveBeenCalledWith("planner", VALID_DRAFT);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("bounds and truncates an executor answer exactly like a direct one", async () => {
+    await authorizeAndConfigure();
+    setTaskAgentExecutor(async () => ({ ok: true as const, text: "y".repeat(5000) }));
+    const result = await sendTask({ draft: VALID_DRAFT, agent: "coder" });
+    expect(result.truncated).toBe(true);
+    expect(result.text).toHaveLength(4000);
+  });
+
+  it("maps an executor failure or throw to safe_failure and lets the next task run", async () => {
+    await authorizeAndConfigure();
+    setTaskAgentExecutor(async () => ({ ok: false as const }));
+    expect((await sendTask({ draft: VALID_DRAFT, agent: "coder" })).state).toBe("safe_failure");
+    setTaskAgentExecutor(async () => {
+      throw new Error("boom");
+    });
+    expect((await sendTask({ draft: VALID_DRAFT, agent: "coder" })).state).toBe("safe_failure");
+    fetchMock.mockResolvedValueOnce(okResponse("direct"));
+    expect(await sendTask({ draft: VALID_DRAFT })).toEqual({ state: "completed", text: "direct", truncated: false });
+  });
+
+  it.each([
+    ["an unknown role", { draft: VALID_DRAFT, agent: "hacker" }],
+    ["a non-string role", { draft: VALID_DRAFT, agent: 7 }],
+    ["a role with extra fields", { draft: VALID_DRAFT, agent: "coder", model: "x" }],
+    ["a role without a draft", { agent: "coder" }],
+  ])("rejects %s without running anything", async (_label, request) => {
+    await authorizeAndConfigure();
+    const executor = vi.fn(async () => ({ ok: true as const, text: "no" }));
+    setTaskAgentExecutor(executor);
+    expect((await sendTask(request)).state).toBe("safe_failure");
+    expect(executor).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent task when no executor is installed", async () => {
+    await authorizeAndConfigure();
+    setTaskAgentExecutor(null);
+    expect((await sendTask({ draft: VALID_DRAFT, agent: "coder" })).state).toBe("safe_failure");
+  });
+
+  it("keeps the one-in-flight guard and the auth preconditions for agent tasks", async () => {
+    expect((await sendTask({ draft: VALID_DRAFT, agent: "coder" })).state).toBe("unauthorized");
+    await authorizeAndConfigure();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    setTaskAgentExecutor(async () => {
+      await gate;
+      return { ok: true as const, text: "done" };
+    });
+    const first = sendTask({ draft: VALID_DRAFT, agent: "coder" });
+    expect((await sendTask({ draft: VALID_DRAFT, agent: "coder" })).state).toBe("sending");
+    release();
+    expect((await first).state).toBe("completed");
+  });
+
+  it("a stale executor result cannot restore completed after clearTaskSubmission()", async () => {
+    await authorizeAndConfigure();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    setTaskAgentExecutor(async () => {
+      await gate;
+      return { ok: true as const, text: "late" };
+    });
+    const pending = sendTask({ draft: VALID_DRAFT, agent: "coder" });
+    clearTaskSubmission();
+    release();
+    expect((await pending).state).not.toBe("completed");
   });
 });
