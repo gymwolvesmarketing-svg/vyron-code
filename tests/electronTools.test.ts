@@ -11,6 +11,7 @@ import {
   MAX_TRANSCRIPT_CHARS,
   MAX_WRITE_CHARS,
   TOOL_PROTOCOL,
+  TOOL_REMINDER,
   firstToolMessage,
   approvalRequest,
   boundOutput,
@@ -286,14 +287,6 @@ function makeDeps(script: Array<string | null>, overrides: Partial<ToolLoopDeps>
 }
 
 describe("runToolLoop", () => {
-  it("returns a plain answer immediately, states that no tool was used, and runs nothing", async () => {
-    const { deps, executed } = makeDeps(["Doğrudan yanıt"]);
-    const result = await runToolLoop(deps, "görev");
-    expect(result.ok && result.text.startsWith("Doğrudan yanıt")).toBe(true);
-    expect(result.ok && result.text).toContain("Araç kullanılmadı");
-    expect(executed).toHaveLength(0);
-  });
-
   it("starts with the protocol and the task, then feeds tool results back and ends with a log", async () => {
     const { deps, seen, executed, approvals } = makeDeps(['{"tool":"list_dir","path":"."}', '{"tool":"read_file","path":"a.txt"}', "Bitti: özet"]);
     const result = await runToolLoop(deps, "GÖREV METNİ");
@@ -362,6 +355,54 @@ describe("runToolLoop", () => {
     const { deps } = makeDeps(['{"tool":"read_file","path":"x"}', "SON"], { execute: async () => ({ ok: false, text: "yok" }) });
     const result = await runToolLoop(deps, "g");
     expect(result.ok && result.text).toContain("! başarısız: okuma x");
+  });
+});
+
+describe("challenging a first plain reply", () => {
+  it("challenges a first plain reply once, and a task that needs no tool simply repeats its answer", async () => {
+    const { deps, seen, executed } = makeDeps(["Doğrudan yanıt", "Doğrudan yanıt (tekrar)"]);
+    const result = await runToolLoop(deps, "görev");
+    expect(seen).toHaveLength(2);
+    expect(seen[1]!.at(-1)!.content).toBe(TOOL_REMINDER);
+    expect(executed).toHaveLength(0);
+    expect(result.ok && result.text.startsWith("Doğrudan yanıt (tekrar)")).toBe(true);
+    expect(result.ok && result.text).toContain("Araç kullanılmadı");
+  });
+
+  it("turns a made-up 'file created' reply into a real tool call after the reminder", async () => {
+    const { deps, seen, executed, approvals } = makeDeps([
+      "notlar.txt oluşturuldu.",
+      '{"tool":"write_file","path":"notlar.txt","content":"X"}',
+      "Gerçekten oluşturuldu.",
+    ]);
+    const result = await runToolLoop(deps, "notlar.txt oluştur");
+    expect(seen).toHaveLength(3);
+    expect(executed.map((c) => c.tool)).toEqual(["write_file"]);
+    expect(approvals).toHaveLength(1);
+    expect(result.ok && result.text).toContain("✓ yazma notlar.txt");
+  });
+
+  it("reminds only once: a second plain reply stands with the honest 'no tool used' line", async () => {
+    const { deps, seen, executed } = makeDeps(["Araç erişimim yok.", "Gerçekten erişimim yok, üzgünüm."]);
+    const result = await runToolLoop(deps, "g");
+    expect(seen).toHaveLength(2);
+    expect(executed).toHaveLength(0);
+    expect(result.ok && result.text).toContain("Gerçekten erişimim yok");
+    expect(result.ok && result.text).toContain("Araç kullanılmadı");
+  });
+
+  it("does not remind after a tool has already been used", async () => {
+    const { deps, seen } = makeDeps(['{"tool":"list_dir","path":"."}', "Listeledim, bitti."]);
+    const result = await runToolLoop(deps, "g");
+    expect(seen).toHaveLength(2);
+    expect(result.ok && result.text).toContain("Listeledim");
+  });
+
+  it("does not remind after an invalid tool request either (the model already tried the bridge)", async () => {
+    const { deps, seen } = makeDeps(['{"tool":"nope"}', "Tamam, düz yanıt."]);
+    await runToolLoop(deps, "g");
+    expect(seen).toHaveLength(2);
+    expect(seen[1]!.at(-1)!.content).toContain("Geçersiz araç isteği");
   });
 });
 

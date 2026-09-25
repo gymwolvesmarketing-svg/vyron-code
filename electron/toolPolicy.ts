@@ -55,6 +55,16 @@ export const TOOL_PROTOCOL = [
   "Görev araç gerektirmiyorsa ya da iş bittiyse, JSON olmayan düz metinle nihai yanıtı yaz. Bir işlem reddedilirse başka bir yol dene ya da nedenini açıkla.",
 ].join("\n");
 
+/**
+ * Measured against the real local model: about one task in three it answers a file/command task in plain text - either
+ * "I have no tools" or (worse) a made-up "done, the file was created" - instead of using the bridge. So a first reply
+ * that is not a tool request is answered once with this reminder; a task that really needs no tool gets the same answer
+ * again. After that single reminder the reply stands, and the answer says honestly that no tool was used.
+ */
+export const TOOL_REMINDER =
+  "Yanıtını yeniden değerlendir. Dosya listeleme, okuma, yazma ya da komut çalıştırma gereken bir görevse bunları yalnızca araç köprüsüyle yapabilirsin; kendin yapmış ya da 'oluşturuldu' demiş gibi anlatma. " +
+  "Bir araç gerekiyorsa YALNIZCA ilk adımın JSON'unu yaz, başka metin ekleme. Görev gerçekten araç gerektirmiyorsa aynı yanıtı kısaca yinele.";
+
 /** The first message of a tool run: the protocol followed by the user's task. */
 export function firstToolMessage(task: string): string {
   return TOOL_PROTOCOL + "\n\nGörev:\n" + task;

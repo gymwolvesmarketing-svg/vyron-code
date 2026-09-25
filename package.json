@@ -1,6 +1,6 @@
 {
   "name": "vyron-code",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "description": "Project-aware AI coding workspace. Read-only v0.1 per VYRON_CODE_V01_ACCEPTANCE_CRITERIA.md.",
   "scripts": {

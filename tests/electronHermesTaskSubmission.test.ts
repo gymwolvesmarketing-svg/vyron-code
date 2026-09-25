@@ -193,6 +193,16 @@ describe("sendTask - request contract (fixed POST /v1/chat/completions only)", (
     expect((await sendTask({ draft: VALID_DRAFT })).state).toBe("safe_failure");
   });
 
+  it("maps a provider error that came back as the message text to safe_failure, not to an answer", async () => {
+    await authorizeAndConfigure();
+    for (const errorText of ["[Error: Perplexity error: INVALID_MODEL_SELECTION]", "  [error: upstream failed]"]) {
+      fetchMock.mockResolvedValueOnce(okResponse(errorText));
+      expect(await sendTask({ draft: VALID_DRAFT })).toEqual({ state: "safe_failure", text: null, truncated: false });
+    }
+    fetchMock.mockResolvedValueOnce(okResponse("Hata [Error: x] hakkında bir açıklama"));
+    expect((await sendTask({ draft: VALID_DRAFT })).state).toBe("completed");
+  });
+
   it("maps a missing or malformed choices array to safe_failure", async () => {
     await authorizeAndConfigure();
     fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) });

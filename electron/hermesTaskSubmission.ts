@@ -301,6 +301,8 @@ function extractSafeResponseText(body: unknown): string | null {
   if (typeof message !== "object" || message === null) return null;
   const content = (message as Record<string, unknown>).content;
   if (typeof content !== "string") return null;
+  // A router/provider error that came back as the message text (e.g. "[Error: ...]") is a failure, not an answer.
+  if (/^\s*\[Error:/i.test(content)) return null;
   return content;
 }
 
