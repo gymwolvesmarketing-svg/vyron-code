@@ -38,16 +38,27 @@ export function needsApproval(call: ToolCall): boolean {
   return call.tool === "write_file" || call.tool === "run_command";
 }
 
-/** The fixed instruction that teaches the model the four actions. It contains no path, key or user data. */
+/**
+ * The fixed instruction that teaches the model the four actions. It is sent as the start of the FIRST USER message (not as a
+ * system message: the local agent's own system prompt says it has no tools and wins over a system message), framed as a
+ * planner that can only act by writing one JSON line. Measured against the real local model, this framing made it use the
+ * bridge reliably where "you have tools" wording made it answer "I have no access". It contains no path, key or user data.
+ */
 export const TOOL_PROTOCOL = [
-  "Bir çalışma klasöründe araç kullanabilirsin. Araç kullanmak için YALNIZCA tek bir JSON nesnesi yaz, başka metin ekleme:",
-  '{"tool":"list_dir","path":"."}  - klasörü listeler',
-  '{"tool":"read_file","path":"src/a.txt"}  - dosyayı okur',
-  '{"tool":"write_file","path":"src/a.txt","content":"..."}  - dosya yazar (kullanıcı onayı gerekir)',
-  '{"tool":"run_command","command":"npm test"}  - komut çalıştırır (kullanıcı onayı gerekir)',
-  "Yollar çalışma klasörüne göreli olmalıdır. Araç sonucunu aldıktan sonra devam et.",
-  "İş bittiğinde JSON olmayan, düz metin bir nihai yanıt yaz. Bir işlem reddedilirse başka bir yol dene ya da nedenini açıkla.",
+  "Sen bir planlayıcısın. Görevi yapmak için Vyron Code'un araç köprüsünü kullanabilirsin; köprüye bir şey yaptırmanın tek yolu tek bir JSON nesnesi yazmaktır.",
+  "Bir işlem gerekiyorsa YALNIZCA o adımın JSON'unu yaz, başka hiçbir metin ekleme. Köprü sonucu bir sonraki mesajda gelir. Mümkün biçimler:",
+  '{"tool":"list_dir","path":"."}  -> klasörü listeler',
+  '{"tool":"read_file","path":"src/a.txt"}  -> dosyayı okur',
+  '{"tool":"write_file","path":"src/a.txt","content":"..."}  -> dosya yazar (kullanıcı onayı gerekir)',
+  '{"tool":"run_command","command":"npm test"}  -> komut çalıştırır (kullanıcı onayı gerekir)',
+  "Yollar çalışma klasörüne göreli olmalıdır. Kendin dosya yazmış ya da komut çalıştırmış gibi davranma: yalnızca köprü sonucunda gördüklerini söyle.",
+  "Görev araç gerektirmiyorsa ya da iş bittiyse, JSON olmayan düz metinle nihai yanıtı yaz. Bir işlem reddedilirse başka bir yol dene ya da nedenini açıkla.",
 ].join("\n");
+
+/** The first message of a tool run: the protocol followed by the user's task. */
+export function firstToolMessage(task: string): string {
+  return TOOL_PROTOCOL + "\n\nGörev:\n" + task;
+}
 
 function balancedEnd(text: string, start: number): number {
   let depth = 0;
@@ -207,7 +218,7 @@ export function logLine(entry: LogEntry): string {
 
 /** The closing section appended to a tool-run answer: what was actually done, in order. */
 export function toolLogFooter(entries: readonly LogEntry[]): string {
-  if (entries.length === 0) return "";
+  if (entries.length === 0) return "\n\n— Araç kullanılmadı: bu yanıt için hiçbir dosya okunmadı ya da yazılmadı ve hiçbir komut çalıştırılmadı.";
   const shown = entries.slice(0, MAX_LOG_LINES).map(logLine);
   const extra = entries.length > MAX_LOG_LINES ? ["… ve " + String(entries.length - MAX_LOG_LINES) + " işlem daha"] : [];
   return "\n\n— Araç günlüğü:\n" + shown.concat(extra).join("\n");

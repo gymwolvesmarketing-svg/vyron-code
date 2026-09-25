@@ -8,10 +8,10 @@
  */
 import {
   MAX_TOOL_STEPS,
-  TOOL_PROTOCOL,
   approvalRequest,
   boundOutput,
   describeCall,
+  firstToolMessage,
   needsApproval,
   parseToolCall,
   toolLogFooter,
@@ -43,10 +43,7 @@ export interface ToolLoopDeps {
 export type ToolLoopResult = { readonly ok: true; readonly text: string } | { readonly ok: false };
 
 export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<ToolLoopResult> {
-  let messages: ChatMessage[] = [
-    { role: "system", content: TOOL_PROTOCOL },
-    { role: "user", content: task },
-  ];
+  let messages: ChatMessage[] = [{ role: "user", content: firstToolMessage(task) }];
   const log: LogEntry[] = [];
 
   for (let step = 0; step < MAX_TOOL_STEPS; step += 1) {
@@ -81,7 +78,7 @@ async function handle(deps: ToolLoopDeps, call: ToolCall, log: LogEntry[]): Prom
   const workspace = deps.workspace();
   if (workspace === null) {
     log.push({ outcome: "failed", text: describeCall(call) + " — çalışma klasörü seçili değil" });
-    return "Araç sonucu: çalışma klasörü seçili değil.";
+    return "Araç sonucu: çalışma klasörü seçili değil. Sonraki adımın JSON'unu yaz ya da düz metinle yanıtla.";
   }
   if (needsApproval(call)) {
     const existed = call.tool === "write_file" ? deps.fileExists(call.path) : null;
@@ -89,10 +86,10 @@ async function handle(deps: ToolLoopDeps, call: ToolCall, log: LogEntry[]): Prom
     const choice: ApprovalChoice = request === null ? "deny" : await deps.approve(request);
     if (choice === "deny") {
       log.push({ outcome: "denied", text: describeCall(call) });
-      return "Araç sonucu: kullanıcı bu işlemi reddetti.";
+      return "Araç sonucu: kullanıcı bu işlemi reddetti. Sonraki adımın JSON'unu yaz ya da düz metinle yanıtla.";
     }
   }
   const result = await deps.execute(call);
   log.push({ outcome: result.ok ? "ok" : "failed", text: describeCall(call) });
-  return "Araç sonucu (" + call.tool + "):\n" + boundOutput(result.text);
+  return "Araç sonucu (" + call.tool + "):\n" + boundOutput(result.text) + "\n\nSonraki adımın JSON'unu yaz; iş bittiyse JSON olmayan düz metinle nihai yanıtı ver.";
 }

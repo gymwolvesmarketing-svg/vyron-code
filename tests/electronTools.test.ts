@@ -11,6 +11,7 @@ import {
   MAX_TRANSCRIPT_CHARS,
   MAX_WRITE_CHARS,
   TOOL_PROTOCOL,
+  firstToolMessage,
   approvalRequest,
   boundOutput,
   flattenTranscript,
@@ -121,7 +122,7 @@ describe("approval wording and safety helpers", () => {
   it("bounds output, builds a capped log footer and trims transcripts while keeping the task", () => {
     expect(boundOutput("x".repeat(MAX_TOOL_OUTPUT_CHARS + 50))).toContain("(kısaltıldı)");
     expect(boundOutput("kısa")).toBe("kısa");
-    expect(toolLogFooter([])).toBe("");
+    expect(toolLogFooter([])).toContain("Araç kullanılmadı");
     const many = Array.from({ length: MAX_LOG_LINES + 3 }, () => ({ outcome: "ok" as const, text: "yazma a" }));
     const footer = toolLogFooter(many);
     expect(footer).toContain("Araç günlüğü");
@@ -285,17 +286,21 @@ function makeDeps(script: Array<string | null>, overrides: Partial<ToolLoopDeps>
 }
 
 describe("runToolLoop", () => {
-  it("returns a plain answer immediately, without a log or any tool", async () => {
+  it("returns a plain answer immediately, states that no tool was used, and runs nothing", async () => {
     const { deps, executed } = makeDeps(["Doğrudan yanıt"]);
-    expect(await runToolLoop(deps, "görev")).toEqual({ ok: true, text: "Doğrudan yanıt" });
+    const result = await runToolLoop(deps, "görev");
+    expect(result.ok && result.text.startsWith("Doğrudan yanıt")).toBe(true);
+    expect(result.ok && result.text).toContain("Araç kullanılmadı");
     expect(executed).toHaveLength(0);
   });
 
   it("starts with the protocol and the task, then feeds tool results back and ends with a log", async () => {
     const { deps, seen, executed, approvals } = makeDeps(['{"tool":"list_dir","path":"."}', '{"tool":"read_file","path":"a.txt"}', "Bitti: özet"]);
     const result = await runToolLoop(deps, "GÖREV METNİ");
-    expect(seen[0]![0]).toEqual({ role: "system", content: TOOL_PROTOCOL });
-    expect(seen[0]![1]).toEqual({ role: "user", content: "GÖREV METNİ" });
+    expect(seen[0]).toEqual([{ role: "user", content: firstToolMessage("GÖREV METNİ") }]);
+    expect(seen[0]![0]!.content.startsWith(TOOL_PROTOCOL)).toBe(true);
+    expect(seen[0]![0]!.content.endsWith("Görev:\nGÖREV METNİ")).toBe(true);
+    expect(seen.every((messages) => messages.every((m) => m.role !== "system"))).toBe(true);
     expect(seen[1]!.at(-1)!.content).toContain("Araç sonucu (list_dir)");
     expect(executed.map((c) => c.tool)).toEqual(["list_dir", "read_file"]);
     expect(approvals).toHaveLength(0);
