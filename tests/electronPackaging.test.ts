@@ -175,7 +175,7 @@ describe("packaging - Ruflo runtime", () => {
   });
 
   it("the runtime build pins the Ruflo version and keeps every Windows x64 binary while removing the others", async () => {
-    const mod = (await import("../scripts/build-ruflo-runtime.mjs")) as { RUFLO_VERSION: string; isForeignPlatformPath(p: string): boolean };
+    const mod = (await import("../scripts/build-ruflo-runtime.mjs")) as unknown as { RUFLO_VERSION: string; isForeignPlatformPath(p: string): boolean };
     expect(mod.RUFLO_VERSION).toBe("3.44.0");
     for (const foreign of [
       "@agntcy/slim-bindings-linux-x64-gnu",

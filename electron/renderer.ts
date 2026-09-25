@@ -32,6 +32,7 @@ interface HermesTaskSubmissionState {
 interface HermesTaskRequest {
   readonly draft: string;
   readonly agent?: string;
+  readonly project?: string;
 }
 
 interface DesktopLocalAiApi {
@@ -48,6 +49,7 @@ interface DesktopHermesApi {
 
 interface DesktopAppApi {
   toggleDevTools(): Promise<void>;
+  clearAgentMemory(): Promise<boolean>;
 }
 
 interface DesktopApi {
@@ -229,6 +231,7 @@ interface Turn {
   readonly composed: string;
   readonly labels: string[];
   readonly agent: string | null;
+  readonly project: string | null;
   status: "running" | "done" | "error";
   text: string | null;
   truncated: boolean;
@@ -704,7 +707,8 @@ function managerName(): string | null {
 
 function agentLabel(agent: string | null): string {
   if (agent === null) return "Doğrudan yerel AI";
-  return "Ruflo · " + (VyronModel.AGENT_ROLES.find((role) => role.id === agent)?.label ?? agent);
+  const label = VyronModel.AGENT_ROLES.find((role) => role.id === agent)?.label ?? agent;
+  return "Ruflo · " + label + (agent === "task-orchestrator" ? " (paralel ekip)" : "");
 }
 
 function selectedSkills(): WsSkill[] {
@@ -974,7 +978,9 @@ function showView(view: WsNavView): void {
   else if (view === "settings") {
     renderSettingsAi();
     resetConfirming = false;
+    memoryConfirming = false;
     renderResetControls();
+    renderMemoryControls();
   } else renderTaskView();
 }
 
@@ -1308,6 +1314,7 @@ async function sendCurrent(): Promise<void> {
     composed,
     labels: selectionLabels(),
     agent: selectedAgent(),
+    project: ws.activeProjectId,
     status: "running",
     text: null,
     truncated: false,
@@ -1335,7 +1342,7 @@ async function runTurn(taskId: string, turn: Turn): Promise<void> {
   let result: HermesTaskSubmissionState | null = null;
   if (api) {
     try {
-      result = await api.hermes.sendTask(turn.agent ? { draft: turn.composed, agent: turn.agent } : { draft: turn.composed });
+      result = await api.hermes.sendTask(taskRequest(turn));
     } catch {
       result = null;
     }
@@ -1352,6 +1359,14 @@ async function runTurn(taskId: string, turn: Turn): Promise<void> {
     if (notReady || result === null) startPolling();
   }
   refreshIfActive(taskId);
+}
+
+/** The direct request, or (for a Manager with a Ruflo role) the request that also carries its role and project. */
+function taskRequest(turn: Turn): HermesTaskRequest {
+  if (!turn.agent) return { draft: turn.composed };
+  const project = turn.project;
+  if (project !== null && /^[a-z0-9][a-z0-9-]{0,79}$/.test(project)) return { draft: turn.composed, agent: turn.agent, project };
+  return { draft: turn.composed, agent: turn.agent };
 }
 
 function refreshIfActive(taskId: string): void {
@@ -2089,6 +2104,30 @@ function renderResetControls(): void {
   must("settings-reset-cancel").hidden = !resetConfirming;
 }
 
+let memoryConfirming = false;
+
+function renderMemoryControls(): void {
+  must("settings-memory-clear").hidden = memoryConfirming;
+  must("settings-memory-confirm").hidden = !memoryConfirming;
+  must("settings-memory-cancel").hidden = !memoryConfirming;
+}
+
+async function clearAgentMemory(): Promise<void> {
+  memoryConfirming = false;
+  renderMemoryControls();
+  const api = window.vyronDesktop;
+  let cleared = false;
+  if (api) {
+    try {
+      cleared = (await api.app.clearAgentMemory()) === true;
+    } catch {
+      cleared = false;
+    }
+  }
+  setText("settings-memory-status", cleared ? "Manager hafızası temizlendi." : "Manager hafızası temizlenemedi. Bir görev çalışıyorsa bitmesini bekleyip tekrar dene.");
+  focusSoon(el("settings-memory-clear"));
+}
+
 function resetWorkspace(): void {
   ws = VyronModel.resetState(getStorage());
   turnsByTask.clear();
@@ -2357,6 +2396,18 @@ function wire(): void {
     focusSoon(el("settings-reset-btn"));
   });
   on("settings-reset-confirm", "click", resetWorkspace);
+  on("settings-memory-clear", "click", () => {
+    memoryConfirming = true;
+    setText("settings-memory-status", "");
+    renderMemoryControls();
+    focusSoon(el("settings-memory-confirm"));
+  });
+  on("settings-memory-cancel", "click", () => {
+    memoryConfirming = false;
+    renderMemoryControls();
+    focusSoon(el("settings-memory-clear"));
+  });
+  on("settings-memory-confirm", "click", () => void clearAgentMemory());
 
   document.addEventListener("mousedown", onDocumentPointerDown, true);
   document.addEventListener("keydown", onDocumentKeydown);

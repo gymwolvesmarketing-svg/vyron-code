@@ -386,7 +386,7 @@ describe("sendTask - Manager (agent) tasks run through the injected executor", (
     setTaskAgentExecutor(executor);
     const result = await sendTask({ draft: VALID_DRAFT, agent: "planner" });
     expect(result).toEqual({ state: "completed", text: "from ruflo", truncated: false });
-    expect(executor).toHaveBeenCalledWith("planner", VALID_DRAFT);
+    expect(executor).toHaveBeenCalledWith("planner", VALID_DRAFT, undefined);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -422,6 +422,22 @@ describe("sendTask - Manager (agent) tasks run through the injected executor", (
     expect((await sendTask(request)).state).toBe("safe_failure");
     expect(executor).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("passes a valid project slug to the executor, and rejects unsafe or misplaced project values", async () => {
+    await authorizeAndConfigure();
+    const executor = vi.fn(async () => ({ ok: true as const, text: "ok" }));
+    setTaskAgentExecutor(executor);
+    expect((await sendTask({ draft: VALID_DRAFT, agent: "planner", project: "aetheris" })).state).toBe("completed");
+    expect(executor).toHaveBeenLastCalledWith("planner", VALID_DRAFT, "aetheris");
+    expect((await sendTask({ draft: VALID_DRAFT, agent: "planner" })).state).toBe("completed");
+    expect(executor).toHaveBeenLastCalledWith("planner", VALID_DRAFT, undefined);
+    executor.mockClear();
+    for (const project of ["../x", "A", "", "a b", 5, null, "x".repeat(81)]) {
+      expect((await sendTask({ draft: VALID_DRAFT, agent: "planner", project })).state, String(project)).toBe("safe_failure");
+    }
+    expect((await sendTask({ draft: VALID_DRAFT, project: "aetheris" })).state).toBe("safe_failure");
+    expect(executor).not.toHaveBeenCalled();
   });
 
   it("rejects an agent task when no executor is installed", async () => {

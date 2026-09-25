@@ -276,6 +276,8 @@ export interface HermesTaskRequest {
   readonly draft: string;
   /** Optional fixed Manager role (validated by the main process); absent = direct local AI task. */
   readonly agent?: string;
+  /** Optional project id (a plain slug) that scopes the Manager's persistent memory; only with `agent`. */
+  readonly project?: string;
 }
 
 /**
@@ -332,6 +334,8 @@ export interface DesktopHermesApi {
  */
 export interface DesktopAppApi {
   toggleDevTools(): Promise<void>;
+  /** Deletes the Managers' persistent project memory (stops the Ruflo runtime first). Resolves true on success. */
+  clearAgentMemory(): Promise<boolean>;
 }
 
 /** The full shape of `window.vyronDesktop`, as exposed by electron/preload.ts. */
@@ -363,6 +367,7 @@ export const HERMES_IPC_CHANNELS = {
 /** The single window-bridge channel (no arguments, no return value). */
 export const APP_IPC_CHANNELS = {
   APP_TOGGLE_DEV_TOOLS: "app:toggleDevTools",
+  APP_CLEAR_AGENT_MEMORY: "app:clearAgentMemory",
 } as const;
 
 export type HermesIpcChannel = (typeof HERMES_IPC_CHANNELS)[keyof typeof HERMES_IPC_CHANNELS];

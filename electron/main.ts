@@ -168,7 +168,7 @@ const ruflo = createProductionRufloBridge({
   resourcesPath: process.resourcesPath,
   isPackaged: app.isPackaged,
 });
-setTaskAgentExecutor((agentType, prompt) => ruflo.run(agentType, prompt));
+setTaskAgentExecutor((agentType, prompt, project) => ruflo.run(agentType, prompt, project));
 
 /** Stops only what this app started: the Ruflo runtime and the local AI services. */
 function shutdownServices(): Promise<unknown> {
@@ -205,6 +205,11 @@ function registerHermesIpcHandlers(): void {
 function registerAppIpcHandlers(): void {
   ipcMain.handle(APP_IPC_CHANNELS.APP_TOGGLE_DEV_TOOLS, (event) => {
     if (mainWindow && event.sender === mainWindow.webContents) mainWindow.webContents.toggleDevTools();
+  });
+  // Deletes the Managers' persistent memory (only for the app's own window; takes no argument).
+  ipcMain.handle(APP_IPC_CHANNELS.APP_CLEAR_AGENT_MEMORY, async (event) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) return false;
+    return ruflo.clearMemory();
   });
 }
 

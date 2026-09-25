@@ -117,7 +117,7 @@ describe("Electron scaffold source — no shell/child_process execution capabili
   });
 
   it("confirms exactly the expected scaffold .ts files exist, no more", () => {
-    expect(sourceFiles).toHaveLength(21);
+    expect(sourceFiles).toHaveLength(22);
     expect(sourceFiles.sort()).toEqual(
       [
         "hermesApiServer.ts",
@@ -130,6 +130,7 @@ describe("Electron scaffold source — no shell/child_process execution capabili
         "main.ts",
         "rufloAdapters.ts",
         "rufloBridge.ts",
+        "rufloTeam.ts",
         "preload.ts",
         "renderer.ts",
         "security-policy.ts",
@@ -533,7 +534,7 @@ describe("electron/preload.ts — narrow fixed bridge", () => {
     expect([...code.matchAll(/exposeInMainWorld\(\s*"([^"]+)"/g)].map((m) => m[1])).toEqual(["vyronDesktop"]);
   });
 
-  it("exposes exactly the seven fixed methods and no generic invoke/send/on", () => {
+  it("exposes exactly the eight fixed methods and no generic invoke/send/on", () => {
     const methods = [...code.matchAll(/^\s{4}(\w+):\s*(?:async\s*)?\(/gm)].map((m) => m[1]).sort();
     expect(methods).toEqual(
       [
@@ -544,6 +545,7 @@ describe("electron/preload.ts — narrow fixed bridge", () => {
         "retryLocalAiStartup",
         "sendTask",
         "toggleDevTools",
+        "clearAgentMemory",
       ].sort(),
     );
     expect(code).not.toMatch(/\b(send|on|once|invoke)\s*:/);
@@ -564,8 +566,8 @@ describe("electron/preload.ts — narrow fixed bridge", () => {
 describe("electron/main.ts — local AI IPC wiring", () => {
   const code = stripComments(fs.readFileSync(path.join(__dirname, "..", "electron", "main.ts"), "utf8"));
 
-  it("registers exactly seven ipcMain handlers (three local AI, three task, one window bridge)", () => {
-    expect(code.match(/ipcMain\.handle\(/g)).toHaveLength(7);
+  it("registers exactly eight ipcMain handlers (three local AI, three task, two window bridge)", () => {
+    expect(code.match(/ipcMain\.handle\(/g)).toHaveLength(8);
   });
 
   it("the three local AI handlers take no renderer-supplied argument", () => {

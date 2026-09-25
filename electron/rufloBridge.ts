@@ -7,8 +7,13 @@
  * behavior is fully testable with a fake transport.
  *
  * Boundaries:
- *   - Only three Ruflo tools are ever called (`agent_spawn`, `agent_execute`, `agent_terminate`), and the
- *     agent type must be one of the fixed roles below; nothing else Ruflo advertises can be reached.
+ *   - Only five Ruflo tools are ever called (`agent_spawn`, `agent_execute`, `agent_terminate` and the project-
+ *     memory pair `memory_search`/`memory_store`), and the agent type must be one of the fixed roles below;
+ *     nothing else Ruflo advertises can be reached.
+ *   - Project memory is Ruflo's persistent store under the app's own data folder, one namespace per project
+ *     (electron/rufloTeam.ts). A "task-orchestrator" run is a team run: a planner splits the task, up to three
+ *     workers run in parallel, and a synthesis step merges their answers. Memory is recalled before and a short
+ *     note is stored after every run.
  *   - `agent_execute` only calls the language model (through the local auth proxy to Hermes); it runs no
  *     tools and no shell.
  *   - The Hermes credential is handed to the child by the adapter and never appears in a result, error,
@@ -34,8 +39,24 @@ export function isRufloAgentType(value: unknown): value is RufloAgentType {
   return typeof value === "string" && (RUFLO_AGENT_TYPES as readonly string[]).indexOf(value) >= 0;
 }
 
-export const ALLOWED_RUFLO_TOOLS = ["agent_spawn", "agent_execute", "agent_terminate"] as const;
+export const ALLOWED_RUFLO_TOOLS = ["agent_spawn", "agent_execute", "agent_terminate", "memory_search", "memory_store"] as const;
 type RufloTool = (typeof ALLOWED_RUFLO_TOOLS)[number];
+
+import {
+  MAX_RECALLED_MEMORIES,
+  MEMORY_SIMILARITY_THRESHOLD,
+  fallbackPlan,
+  memoryNamespace,
+  memoryNote,
+  parsePlan,
+  plannerPrompt,
+  recalledSnippets,
+  synthesisPrompt,
+  teamFooter,
+  withMemory,
+  workerPrompt,
+  type SubTaskResult,
+} from "./rufloTeam";
 
 export const MAX_RUFLO_PROMPT_CHARS = 4_000;
 export const MAX_RUFLO_OUTPUT_CHARS = 20_000;
@@ -52,6 +73,8 @@ export interface RufloDeps {
   start(apiKey: string): RufloTransport | null;
   stop(transport: RufloTransport): Promise<void>;
   readApiKey(): Promise<string | null>;
+  /** Deletes Ruflo's persistent memory folders (called only after the child has been stopped). */
+  clearMemory?(): Promise<void>;
 }
 
 export interface RufloTimings {
@@ -65,12 +88,14 @@ export const DEFAULT_RUFLO_TIMINGS: RufloTimings = { handshakeMs: 60_000, callMs
 export type RufloState = "idle" | "starting" | "ready" | "failed";
 
 export type RufloResult =
-  | { readonly ok: true; readonly text: string }
+  | { readonly ok: true; readonly text: string; readonly note?: string }
   | { readonly ok: false; readonly reason: "unavailable" | "failed" };
 
 export interface RufloBridge {
   getState(): RufloState;
-  run(agentType: unknown, prompt: unknown): Promise<RufloResult>;
+  run(agentType: unknown, prompt: unknown, project?: unknown): Promise<RufloResult>;
+  /** Stops the runtime and deletes the persistent project memory. Resolves true when nothing is left. */
+  clearMemory(): Promise<boolean>;
   shutdown(): Promise<void>;
 }
 
@@ -207,34 +232,109 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
     return transport === null || transport.hasExited();
   }
 
-  async function runOnce(agentType: RufloAgentType, prompt: string): Promise<RufloResult> {
-    if (!(await ensureStarted())) return { ok: false, reason: "unavailable" };
+  /** Spawns a tracked agent, runs one prompt on it and cleans it up. null = failed; "gone" = the child died. */
+  async function executeAgent(agentType: RufloAgentType, prompt: string): Promise<string | null | "gone"> {
     counter += 1;
     const agentId = "vyron-" + agentType + "-" + String(counter);
     const spawned = await callTool("agent_spawn", { agentType, agentId }, timings.callMs);
-    if (!spawned || spawned.success !== true) return { ok: false, reason: childGone() ? "unavailable" : "failed" };
+    if (!spawned || spawned.success !== true) return childGone() ? "gone" : null;
     const executed = await callTool("agent_execute", { agentId, prompt, maxTokens: 2048 }, timings.executeMs);
     // Best-effort cleanup of the tracked agent record; its result never matters to the caller.
     void callTool("agent_terminate", { agentId }, timings.callMs);
-    if (!executed || executed.success !== true || typeof executed.output !== "string") return { ok: false, reason: childGone() ? "unavailable" : "failed" };
-    return { ok: true, text: executed.output.slice(0, MAX_RUFLO_OUTPUT_CHARS) };
+    if (!executed || executed.success !== true || typeof executed.output !== "string") return childGone() ? "gone" : null;
+    return executed.output.slice(0, MAX_RUFLO_OUTPUT_CHARS);
+  }
+
+  async function recall(namespace: string, query: string): Promise<string[]> {
+    const reply = await callTool(
+      "memory_search",
+      { query: query.slice(0, 500), namespace, limit: MAX_RECALLED_MEMORIES, threshold: MEMORY_SIMILARITY_THRESHOLD },
+      timings.callMs,
+    );
+    return recalledSnippets(reply);
+  }
+
+  async function remember(namespace: string, task: string, answer: string): Promise<void> {
+    await callTool(
+      "memory_store",
+      { key: "gorev-" + String(Date.now()) + "-" + String(counter), value: memoryNote(task, answer), namespace, tags: ["gorev"], upsert: true },
+      timings.callMs,
+    );
+  }
+
+  async function runTeam(prompt: string, snippets: string[]): Promise<RufloResult> {
+    const planned = await executeAgent("planner", plannerPrompt(prompt, snippets));
+    if (planned === "gone") return { ok: false, reason: "unavailable" };
+    let subtasks = planned === null ? [] : parsePlan(planned);
+    if (subtasks.length === 0) subtasks = fallbackPlan(prompt);
+    // The workers run at the same time; each is an independent tracked agent on the same Ruflo process.
+    const settled = await Promise.all(subtasks.map((subtask) => executeAgent(subtask.role, workerPrompt(subtask, prompt, snippets))));
+    if (settled.some((value) => value === "gone")) return { ok: false, reason: "unavailable" };
+    const results: SubTaskResult[] = subtasks.map((subtask, index) => {
+      const value = settled[index];
+      return { title: subtask.title, role: subtask.role, text: typeof value === "string" ? value : null };
+    });
+    if (results.every((entry) => entry.text === null)) return { ok: false, reason: "failed" };
+    const merged = await executeAgent("task-orchestrator", synthesisPrompt(prompt, results));
+    if (merged === "gone") return { ok: false, reason: "unavailable" };
+    const answer =
+      merged !== null && merged.trim().length > 0
+        ? merged
+        : results
+            .map((entry) => entry.text ?? "")
+            .filter((text) => text.length > 0)
+            .join("\n\n");
+    return { ok: true, text: (answer + teamFooter(results)).slice(0, MAX_RUFLO_OUTPUT_CHARS), note: answer };
+  }
+
+  async function runOnce(agentType: RufloAgentType, prompt: string, project: unknown): Promise<RufloResult> {
+    if (!(await ensureStarted())) return { ok: false, reason: "unavailable" };
+    const namespace = memoryNamespace(project);
+    const snippets = await recall(namespace, prompt);
+    let outcome: RufloResult;
+    if (agentType === "task-orchestrator") {
+      outcome = await runTeam(prompt, snippets);
+    } else {
+      const text = await executeAgent(agentType, withMemory(prompt, snippets));
+      if (text === "gone") return { ok: false, reason: "unavailable" };
+      outcome = text === null ? { ok: false, reason: "failed" } : { ok: true, text: text.slice(0, MAX_RUFLO_OUTPUT_CHARS), note: text };
+    }
+    if (outcome.ok && outcome.note !== undefined) await remember(namespace, prompt, outcome.note);
+    return outcome.ok ? { ok: true, text: outcome.text } : outcome;
   }
 
   return {
     getState: () => state,
-    async run(agentType, prompt) {
+    async run(agentType, prompt, project) {
       if (shuttingDown) return { ok: false, reason: "unavailable" };
       if (!isRufloAgentType(agentType)) return { ok: false, reason: "failed" };
       if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > MAX_RUFLO_PROMPT_CHARS) return { ok: false, reason: "failed" };
       if (busy) return { ok: false, reason: "failed" };
       busy = true;
       try {
-        let result = await runOnce(agentType, prompt);
+        let result = await runOnce(agentType, prompt, project);
         // A run may restart the child once if it died or never came up; there is no restart loop.
-        if (!result.ok && result.reason === "unavailable" && !shuttingDown) result = await runOnce(agentType, prompt);
+        if (!result.ok && result.reason === "unavailable" && !shuttingDown) result = await runOnce(agentType, prompt, project);
         return result;
       } catch {
         return { ok: false, reason: "failed" };
+      } finally {
+        busy = false;
+      }
+    },
+    async clearMemory() {
+      if (busy || shuttingDown) return false;
+      busy = true;
+      try {
+        const t = transport;
+        transport = null;
+        state = "idle";
+        failPending();
+        if (t) await deps.stop(t);
+        if (deps.clearMemory) await deps.clearMemory();
+        return true;
+      } catch {
+        return false;
       } finally {
         busy = false;
       }

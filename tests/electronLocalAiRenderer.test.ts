@@ -714,7 +714,7 @@ describe("+ menu, SubAgent, Plan and Terminal", () => {
     h.click(h.el("plus-btn"));
     h.click(item(h, "SubAgent"));
     expect(h.openMenus()).toHaveLength(2);
-    expect(h.menuLabels().slice(4)).toEqual(["SubAgent kullanma", "Genel" + "Varsayılan", "Vyron Helper" + "Yardımcı", "Multi-Model Planner" + "Planlama", "Reviewer" + "İnceleme"]);
+    expect(h.menuLabels().slice(4)).toEqual(["SubAgent kullanma", "Genel" + "Varsayılan", "Vyron Helper" + "Yardımcı", "Multi-Model Planner" + "Paralel", "Reviewer" + "İnceleme"]);
     h.click(item(h, "Reviewer"));
     expect(h.openMenus()).toHaveLength(0);
     const chip = h.doc.querySelector("#chips .chip")!;
@@ -1330,10 +1330,10 @@ describe("removed review flow and static page contract", () => {
     }
   });
 
-  it("the renderer talks to the main process through exactly the fixed bridge methods (no more than seven)", () => {
+  it("the renderer talks to the main process through exactly the fixed bridge methods (no more than eight)", () => {
     const calls = new Set([...rendererSource.matchAll(/api\.(localAi|hermes|app)\.(\w+)\(/g)].map((m) => `${m[1]}.${m[2]}`));
     expect(calls).toEqual(
-      new Set(["localAi.getLocalAiState", "localAi.retryLocalAiStartup", "localAi.copyLocalAiDiagnostics", "hermes.sendTask", "hermes.clearTaskSubmission", "app.toggleDevTools"]),
+      new Set(["localAi.getLocalAiState", "localAi.retryLocalAiStartup", "localAi.copyLocalAiDiagnostics", "hermes.sendTask", "hermes.clearTaskSubmission", "app.toggleDevTools", "app.clearAgentMemory"]),
     );
   });
 
@@ -1416,7 +1416,7 @@ describe("managers run through Ruflo roles", () => {
     h.click(item(h, "SubAgent"));
     h.click(item(h, "Multi-Model Planner"));
     await sendTask(h, "Plan yap");
-    expect(h.calls.send[1]).toEqual({ draft: "Plan yap", agent: "planner" });
+    expect(h.calls.send[1]).toEqual({ draft: "Plan yap", agent: "task-orchestrator" });
     expect(h.calls.send[1]!.draft).not.toContain("Rol:");
   });
 
@@ -1477,7 +1477,72 @@ describe("managers run through Ruflo roles", () => {
     const second = await ready({ storage: JSON.stringify(legacy) });
     second.click(second.el("tab-managers"));
     second.click(second.doc.querySelector<HTMLElement>('.manager-main[data-manager-id="multi-model-planner"]'));
-    expect(second.el("manager-detail").textContent).toContain("Ruflo · Planlayıcı");
+    expect(second.el("manager-detail").textContent).toContain("Ruflo · Görev yöneticisi (paralel ekip)");
+    second.close();
+  });
+});
+
+describe("project memory and the parallel team", () => {
+  it("a Manager task carries the active project id so its memory stays per project", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "Reviewer"));
+    h.click(h.doc.querySelector<HTMLElement>('.project-add[aria-label="AETHERIS projesinde yeni görev"]'));
+    await sendTask(h, "Projeye özel");
+    expect(h.calls.send[0]).toEqual({ draft: "Projeye özel", agent: "reviewer", project: "aetheris" });
+    h.click(h.el("new-task-btn"));
+    h.click(h.el("project-btn"));
+    h.click(item(h, "Projesiz"));
+    await sendTask(h, "Projesiz görev");
+    expect(h.calls.send[1]).toEqual({ draft: "Projesiz görev", agent: "reviewer" });
+  });
+
+  it("Multi-Model Planner is the parallel team: its detail says so and its task carries the orchestrator role", async () => {
+    const h = await start();
+    h.click(h.el("tab-managers"));
+    h.click(h.doc.querySelector<HTMLElement>('.manager-main[data-manager-id="multi-model-planner"]'));
+    expect(h.el("manager-detail").textContent).toContain("Ruflo · Görev yöneticisi (paralel ekip)");
+    expect(h.el("manager-detail").textContent).toContain("paralel yürütür");
+  });
+
+  it("the settings page clears the Managers' memory only after an explicit confirmation", async () => {
+    const h = await start();
+    h.click(h.el("settings-btn"));
+    expect(h.el("settings-memory-confirm").hidden).toBe(true);
+    h.click(h.el("settings-memory-clear"));
+    expect(h.el("settings-memory-confirm").hidden).toBe(false);
+    expect(h.calls.memoryClears).toBe(0);
+    h.click(h.el("settings-memory-cancel"));
+    expect(h.el("settings-memory-clear").hidden).toBe(false);
+    expect(h.calls.memoryClears).toBe(0);
+    h.click(h.el("settings-memory-clear"));
+    h.click(h.el("settings-memory-confirm"));
+    await h.flush();
+    expect(h.calls.memoryClears).toBe(1);
+    expect(h.el("settings-memory-status").textContent).toBe("Manager hafızası temizlendi.");
+    expect(h.el("settings-memory-clear").hidden).toBe(false);
+  });
+
+  it("reports a failed memory clear with a fixed message", async () => {
+    const h = await start();
+    h.behavior.memoryClearResult = false;
+    h.click(h.el("settings-btn"));
+    h.click(h.el("settings-memory-clear"));
+    h.click(h.el("settings-memory-confirm"));
+    await h.flush();
+    expect(h.el("settings-memory-status").textContent).toContain("temizlenemedi");
+  });
+
+  it("stored seeded managers are upgraded to their current built-in roles", async () => {
+    const h = await start();
+    h.click(h.el("sidebar-toggle-btn"));
+    const stored = JSON.parse(h.storageText() as string);
+    for (const m of stored.managers) if (m.id === "multi-model-planner") m.agent = "planner";
+    const second = await ready({ storage: JSON.stringify(stored) });
+    second.click(second.el("tab-managers"));
+    second.click(second.doc.querySelector<HTMLElement>('.manager-main[data-manager-id="multi-model-planner"]'));
+    expect(second.el("manager-detail").textContent).toContain("(paralel ekip)");
     second.close();
   });
 });

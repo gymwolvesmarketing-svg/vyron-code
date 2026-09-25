@@ -35,7 +35,7 @@ export interface Harness {
   dom: JSDOM;
   win: Window & typeof globalThis;
   doc: Document;
-  calls: { getState: number; retry: number; copy: number; send: Array<{ draft: string }>; clear: number; devTools: number };
+  calls: { getState: number; retry: number; copy: number; send: Array<{ draft: string }>; clear: number; devTools: number; memoryClears: number };
   behavior: {
     aiState: FakeAiState;
     retryState: FakeAiState;
@@ -43,6 +43,7 @@ export interface Harness {
     sendResult: FakeTaskResult;
     sendGate: Promise<void> | null;
     sendThrows: boolean;
+    memoryClearResult: boolean;
   };
   el<T extends HTMLElement = HTMLElement>(id: string): T;
   flush(): Promise<void>;
@@ -65,7 +66,7 @@ export interface SetupOptions {
 
 export function setup(options: SetupOptions = {}): Harness {
   const errors: unknown[] = [];
-  const calls = { getState: 0, retry: 0, copy: 0, send: [] as Array<{ draft: string }>, clear: 0, devTools: 0 };
+  const calls = { getState: 0, retry: 0, copy: 0, send: [] as Array<{ draft: string }>, clear: 0, devTools: 0, memoryClears: 0 };
   const behavior: Harness["behavior"] = {
     aiState: options.ai ?? { state: "ready" },
     retryState: { state: "starting", stage: "checking" },
@@ -73,6 +74,7 @@ export function setup(options: SetupOptions = {}): Harness {
     sendResult: { state: "completed", text: "Yanıt metni", truncated: false },
     sendGate: null,
     sendThrows: false,
+    memoryClearResult: true,
   };
   const dom = new JSDOM(html.replace(/<script src="[^"]+"><\/script>/g, ""), {
     url: "http://localhost/renderer.html",
@@ -101,6 +103,10 @@ export function setup(options: SetupOptions = {}): Harness {
           app: {
             toggleDevTools: async () => {
               calls.devTools += 1;
+            },
+            clearAgentMemory: async () => {
+              calls.memoryClears += 1;
+              return behavior.memoryClearResult;
             },
           },
           hermes: {

@@ -9,7 +9,7 @@
  * credential, which exists only in this child's environment. Nothing here takes a value from the renderer.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { PROXY_ORIGIN, readApiKey, runTaskkill } from "./localAiAdapters";
 import { createRufloBridge, type RufloBridge, type RufloDeps, type RufloTransport } from "./rufloBridge";
@@ -101,6 +101,10 @@ export function createRufloDeps(options: { workRoot: string; resourcesPath: stri
   const cli = path.join(runtimeDir, "node_modules", "ruflo", "bin", "ruflo.js");
   return {
     readApiKey,
+    async clearMemory() {
+      // Ruflo keeps its persistent memory (vector index + database) in these two folders of its working directory.
+      for (const folder of [".swarm", ".claude-flow"]) rmSync(path.join(options.workRoot, folder), { recursive: true, force: true });
+    },
     start(apiKey) {
       try {
         if (!existsSync(nodeExe) || !existsSync(cli)) return null;

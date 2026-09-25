@@ -34,7 +34,7 @@ import { isRufloAgentType } from "./rufloBridge";
  * The role is validated against a fixed allowlist here; the executor never receives anything else from the
  * renderer.
  */
-export type TaskAgentExecutor = (agentType: string, prompt: string) => Promise<{ readonly ok: true; readonly text: string } | { readonly ok: false }>;
+export type TaskAgentExecutor = (agentType: string, prompt: string, project: string | undefined) => Promise<{ readonly ok: true; readonly text: string } | { readonly ok: false }>;
 
 let agentExecutor: TaskAgentExecutor | null = null;
 
@@ -136,12 +136,17 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
   if (sendInFlight) return safeState("sending");
   if (typeof request !== "object" || request === null || Array.isArray(request)) return safeState("safe_failure");
   const keys = Object.keys(request as Record<string, unknown>);
-  const hasAgent = keys.length === 2 && keys.indexOf("draft") >= 0 && keys.indexOf("agent") >= 0;
-  if (!hasAgent && (keys.length !== 1 || keys[0] !== "draft")) return safeState("safe_failure");
+  const hasAgent = keys.indexOf("agent") >= 0;
+  const allowedKeys = hasAgent ? ["draft", "agent", "project"] : ["draft"];
+  if (keys.indexOf("draft") < 0 || keys.some((key) => allowedKeys.indexOf(key) < 0)) return safeState("safe_failure");
   const draft = (request as Record<string, unknown>).draft;
   if (typeof draft !== "string" || !validateDraft(draft)) return safeState("safe_failure");
   const agent = hasAgent ? (request as Record<string, unknown>).agent : null;
   if (hasAgent && (!isRufloAgentType(agent) || agentExecutor === null)) return safeState("safe_failure");
+  // Optional project id (memory scope): a plain slug or nothing; anything else is rejected, never sanitized silently.
+  const projectField = hasAgent ? (request as Record<string, unknown>).project : undefined;
+  if (projectField !== undefined && (typeof projectField !== "string" || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(projectField))) return safeState("safe_failure");
+  const project = typeof projectField === "string" ? projectField : undefined;
 
   const endpoint = getConfiguredEndpoint() ?? resolveTrustedEndpoint();
   if (endpoint.kind !== "trusted") return safeState("unavailable");
@@ -161,7 +166,7 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
     let text: string | null;
     if (hasAgent && agentExecutor !== null) {
       // Manager task: Ruflo runs the agent (its own bounded timeouts apply); the reply is reduced exactly like a direct one.
-      const outcome = await agentExecutor(agent as string, draft);
+      const outcome = await agentExecutor(agent as string, draft, project);
       text = outcome.ok ? outcome.text : null;
       clearTimeout(timer);
       if (generation !== generationAtStart) return getTaskSubmissionState();

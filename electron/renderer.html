@@ -226,6 +226,16 @@
             </label>
           </div>
           <div class="settings-block">
+            <h2 class="settings-title">Manager hafızası</h2>
+            <p class="settings-text">Managers, projeye ait kısa görev notlarını bu bilgisayarda saklar ve sonraki görevlerde hatırlar. Notlar yalnızca bu bilgisayarda kalır.</p>
+            <div class="settings-actions">
+              <button id="settings-memory-clear" class="btn danger" type="button">Manager hafızasını temizle</button>
+              <button id="settings-memory-confirm" class="btn danger" type="button" hidden>Evet, temizle</button>
+              <button id="settings-memory-cancel" class="btn ghost" type="button" hidden>Vazgeç</button>
+            </div>
+            <p id="settings-memory-status" class="settings-text" role="status"></p>
+          </div>
+          <div class="settings-block">
             <h2 class="settings-title">Çalışma alanı verisi</h2>
             <p class="settings-text">Projeler, görev başlıkları, seçimler ve bağlayıcı durumları bu bilgisayarda saklanır. Görev metinleri ve yanıtlar saklanmaz.</p>
             <div class="settings-actions">

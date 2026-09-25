@@ -50,6 +50,7 @@ interface HermesTaskSubmissionState {
 interface HermesTaskRequest {
   readonly draft: string;
   readonly agent?: string;
+  readonly project?: string;
 }
 
 interface DesktopLocalAiApi {
@@ -66,6 +67,7 @@ interface DesktopHermesApi {
 
 interface DesktopAppApi {
   toggleDevTools(): Promise<void>;
+  clearAgentMemory(): Promise<boolean>;
 }
 
 interface DesktopApi {
@@ -81,6 +83,7 @@ const HERMES_GET_TASK_SUBMISSION_STATE_CHANNEL = "hermes:getTaskSubmissionState"
 const HERMES_SEND_TASK_CHANNEL = "hermes:sendTask";
 const HERMES_CLEAR_TASK_SUBMISSION_CHANNEL = "hermes:clearTaskSubmission";
 const APP_TOGGLE_DEV_TOOLS_CHANNEL = "app:toggleDevTools";
+const APP_CLEAR_AGENT_MEMORY_CHANNEL = "app:clearAgentMemory";
 
 const vyronDesktop: DesktopApi = {
   localAi: {
@@ -95,6 +98,7 @@ const vyronDesktop: DesktopApi = {
   },
   app: {
     toggleDevTools: () => ipcRenderer.invoke(APP_TOGGLE_DEV_TOOLS_CHANNEL),
+    clearAgentMemory: () => ipcRenderer.invoke(APP_CLEAR_AGENT_MEMORY_CHANNEL),
   },
 };
 

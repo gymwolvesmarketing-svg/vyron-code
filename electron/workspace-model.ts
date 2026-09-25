@@ -201,7 +201,7 @@ const VyronModel = (() => {
     return [
       { id: "genel", name: "Genel", description: "Her tür görev için genel amaçlı yardımcı. Görevler doğrudan yerel AI'ya gider.", tag: "Varsayılan", custom: false, agent: null },
       { id: "vyron-helper", name: "Vyron Helper", description: "Vyron Code kullanımı ve iş akışları konusunda araştırıp yardım eder.", tag: "Yardımcı", custom: false, agent: "researcher" },
-      { id: "multi-model-planner", name: "Multi-Model Planner", description: "Büyük işleri parçalara ayırıp plana dönüştürür.", tag: "Planlama", custom: false, agent: "planner" },
+      { id: "multi-model-planner", name: "Multi-Model Planner", description: "Büyük işleri en fazla üç bağımsız parçaya böler, ajanlarla paralel yürütür ve sonuçları birleştirir.", tag: "Paralel", custom: false, agent: "task-orchestrator" },
       { id: "reviewer", name: "Reviewer", description: "Çıktıları gözden geçirir ve iyileştirme önerir.", tag: "İnceleme", custom: false, agent: "reviewer" },
     ];
   }
@@ -338,7 +338,8 @@ const VyronModel = (() => {
         const name = cleanText(item.name, 40);
         if (!id || !name) return null;
         const custom = item.custom === true;
-        const agent = "agent" in item ? (item.agent === null || isAgentRole(item.agent) ? (item.agent as string | null) : seedAgentFor(id, custom)) : seedAgentFor(id, custom);
+        // Seeded managers always keep their built-in role; only custom managers carry a stored one.
+        const agent = custom && "agent" in item && isAgentRole(item.agent) ? item.agent : seedAgentFor(id, custom);
         return { id, name, description: cleanText(item.description, 140) ?? "Özel manager.", tag: cleanText(item.tag, 20) ?? "Özel", custom, agent };
       },
       50,
