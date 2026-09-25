@@ -24,6 +24,10 @@ files:
 # The auth proxy is run by a separate Node process, so it must be a real file outside the archive.
 asarUnpack:
   - scripts/hermes-auth-proxy.mjs
+# The full Ruflo runtime (plain node.exe + the complete Ruflo package for Windows x64), built by
+# `npm run runtime:ruflo`, is copied into resources/ruflo-runtime by this hook (extraResources would drop
+# every node_modules folder).
+afterPack: scripts/after-pack-ruflo.cjs
 win:
   target:
     - target: nsis

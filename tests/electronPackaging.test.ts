@@ -156,3 +156,54 @@ describe("packaging - brand assets and application icon", () => {
     expect(html).not.toMatch(/src="(https?:|data:|\/\/)/);
   });
 });
+
+describe("packaging - Ruflo runtime", () => {
+  it("copies the runtime into resources/ruflo-runtime with an afterPack hook (extraResources drops node_modules)", () => {
+    expect(builderConfig).toMatch(/^afterPack: scripts\/after-pack-ruflo\.cjs\s*$/m);
+    expect(builderConfig).not.toMatch(/^extraResources:/m);
+    const hook = read("scripts/after-pack-ruflo.cjs");
+    expect(hook).toContain('"resources", "ruflo-runtime"');
+    expect(hook).toContain("fs.cpSync(source, target, { recursive: true })");
+    expect(hook).toContain("Ruflo runtime is missing");
+  });
+
+  it("package and dist scripts verify the runtime first, and dedicated runtime scripts exist", () => {
+    expect(pkg.scripts["runtime:ruflo"]).toBe("node scripts/build-ruflo-runtime.mjs");
+    expect(pkg.scripts["runtime:ruflo:verify"]).toBe("node scripts/build-ruflo-runtime.mjs --verify");
+    expect(pkg.scripts["electron:package"]).toMatch(/^npm run runtime:ruflo:verify && /);
+    expect(pkg.scripts["electron:dist"]).toMatch(/^npm run runtime:ruflo:verify && /);
+  });
+
+  it("the runtime build pins the Ruflo version and keeps every Windows x64 binary while removing the others", async () => {
+    const mod = (await import("../scripts/build-ruflo-runtime.mjs")) as { RUFLO_VERSION: string; isForeignPlatformPath(p: string): boolean };
+    expect(mod.RUFLO_VERSION).toBe("3.44.0");
+    for (const foreign of [
+      "@agntcy/slim-bindings-linux-x64-gnu",
+      "@agntcy/slim-bindings-darwin-arm64",
+      "@agntcy/slim-bindings-win32-arm64-msvc",
+      "onnxruntime-node/bin/napi-v6/linux/x64",
+      "onnxruntime-node/bin/napi-v6/darwin",
+      "onnxruntime-node/bin/napi-v6/win32/arm64",
+      "argon2/prebuilds/linux-x64",
+      "@ruvector/gnn/npm/darwin-x64",
+    ]) {
+      expect(mod.isForeignPlatformPath(foreign), foreign).toBe(true);
+    }
+    for (const keep of [
+      "@agntcy/slim-bindings-win32-x64-msvc",
+      "onnxruntime-node/bin/napi-v6/win32/x64",
+      "onnxruntime-node/bin/napi-v6",
+      "argon2/prebuilds/win32-x64",
+      "@ruvector/gnn/npm/win32-x64-msvc",
+      "ruflo",
+      "better-sqlite3",
+      "@claude-flow/cli",
+    ]) {
+      expect(mod.isForeignPlatformPath(keep), keep).toBe(false);
+    }
+  });
+
+  it("the runtime folder is never committed", () => {
+    expect(gitignore).toContain("build/");
+  });
+});

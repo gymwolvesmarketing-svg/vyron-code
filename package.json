@@ -1,6 +1,6 @@
 {
   "name": "vyron-code",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "description": "Project-aware AI coding workspace. Read-only v0.1 per VYRON_CODE_V01_ACCEPTANCE_CRITERIA.md.",
   "scripts": {
@@ -15,8 +15,10 @@
     "build:electron": "tsc -p tsconfig.electron.json && node scripts/copy-electron-assets.mjs",
     "electron:build": "npm run build:electron",
     "electron:run": "npm run electron:build && electron .",
-    "electron:package": "npm run electron:build && electron-builder --win dir --x64 --config electron-builder.yml",
-    "electron:dist": "npm run electron:build && electron-builder --win nsis --x64 --config electron-builder.yml"
+    "electron:package": "npm run runtime:ruflo:verify && npm run electron:build && electron-builder --win dir --x64 --config electron-builder.yml",
+    "electron:dist": "npm run runtime:ruflo:verify && npm run electron:build && electron-builder --win nsis --x64 --config electron-builder.yml",
+    "runtime:ruflo": "node scripts/build-ruflo-runtime.mjs",
+    "runtime:ruflo:verify": "node scripts/build-ruflo-runtime.mjs --verify"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
