@@ -17,6 +17,9 @@ export type ToolCall =
   | { readonly tool: "run_command"; readonly command: string };
 
 export const MAX_TOOL_STEPS = 30;
+/** Tool requests taken from one reply (models often write several at once), and the ceiling for a whole task. */
+export const MAX_CALLS_PER_REPLY = 8;
+export const MAX_TOOL_CALLS = 120;
 export const MAX_PATH_CHARS = 260;
 export const MAX_WRITE_CHARS = 200_000;
 export const MAX_COMMAND_CHARS = 1_000;
@@ -52,6 +55,7 @@ export const TOOL_PROTOCOL = [
   '{"tool":"write_file","path":"src/a.txt","content":"..."}  -> dosya yazar (kullanıcı onayı gerekir)',
   '{"tool":"run_command","command":"npm test"}  -> komut çalıştırır (kullanıcı onayı gerekir)',
   "Yollar çalışma klasörüne göreli olmalıdır. Kendin dosya yazmış ya da komut çalıştırmış gibi davranma: yalnızca köprü sonucunda gördüklerini söyle.",
+  "Birbirinden bağımsız işler için (örneğin birkaç dosyayı okumak) tek yanıtta en fazla 8 JSON nesnesi yazabilirsin, her biri ayrı satırda; sonuçlar sırayla gelir.",
   "Görev araç gerektirmiyorsa ya da iş bittiyse, JSON olmayan düz metinle nihai yanıtı yaz. Bir işlem reddedilirse başka bir yol dene ya da nedenini açıkla.",
   "Bir yazılım projesi üzerinde çalışıyorsun: önce klasör özetine ve ilgili dosyalara bak (README, package.json, kaynak klasörleri), projenin ne olduğunu ve nerede kaldığını anla, sonra işi adım adım ilerlet. Var olan kodu okumadan üzerine yazma.",
 ].join("\n");
@@ -103,6 +107,33 @@ function balancedEnd(text: string, start: number): number {
   return -1;
 }
 
+/** Every JSON object with a "tool" key in a reply, in order (models wrap JSON in prose, code fences or arrays). */
+function allJsonObjects(text: string, limit: number): unknown[] {
+  const found: unknown[] = [];
+  let from = 0;
+  while (found.length < limit) {
+    const start = text.indexOf("{", from);
+    if (start < 0) break;
+    const end = balancedEnd(text, start);
+    if (end < 0) {
+      from = start + 1;
+      continue;
+    }
+    try {
+      const parsed: unknown = JSON.parse(text.slice(start, end + 1));
+      if (typeof parsed === "object" && parsed !== null && "tool" in parsed) {
+        found.push(parsed);
+        from = end + 1;
+        continue;
+      }
+    } catch {
+      // Not valid JSON: try the next candidate.
+    }
+    from = start + 1;
+  }
+  return found;
+}
+
 /** Finds the first JSON object with a "tool" key (models wrap JSON in prose or code fences). */
 function firstJsonObject(text: string): unknown {
   for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
@@ -135,7 +166,20 @@ function cleanPath(value: unknown): string | null {
 export function parseToolCall(reply: string): ParsedTool {
   const raw = firstJsonObject(reply);
   if (raw === null) return { kind: "final" };
-  const record = raw as Record<string, unknown>;
+  return validateToolRecord(raw as Record<string, unknown>);
+}
+
+/** A reply as a list of requests: [] = a final answer; otherwise up to MAX_CALLS_PER_REPLY validated (or invalid) requests. */
+export function parseToolCalls(reply: string): Array<Exclude<ParsedTool, { kind: "final" }>> {
+  const out: Array<Exclude<ParsedTool, { kind: "final" }>> = [];
+  for (const raw of allJsonObjects(reply, MAX_CALLS_PER_REPLY)) {
+    const parsed = validateToolRecord(raw as Record<string, unknown>);
+    if (parsed.kind !== "final") out.push(parsed);
+  }
+  return out;
+}
+
+function validateToolRecord(record: Record<string, unknown>): ParsedTool {
   switch (record.tool) {
     case "list_dir":
     case "read_file": {

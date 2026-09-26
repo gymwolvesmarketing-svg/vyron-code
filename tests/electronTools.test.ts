@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  MAX_CALLS_PER_REPLY,
+  MAX_TOOL_CALLS,
   MAX_COMMAND_CHARS,
   MAX_LOG_LINES,
   MAX_PATH_CHARS,
@@ -20,6 +22,7 @@ import {
   isCatastrophicCommand,
   needsApproval,
   parseToolCall,
+  parseToolCalls,
   toolLogFooter,
   trimTranscript,
   type ApprovalChoice,
@@ -522,5 +525,68 @@ describe("a model that stops answering half way", () => {
     expect(MAX_RUFLO_ASK_CHARS).toBeGreaterThan(MAX_TRANSCRIPT_CHARS + 10_000);
     const biggest = flattenTranscript([{ role: "user", content: "x".repeat(MAX_TRANSCRIPT_CHARS) }]);
     expect(biggest.length).toBeLessThanOrEqual(MAX_RUFLO_ASK_CHARS);
+  });
+});
+
+describe("several tool requests in one reply", () => {
+  it("parseToolCalls reads every request in order: lines, commas, arrays and prose around them", () => {
+    const reply = 'Önce şunlara bakayım:\n{"tool":"list_dir","path":"src"},{"tool":"read_file","path":"a.ts"}\n```json\n[{"tool":"read_file","path":"b.ts"}]\n```';
+    const calls = parseToolCalls(reply);
+    expect(calls.map((c) => (c.kind === "call" ? c.call.tool + ":" + (c.call as { path: string }).path : "?"))).toEqual(["list_dir:src", "read_file:a.ts", "read_file:b.ts"]);
+    expect(parseToolCalls("Düz yanıt, JSON yok.")).toEqual([]);
+    expect(parseToolCalls('{"not":"a tool"}')).toEqual([]);
+  });
+
+  it("keeps invalid ones in place (the model is told) and caps a reply at the per-reply limit", () => {
+    const mixed = parseToolCalls('{"tool":"nope"}\n{"tool":"read_file","path":"a.ts"}\n{"tool":"read_file","path":""}');
+    expect(mixed.map((c) => c.kind)).toEqual(["invalid", "call", "invalid"]);
+    const many = Array.from({ length: 20 }, (_, i) => '{"tool":"read_file","path":"f' + String(i) + '.ts"}').join("\n");
+    expect(parseToolCalls(many)).toHaveLength(MAX_CALLS_PER_REPLY);
+  });
+
+  it("parseToolCall (single) still returns the first request only", () => {
+    expect(parseToolCall('{"tool":"read_file","path":"a"}{"tool":"read_file","path":"b"}')).toEqual({ kind: "call", call: { tool: "read_file", path: "a" } });
+  });
+
+  it("the loop runs all requests of a reply in order and feeds back one labelled message", async () => {
+    const { deps, executed, seen } = makeDeps(['{"tool":"list_dir","path":"."}\n{"tool":"read_file","path":"a.txt"}\n{"tool":"read_file","path":"b.txt"}', "Üçünü de okudum."]);
+    const result = await runToolLoop(deps, "tara");
+    expect(executed.map((c) => c.tool)).toEqual(["list_dir", "read_file", "read_file"]);
+    const feedback = seen[1]!.at(-1)!.content;
+    expect(feedback).toContain("[1/3] Araç sonucu (list_dir)");
+    expect(feedback).toContain("[3/3] Araç sonucu (read_file)");
+    expect(result.ok && result.text).toContain("✓ listeleme .");
+    expect(result.ok && result.text).toContain("✓ okuma b.txt");
+  });
+
+  it("a write in the middle of a batch still asks for approval, and a refusal only skips that one", async () => {
+    const { deps, executed, approvals } = makeDeps(['{"tool":"read_file","path":"a.txt"}\n{"tool":"write_file","path":"x.txt","content":"1"}\n{"tool":"read_file","path":"b.txt"}', "Bitti."], {
+      approve: async () => "deny",
+    });
+    const result = await runToolLoop(deps, "g");
+    expect(approvals).toBeDefined();
+    expect(executed.map((c) => c.tool + ":" + (c as { path?: string }).path)).toEqual(["read_file:a.txt", "read_file:b.txt"]);
+    expect(result.ok && result.text).toContain("✗ reddedildi");
+  });
+
+  it("a single request keeps the plain, unlabelled feedback", async () => {
+    const { deps, seen } = makeDeps(['{"tool":"list_dir","path":"."}', "Bitti."]);
+    await runToolLoop(deps, "g");
+    expect(seen[1]!.at(-1)!.content).toMatch(/^Araç sonucu \(list_dir\)/);
+  });
+
+  it("stops executing after the task-wide call ceiling and says so", async () => {
+    const batch = Array.from({ length: MAX_CALLS_PER_REPLY }, (_, i) => '{"tool":"read_file","path":"f' + String(i) + '.ts"}').join("\n");
+    const rounds = Math.ceil(MAX_TOOL_CALLS / MAX_CALLS_PER_REPLY) + 1;
+    const script = Array.from({ length: rounds }, () => batch).concat("Bitti.");
+    const { deps, executed, seen } = makeDeps(script);
+    await runToolLoop(deps, "g");
+    expect(executed.length).toBe(MAX_TOOL_CALLS);
+    expect(seen.at(-1)!.at(-1)!.content).toContain("Araç çağrısı sınırına ulaşıldı");
+  });
+
+  it("the protocol tells the model it may batch independent requests", () => {
+    expect(TOOL_PROTOCOL).toContain("en fazla 8 JSON nesnesi");
+    expect(MAX_CALLS_PER_REPLY).toBe(8);
   });
 });

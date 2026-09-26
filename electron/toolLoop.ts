@@ -7,6 +7,9 @@
  * actions run per task, and the answer ends with a log of what was really done or refused.
  */
 import {
+  MAX_CALLS_PER_REPLY,
+  MAX_TOOL_CALLS,
+  MAX_TOOL_OUTPUT_CHARS,
   MAX_TOOL_STEPS,
   approvalRequest,
   boundOutput,
@@ -15,7 +18,7 @@ import {
   TOOL_REMINDER_FINAL,
   firstToolMessage,
   needsApproval,
-  parseToolCall,
+  parseToolCalls,
   toolLogFooter,
   trimTranscript,
   type ApprovalChoice,
@@ -50,12 +53,13 @@ export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<Too
   let messages: ChatMessage[] = [{ role: "user", content: firstToolMessage(task, deps.workspace() === null ? null : (deps.overview?.() ?? null)) }];
   const log: LogEntry[] = [];
   let reminders = 0;
+  let executed = 0;
 
   for (let step = 0; step < MAX_TOOL_STEPS; step += 1) {
     const reply = await deps.ask(trimTranscript(messages));
     if (reply === null) return interrupted(log);
-    const parsed = parseToolCall(reply);
-    if (parsed.kind === "final") {
+    const requests = parseToolCalls(reply);
+    if (requests.length === 0) {
       // A plain reply before any tool ran is challenged twice (models invent "done" or "no tools"); after that it stands.
       if (reminders < 2 && log.length === 0) {
         reminders += 1;
@@ -68,13 +72,22 @@ export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<Too
       return { ok: true, text: reply + toolLogFooter(log) };
     }
 
-    let feedback: string;
-    if (parsed.kind === "invalid") {
-      log.push({ outcome: "invalid", text: parsed.reason });
-      feedback = "Geçersiz araç isteği (" + parsed.reason + "). Biçime uy ya da nihai yanıtı düz metin olarak yaz.";
-    } else {
-      feedback = await handle(deps, parsed.call, log);
+    // One reply can carry several requests (a model reads three files at once): they run in order, each result is labelled.
+    const perResult = Math.min(MAX_TOOL_OUTPUT_CHARS, Math.floor((3 * MAX_TOOL_OUTPUT_CHARS) / Math.max(1, requests.length)));
+    const parts: string[] = [];
+    for (const request of requests.slice(0, MAX_CALLS_PER_REPLY)) {
+      if (request.kind === "invalid") {
+        log.push({ outcome: "invalid", text: request.reason });
+        parts.push("Geçersiz araç isteği (" + request.reason + "). Biçime uy.");
+      } else if (executed >= MAX_TOOL_CALLS) {
+        log.push({ outcome: "failed", text: describeCall(request.call) + " — araç çağrısı sınırına ulaşıldı" });
+        parts.push("Araç çağrısı sınırına ulaşıldı; bu istek çalıştırılmadı.");
+      } else {
+        executed += 1;
+        parts.push(await handle(deps, request.call, log, perResult));
+      }
     }
+    const feedback = requests.length === 1 ? (parts[0] ?? "") : parts.map((part, index) => "[" + String(index + 1) + "/" + String(parts.length) + "] " + part).join("\n\n");
     messages = messages.concat([
       { role: "assistant", content: reply },
       { role: "user", content: feedback },
@@ -85,8 +98,7 @@ export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<Too
   messages = messages.concat({ role: "user", content: "Adım sınırına ulaşıldı. Araç kullanmadan, şimdiye kadarki işi özetleyen nihai yanıtı düz metin olarak yaz." });
   const closing = await deps.ask(trimTranscript(messages));
   if (closing === null) return interrupted(log);
-  const parsedClosing = parseToolCall(closing);
-  const text = parsedClosing.kind === "final" ? closing : "Adım sınırına ulaşıldı; iş tamamlanamadı.";
+  const text = parseToolCalls(closing).length === 0 ? closing : "Adım sınırına ulaşıldı; iş tamamlanamadı.";
   return { ok: true, text: text + toolLogFooter(log) };
 }
 
@@ -99,7 +111,7 @@ function interrupted(log: LogEntry[]): ToolLoopResult {
   return { ok: true, text: "Model yanıt vermeyi bıraktı; iş yarım kaldı. Şimdiye kadar yapılanlar aşağıda; aynı görevi tekrar göndererek kaldığın yerden devam edebilirsin." + toolLogFooter(log) };
 }
 
-async function handle(deps: ToolLoopDeps, call: ToolCall, log: LogEntry[]): Promise<string> {
+async function handle(deps: ToolLoopDeps, call: ToolCall, log: LogEntry[], maxOutput: number = MAX_TOOL_OUTPUT_CHARS): Promise<string> {
   const workspace = deps.workspace();
   if (workspace === null) {
     log.push({ outcome: "failed", text: describeCall(call) + " — çalışma klasörü seçili değil" });
@@ -116,5 +128,5 @@ async function handle(deps: ToolLoopDeps, call: ToolCall, log: LogEntry[]): Prom
   }
   const result = await deps.execute(call);
   log.push({ outcome: result.ok ? "ok" : "failed", text: describeCall(call) });
-  return "Araç sonucu (" + call.tool + "):\n" + boundOutput(result.text) + "\n\nSonraki adımın JSON'unu yaz; iş bittiyse JSON olmayan düz metinle nihai yanıtı ver.";
+  return "Araç sonucu (" + call.tool + "):\n" + boundOutput(result.text, maxOutput) + "\n\nSonraki adımın JSON'unu yaz; iş bittiyse JSON olmayan düz metinle nihai yanıtı ver.";
 }
