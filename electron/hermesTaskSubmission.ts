@@ -22,7 +22,7 @@
  *   - The renderer only ever receives the fixed `HermesTaskSubmissionState` enum plus the one
  *     bounded, plain-text response field, never a raw status, header, body, endpoint or credential.
  */
-import { modelForRole, parseModelChoice, type ModelChoice } from "./modelRouting";
+import { modelForRole, parseModelChoice, withToolsRouting, type ModelChoice } from "./modelRouting";
 import type { HermesTaskSubmissionState } from "./shared-ipc-contract";
 import { getAuthorizationState, getCurrentCredential } from "./hermesAuthorization";
 import { resolveTrustedEndpoint } from "./hermesEndpoint";
@@ -182,7 +182,9 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
   // Optional per-role model choice: strictly allowlisted combo names, never a free-form model string.
   const models = hasModels ? parseModelChoice((request as Record<string, unknown>).models) : null;
   if (hasModels && models === null) return safeState("safe_failure");
-  const directModel = modelForRole(models ?? undefined, agent === null ? null : (agent as string));
+  // With tools every role uses the `tools` model (see withToolsRouting).
+  const routedModels = withToolsRouting(models, hasTools);
+  const directModel = modelForRole(routedModels, agent === null ? null : (agent as string));
 
   const endpoint = getConfiguredEndpoint() ?? resolveTrustedEndpoint();
   if (endpoint.kind !== "trusted") return safeState("unavailable");
@@ -204,7 +206,7 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
     if (hasTools && toolRunner !== null) {
       responseLimit = MAX_TOOL_RESPONSE_CHARS;
       const ask = async (messages: readonly ChatMessage[]): Promise<string | null> => {
-        if (hasAgent && agentAsk !== null) return agentAsk(agent as string, flattenTranscript(messages), models ?? undefined);
+        if (hasAgent && agentAsk !== null) return agentAsk(agent as string, flattenTranscript(messages), routedModels);
         const stepController = new AbortController();
         const stepTimer = setTimeout(() => stepController.abort(), SEND_TIMEOUT_MS);
         try {

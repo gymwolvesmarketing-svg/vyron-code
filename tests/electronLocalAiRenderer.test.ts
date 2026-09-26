@@ -4,7 +4,7 @@ import path from "node:path";
 import { ready, setup, errorsOf, html, rendererSource, modelSource, type Harness } from "./workspaceHarness";
 
 /** The default per-slot model choice the settings start with; every request carries it. */
-const MODELS = { assistant: "vyron-assistant", code: "vyron-code", research: "vyron-research" };
+const MODELS = { assistant: "vyron-assistant", code: "vyron-code", research: "vyron-research", tools: "vyron-code" };
 
 // Workspace product tests: the real renderer.html + workspace-model + renderer.ts running in jsdom
 // against a fake `window.vyronDesktop` bridge.

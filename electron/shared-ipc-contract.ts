@@ -281,7 +281,7 @@ export interface HermesTaskRequest {
   /** Optional: run with approved tools (workspace folder + native approval dialogs). Only the literal `true`. */
   readonly tools?: boolean;
   /** Optional per-slot model combos (fixed OmniRoute combo names, validated by the main process). */
-  readonly models?: { readonly assistant?: string; readonly code?: string; readonly research?: string };
+  readonly models?: { readonly assistant?: string; readonly code?: string; readonly research?: string; readonly tools?: string };
 }
 
 /**

@@ -21,7 +21,7 @@ type WsPlanMode = "standard" | "plan" | "deep";
 type WsTerminalMode = "off" | "suggest";
 /** A model combo of the local router (OmniRoute), or "" for the Hermes default. Mirrors electron/modelRouting.ts. */
 type WsModelId = "" | "vyron-assistant" | "vyron-code" | "vyron-research";
-type WsModelSlot = "assistant" | "code" | "research";
+type WsModelSlot = "assistant" | "code" | "research" | "tools";
 type WsModelChoice = Record<WsModelSlot, WsModelId>;
 
 type WsWorkMode = "local" | "brief";
@@ -149,6 +149,7 @@ const VyronModel = (() => {
     { id: "assistant", label: "Asistan", description: "Genel yanıtlar, planlama ve görev yönetimi" },
     { id: "code", label: "Kod", description: "Kod yazan, inceleyen ve test eden Managers" },
     { id: "research", label: "Araştırma", description: "Araştırmacı Managers" },
+    { id: "tools", label: "Araçlı görevler", description: "Çalışma klasöründe dosya okuyup yazan görevler (araç protokolüne uyan bir grup seç)" },
   ];
   const MODEL_OPTIONS: ReadonlyArray<{ id: WsModelId; label: string }> = [
     { id: "", label: "Varsayılan (Hermes)" },
@@ -281,7 +282,7 @@ const VyronModel = (() => {
   }
 
   function defaultModels(): WsModelChoice {
-    return { assistant: "vyron-assistant", code: "vyron-code", research: "vyron-research" };
+    return { assistant: "vyron-assistant", code: "vyron-code", research: "vyron-research", tools: "vyron-code" };
   }
   function sanitizeModels(raw: unknown): WsModelChoice {
     const out = defaultModels();

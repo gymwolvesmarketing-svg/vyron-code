@@ -293,14 +293,14 @@ describe("search, drafts, prompts and answers", () => {
 describe("model choice per slot", () => {
   it("starts with the three Vyron combos and offers exactly the fixed options", () => {
     const state = model.defaultState();
-    expect(state.models).toEqual({ assistant: "vyron-assistant", code: "vyron-code", research: "vyron-research" });
+    expect(state.models).toEqual({ assistant: "vyron-assistant", code: "vyron-code", research: "vyron-research", tools: "vyron-code" });
     expect((model as any).MODEL_OPTIONS.map((o: any) => o.id)).toEqual(["", "vyron-assistant", "vyron-code", "vyron-research"]);
-    expect((model as any).MODEL_SLOTS.map((s: any) => s.id)).toEqual(["assistant", "code", "research"]);
+    expect((model as any).MODEL_SLOTS.map((s: any) => s.id)).toEqual(["assistant", "code", "research", "tools"]);
   });
 
   it("keeps a valid saved choice and falls back to the default for anything else", () => {
     const raw = { ...model.defaultState(), models: { assistant: "", code: "gpt-4o", research: "vyron-code", extra: "x" } };
-    expect(model.sanitizeState(JSON.parse(JSON.stringify(raw))).models).toEqual({ assistant: "", code: "vyron-code", research: "vyron-code" });
+    expect(model.sanitizeState(JSON.parse(JSON.stringify(raw))).models).toEqual({ assistant: "", code: "vyron-code", research: "vyron-code", tools: "vyron-code" });
     const old = JSON.parse(JSON.stringify(model.defaultState()));
     delete old.models;
     expect(model.sanitizeState(old).models).toEqual(model.defaultState().models);

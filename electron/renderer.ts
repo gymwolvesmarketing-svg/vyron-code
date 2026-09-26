@@ -34,7 +34,7 @@ interface HermesTaskRequest {
   readonly agent?: string;
   readonly project?: string;
   readonly tools?: boolean;
-  readonly models?: { readonly assistant?: string; readonly code?: string; readonly research?: string };
+  readonly models?: { readonly assistant?: string; readonly code?: string; readonly research?: string; readonly tools?: string };
 }
 
 interface DesktopLocalAiApi {
@@ -1960,8 +1960,8 @@ async function runTurn(taskId: string, turn: Turn): Promise<void> {
 }
 
 /** The slots the user chose a model group for (the default "" is left out: the main process then uses the Hermes default). */
-function chosenModels(): { assistant?: string; code?: string; research?: string } | null {
-  const out: { assistant?: string; code?: string; research?: string } = {};
+function chosenModels(): { assistant?: string; code?: string; research?: string; tools?: string } | null {
+  const out: { assistant?: string; code?: string; research?: string; tools?: string } = {};
   for (const slot of VyronModel.MODEL_SLOTS) {
     const value = ws.models[slot.id];
     if (value !== "") out[slot.id] = value;

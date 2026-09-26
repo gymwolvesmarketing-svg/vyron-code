@@ -52,7 +52,7 @@ interface HermesTaskRequest {
   readonly agent?: string;
   readonly project?: string;
   readonly tools?: boolean;
-  readonly models?: { readonly assistant?: string; readonly code?: string; readonly research?: string };
+  readonly models?: { readonly assistant?: string; readonly code?: string; readonly research?: string; readonly tools?: string };
 }
 
 interface DesktopLocalAiApi {

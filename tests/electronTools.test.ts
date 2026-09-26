@@ -12,6 +12,7 @@ import {
   MAX_WRITE_CHARS,
   TOOL_PROTOCOL,
   TOOL_REMINDER,
+  TOOL_REMINDER_FINAL,
   firstToolMessage,
   approvalRequest,
   boundOutput,
@@ -360,13 +361,14 @@ describe("runToolLoop", () => {
 });
 
 describe("challenging a first plain reply", () => {
-  it("challenges a first plain reply once, and a task that needs no tool simply repeats its answer", async () => {
-    const { deps, seen, executed } = makeDeps(["Doğrudan yanıt", "Doğrudan yanıt (tekrar)"]);
+  it("challenges a plain reply (twice at most), and a task that needs no tool simply repeats its answer", async () => {
+    const { deps, seen, executed } = makeDeps(["Doğrudan yanıt", "Doğrudan yanıt (tekrar)", "Doğrudan yanıt (son)"]);
     const result = await runToolLoop(deps, "görev");
-    expect(seen).toHaveLength(2);
+    expect(seen).toHaveLength(3);
     expect(seen[1]!.at(-1)!.content).toBe(TOOL_REMINDER);
+    expect(seen[2]!.at(-1)!.content).toBe(TOOL_REMINDER_FINAL);
     expect(executed).toHaveLength(0);
-    expect(result.ok && result.text.startsWith("Doğrudan yanıt (tekrar)")).toBe(true);
+    expect(result.ok && result.text.startsWith("Doğrudan yanıt (son)")).toBe(true);
     expect(result.ok && result.text).toContain("Araç kullanılmadı");
   });
 
@@ -383,13 +385,23 @@ describe("challenging a first plain reply", () => {
     expect(result.ok && result.text).toContain("✓ yazma notlar.txt");
   });
 
-  it("reminds only once: a second plain reply stands with the honest 'no tool used' line", async () => {
-    const { deps, seen, executed } = makeDeps(["Araç erişimim yok.", "Gerçekten erişimim yok, üzgünüm."]);
+  it("reminds at most twice: a third plain reply stands with the honest 'no tool used' line", async () => {
+    const { deps, seen, executed } = makeDeps(["Araç erişimim yok.", "Gerçekten erişimim yok.", "Üzgünüm, erişimim yok."]);
     const result = await runToolLoop(deps, "g");
-    expect(seen).toHaveLength(2);
+    expect(seen).toHaveLength(3);
     expect(executed).toHaveLength(0);
-    expect(result.ok && result.text).toContain("Gerçekten erişimim yok");
+    expect(result.ok && result.text).toContain("Üzgünüm, erişimim yok");
     expect(result.ok && result.text).toContain("Araç kullanılmadı");
+  });
+
+  it("a stubborn model that refuses once and then follows the second, explicit reminder ends up using the tool", async () => {
+    const { deps, seen, executed } = makeDeps(["Bu ortamda araç köprüsüne erişimim yok.", "Yine erişimim yok.", '{"tool":"list_dir","path":"."}', "Klasörde bir dosya var."]);
+    const result = await runToolLoop(deps, "klasörü tara");
+    expect(seen).toHaveLength(4);
+    expect(seen[2]!.at(-1)!.content).toBe(TOOL_REMINDER_FINAL);
+    expect(TOOL_REMINDER_FINAL).toContain('{"tool":"list_dir","path":"."}');
+    expect(executed.map((c) => c.tool)).toEqual(["list_dir"]);
+    expect(result.ok && result.text).toContain("✓ listeleme .");
   });
 
   it("does not remind after a tool has already been used", async () => {

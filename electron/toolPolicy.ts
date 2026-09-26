@@ -66,6 +66,14 @@ export const TOOL_REMINDER =
   "Yanıtını yeniden değerlendir. Dosya listeleme, okuma, yazma ya da komut çalıştırma gereken bir görevse bunları yalnızca araç köprüsüyle yapabilirsin; kendin yapmış ya da 'oluşturuldu' demiş gibi anlatma. " +
   "Bir araç gerekiyorsa YALNIZCA ilk adımın JSON'unu yaz, başka metin ekleme. Görev gerçekten araç gerektirmiyorsa aynı yanıtı kısaca yinele.";
 
+/**
+ * The second and last reminder, for a model that still answers "I have no access". It states plainly that the bridge is
+ * real and shows the exact first step, which is what finally moves a stubborn model to write the JSON.
+ */
+export const TOOL_REMINDER_FINAL =
+  "Araç köprüsü bu konuşmada GERÇEKTEN çalışıyor: yazdığın JSON'u Vyron Code çalıştırır ve sonucu bir sonraki mesajda sana verir. Bu bir sohbet değil, gerçek bir çalışma klasörü. 'Erişimim yok' ya da 'taranmış gibi davranamam' deme. " +
+  'Şimdi YALNIZCA tek bir JSON yaz; klasörü görmek için ilk adım: {"tool":"list_dir","path":"."}';
+
 /** The first message of a tool run: the protocol followed by the user's task. */
 /** `overview` is a bounded, read-only listing of the workspace folder that the main process took itself (no model involved). */
 export function firstToolMessage(task: string, overview?: string | null): string {

@@ -12,6 +12,7 @@ import {
   boundOutput,
   describeCall,
   TOOL_REMINDER,
+  TOOL_REMINDER_FINAL,
   firstToolMessage,
   needsApproval,
   parseToolCall,
@@ -48,19 +49,19 @@ export type ToolLoopResult = { readonly ok: true; readonly text: string } | { re
 export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<ToolLoopResult> {
   let messages: ChatMessage[] = [{ role: "user", content: firstToolMessage(task, deps.workspace() === null ? null : (deps.overview?.() ?? null)) }];
   const log: LogEntry[] = [];
-  let reminded = false;
+  let reminders = 0;
 
   for (let step = 0; step < MAX_TOOL_STEPS; step += 1) {
     const reply = await deps.ask(trimTranscript(messages));
     if (reply === null) return interrupted(log);
     const parsed = parseToolCall(reply);
     if (parsed.kind === "final") {
-      // A first plain reply is challenged once (the local model often invents "done" or "no tools"); after that it stands.
-      if (!reminded && log.length === 0) {
-        reminded = true;
+      // A plain reply before any tool ran is challenged twice (models invent "done" or "no tools"); after that it stands.
+      if (reminders < 2 && log.length === 0) {
+        reminders += 1;
         messages = messages.concat([
           { role: "assistant", content: reply },
-          { role: "user", content: TOOL_REMINDER },
+          { role: "user", content: reminders === 1 ? TOOL_REMINDER : TOOL_REMINDER_FINAL },
         ]);
         continue;
       }

@@ -1,3 +1,4 @@
+import { modelForRole, parseModelChoice, withToolsRouting } from "../electron/modelRouting";
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { getTaskSubmissionState, sendTask, clearTaskSubmission, setTaskAgentExecutor, setToolRunner, setAgentAsk } from "../electron/hermesTaskSubmission";
 import { beginAuthorization, clearAuthorization } from "../electron/hermesAuthorization";
@@ -641,5 +642,58 @@ describe("sendTask - per-role model choice", () => {
     setTaskAgentExecutor(executor);
     await sendTask({ draft: VALID_DRAFT, agent: "coder", models: MODELS });
     expect(executor).toHaveBeenCalledWith("coder", VALID_DRAFT, undefined, MODELS);
+  });
+});
+
+describe("tasks with tools use the tools model for every role", () => {
+  const CHOICE = { assistant: "vyron-assistant", code: "vyron-code", research: "vyron-research", tools: "vyron-code" };
+
+  it("withToolsRouting: without tools nothing changes; with tools every role gets the tools model", () => {
+    expect(withToolsRouting(null, true)).toBeUndefined();
+    expect(withToolsRouting(CHOICE as never, false)).toEqual(CHOICE);
+    const routed = withToolsRouting(CHOICE as never, true)!;
+    for (const role of ["task-orchestrator", "planner", "researcher", "coder", "reviewer", null]) expect(modelForRole(routed, role)).toBe("vyron-code");
+    // No tools slot chosen: the per-role choice stays.
+    const noTools = { assistant: "vyron-assistant", code: "vyron-code" } as never;
+    expect(withToolsRouting(noTools, true)).toEqual(noTools);
+  });
+
+  it("parseModelChoice accepts the tools slot and still refuses anything else", () => {
+    expect(parseModelChoice({ tools: "vyron-code" })).toEqual({ tools: "vyron-code" });
+    expect(parseModelChoice({ tools: "gpt-4o" })).toBeNull();
+    expect(parseModelChoice({ tool: "vyron-code" })).toBeNull();
+  });
+
+  it("a direct task with tools is asked with the tools model, a plain one with the assistant model", async () => {
+    await authorizeAndConfigure();
+    setToolRunner(async (_task, ask) => {
+      await ask([{ role: "user", content: "x" }]);
+      return { ok: true as const, text: "bitti" };
+    });
+    fetchMock.mockResolvedValueOnce(okResponse("yanıt"));
+    await sendTask({ draft: VALID_DRAFT, tools: true, models: CHOICE });
+    expect(JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body).model).toBe("vyron-code");
+    fetchMock.mockResolvedValueOnce(okResponse("yanıt"));
+    await sendTask({ draft: VALID_DRAFT, models: CHOICE });
+    expect(JSON.parse((fetchMock.mock.calls[1]![1] as { body: string }).body).model).toBe("vyron-assistant");
+    setToolRunner(null);
+  });
+
+  it("a Manager task with tools passes the tools model for its role (Multi-Model Planner would otherwise use the assistant model)", async () => {
+    await authorizeAndConfigure();
+    const asked = vi.fn(async () => "yanıt");
+    setAgentAsk(asked);
+    setTaskAgentExecutor(async () => ({ ok: false as const }));
+    setToolRunner(async (_task, ask) => {
+      await ask([{ role: "user", content: "x" }]);
+      return { ok: true as const, text: "bitti" };
+    });
+    await sendTask({ draft: VALID_DRAFT, agent: "task-orchestrator", tools: true, models: CHOICE });
+    expect(asked).toHaveBeenCalledTimes(1);
+    const passed = (asked.mock.calls[0] as unknown as [string, string, Record<string, string>])[2];
+    expect(passed).toEqual({ assistant: "vyron-code", code: "vyron-code", research: "vyron-code", tools: "vyron-code" });
+    setAgentAsk(null);
+    setTaskAgentExecutor(null);
+    setToolRunner(null);
   });
 });
