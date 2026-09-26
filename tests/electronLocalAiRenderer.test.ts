@@ -1425,6 +1425,32 @@ describe("managers run through Ruflo roles", () => {
     expect(h.calls.send[1]!.draft).not.toContain("Rol:");
   });
 
+  it("a finished plan offers 'Coder'a devret': it selects the Coder and puts the plan into the composer, unsent", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "Multi-Model Planner"));
+    await sendTask(h, "Plan yap");
+    const button = [...h.doc.querySelectorAll<HTMLElement>(".turn-actions button")].find((b) => b.textContent === "Coder'a devret");
+    expect(button).toBeTruthy();
+    h.click(button!);
+    const input = h.el("task-input") as HTMLTextAreaElement;
+    expect(input.value).toContain("Plan:");
+    expect(input.value).toContain("Yanıt metni");
+    expect(h.el("chips").textContent).toContain("Coder");
+    expect(h.calls.send).toHaveLength(1);
+    h.key(input, "Enter");
+    await h.flush();
+    expect(h.calls.send[1]!.agent).toBe("coder");
+    expect(h.calls.send[1]!.draft).toContain("Yanıt metni");
+  });
+
+  it("a plain (non-planner) answer has no handoff button", async () => {
+    const h = await start();
+    await sendTask(h, "Merhaba");
+    expect(h.doc.querySelectorAll(".turn-actions button")).toHaveLength(0);
+  });
+
   it("no manager selected sends the plain draft with no agent", async () => {
     const h = await start();
     await sendTask(h, "Yalnız metin");

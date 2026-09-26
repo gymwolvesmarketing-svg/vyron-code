@@ -637,6 +637,16 @@ const VyronModel = (() => {
     return firstLine.length > 48 ? firstLine.slice(0, 47).trimEnd() + "…" : firstLine;
   }
 
+  const HANDOFF_INTRO = "Aşağıdaki planı sırayla uygula. Her adımı bitirdikçe ne yaptığını kısaca belirt; belirsiz bir nokta olursa varsayımını yaz ve devam et.";
+
+  /** The task text that hands a finished plan to the Coder; the plan is cut so the whole text stays within the draft limit. */
+  function composeHandoff(plan: string): string {
+    const head = HANDOFF_INTRO + "\n\nPlan:\n";
+    const room = MAX_DRAFT_LENGTH - head.length;
+    const body = plan.trim();
+    return head + (body.length > room ? body.slice(0, room - 1) + "…" : body);
+  }
+
   function draftProblem(text: string): WsDraftProblem {
     if (text.trim().length === 0) return "empty";
     if (text.length > MAX_DRAFT_LENGTH) return "too_long";
@@ -770,6 +780,7 @@ const VyronModel = (() => {
     removeSite,
     titleFromPrompt,
     draftProblem,
+    composeHandoff,
     composePrompt,
     formatFileSize,
     parseResponse,

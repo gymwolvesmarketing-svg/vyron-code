@@ -1349,9 +1349,26 @@ function renderTurn(turn: Turn): HTMLElement {
     block.appendChild(make("div", "block-label", "Yanıt"));
     appendResponse(block, turn.text);
     if (turn.truncated) block.appendChild(make("p", "truncated-note", "Yanıt kısaltıldı."));
+    // A finished plan (Planner / Multi-Model Planner) can be handed to the Coder with one click.
+    const coder = ws.managers.find((m) => m.agent === "coder" && !m.custom);
+    if (coder && (turn.agent === "task-orchestrator" || turn.agent === "planner")) {
+      const actions = make("div", "turn-actions");
+      actions.appendChild(makeButton("btn small", "Coder'a devret", () => handOffToCoder(coder.id, turn.text ?? "")));
+      block.appendChild(actions);
+    }
     wrap.appendChild(block);
   }
   return wrap;
+}
+
+/** Selects the Coder and puts the plan into the composer as a task; the user reads it and sends it (Enter). */
+function handOffToCoder(coderId: string, plan: string): void {
+  if (sendInFlight) return;
+  setManager(coderId);
+  const input = must<HTMLTextAreaElement>("task-input");
+  input.value = VyronModel.composeHandoff(plan);
+  updateComposer();
+  focusSoon(input);
 }
 
 function appendResponse(container: HTMLElement, text: string): void {
