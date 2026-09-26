@@ -156,6 +156,9 @@ const ICONS: Record<string, string[]> = {
   monitor: ["r:3,4,18,12,2", "p:M8 20h8M12 16v4"],
   "list-check": ["p:M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"],
   "arrow-up": ["p:M12 19V5M5 12l7-7 7 7"],
+  "arrow-down": ["p:M12 5v14M5 12l7 7 7-7"],
+  pencil: ["p:M4 20h4L19 9l-4-4L4 16v4z"],
+  dots: ["c:6,12,1.6", "c:12,12,1.6", "c:18,12,1.6"],
   paperclip: ["p:M20 11l-8.5 8.5a5 5 0 01-7-7L13 4a3.5 3.5 0 015 5l-8.5 8.5a2 2 0 01-3-3L14 7"],
   bot: ["r:5,8,14,11,3", "p:M12 4v4M9 13v1M15 13v1M3 13v2M21 13v2"],
   terminal: ["p:M4 6l6 6-6 6M12 19h8"],
@@ -898,6 +901,206 @@ function renderSidebarTabs(): void {
   must("panel-managers").hidden = projectsActive;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Editing the lists: rename, move and delete tasks and projects; reorder projects
+// ---------------------------------------------------------------------------------------------
+
+let dragProjectId: string | null = null;
+
+function makeConfirmItem(label: string, confirmLabel: string, onConfirm: () => void): HTMLButtonElement {
+  return makeMenuItem({
+    label,
+    icon: "trash",
+    submenu: (item) =>
+      openMenuWith(
+        "confirm-sub",
+        item,
+        (menu) => {
+          menu.setAttribute("aria-label", "Onay");
+          menu.appendChild(makeMenuItem({ label: confirmLabel, icon: "trash", onSelect: onConfirm }));
+          menu.appendChild(makeMenuItem({ label: "Vazgeç", icon: "x" }));
+        },
+        1,
+        "right",
+      ),
+  });
+}
+
+function deleteTaskById(taskId: string): void {
+  if (!VyronModel.removeTask(ws, taskId)) return;
+  turnsByTask.delete(taskId);
+  saveTurns();
+  persist();
+  renderAll();
+  renderTaskView();
+}
+
+function deleteProjectById(projectId: string): void {
+  const removed = VyronModel.removeProject(ws, projectId);
+  for (const taskId of removed) turnsByTask.delete(taskId);
+  saveTurns();
+  persist();
+  void callTools("clearWorkspace", projectId);
+  renderAll();
+  renderTaskView();
+}
+
+function openTaskMenu(trigger: HTMLElement, task: WsTask): void {
+  openMenuWith("row-more", trigger, (menu) => {
+    menu.setAttribute("aria-label", "Görev seçenekleri");
+    menu.appendChild(
+      makeMenuItem({
+        label: "Yeniden adlandır",
+        icon: "pencil",
+        onSelect: () =>
+          window.setTimeout(
+            () =>
+              openNameForm("rename", trigger, {
+                title: "Görevi yeniden adlandır",
+                placeholder: "Görev adı",
+                submit: "Kaydet",
+                initial: task.title,
+                maxLength: 80,
+                onSubmit: (name) => {
+                  if (!VyronModel.renameTask(ws, task.id, name)) return false;
+                  persist();
+                  renderAll();
+                  return true;
+                },
+              }),
+            0,
+          ),
+      }),
+    );
+    menu.appendChild(
+      makeMenuItem({
+        label: "Projeye taşı",
+        icon: "folder",
+        submenu: (item) =>
+          openMenuWith(
+            "move-sub",
+            item,
+            (sub) => {
+              sub.setAttribute("aria-label", "Projeye taşı");
+              sub.appendChild(
+                makeMenuItem({
+                  label: "Projesiz",
+                  role: "menuitemradio",
+                  checked: task.projectId === null,
+                  onSelect: () => {
+                    VyronModel.moveTask(ws, task.id, null);
+                    persist();
+                    renderAll();
+                  },
+                }),
+              );
+              for (const project of ws.projects) {
+                sub.appendChild(
+                  makeMenuItem({
+                    label: project.name,
+                    role: "menuitemradio",
+                    checked: task.projectId === project.id,
+                    onSelect: () => {
+                      VyronModel.moveTask(ws, task.id, project.id);
+                      persist();
+                      renderAll();
+                    },
+                  }),
+                );
+              }
+            },
+            1,
+            "right",
+          ),
+      }),
+    );
+    menu.appendChild(makeConfirmItem("Sil", "Evet, görevi sil", () => deleteTaskById(task.id)));
+  });
+}
+
+function openProjectRowMenu(trigger: HTMLElement, project: WsProject): void {
+  openMenuWith("row-more", trigger, (menu) => {
+    menu.setAttribute("aria-label", "Proje seçenekleri");
+    menu.appendChild(
+      makeMenuItem({
+        label: "Yeniden adlandır",
+        icon: "pencil",
+        onSelect: () =>
+          window.setTimeout(
+            () =>
+              openNameForm("rename", trigger, {
+                title: "Projeyi yeniden adlandır",
+                placeholder: "Proje adı",
+                submit: "Kaydet",
+                initial: project.name,
+                onSubmit: (name) => {
+                  if (!VyronModel.renameProject(ws, project.id, name)) return false;
+                  persist();
+                  renderAll();
+                  return true;
+                },
+              }),
+            0,
+          ),
+      }),
+    );
+    const index = ws.projects.findIndex((p) => p.id === project.id);
+    menu.appendChild(
+      makeMenuItem({
+        label: "Yukarı taşı",
+        icon: "arrow-up",
+        disabled: index <= 0,
+        onSelect: () => {
+          VyronModel.moveProject(ws, project.id, -1);
+          persist();
+          renderProjects();
+        },
+      }),
+    );
+    menu.appendChild(
+      makeMenuItem({
+        label: "Aşağı taşı",
+        icon: "arrow-down",
+        disabled: index < 0 || index >= ws.projects.length - 1,
+        onSelect: () => {
+          VyronModel.moveProject(ws, project.id, 1);
+          persist();
+          renderProjects();
+        },
+      }),
+    );
+    menu.appendChild(makeConfirmItem("Projeyi sil", "Evet, projeyi ve görevlerini sil", () => deleteProjectById(project.id)));
+  });
+}
+
+function makeMoreButton(label: string, open: (trigger: HTMLElement) => void): HTMLButtonElement {
+  const more = make("button", "icon-btn small row-more");
+  more.type = "button";
+  more.setAttribute("aria-label", label);
+  more.setAttribute("aria-haspopup", "menu");
+  more.title = "Seçenekler";
+  more.appendChild(makeIcon("dots"));
+  more.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleRootMenu("row-more", more, () => open(more));
+  });
+  return more;
+}
+
+/** One task line: the task button plus its options menu. */
+function makeTaskRow(task: WsTask): HTMLElement {
+  const row = make("div", "task-row");
+  const item = make("button", "task-item", task.title);
+  item.type = "button";
+  item.title = task.title;
+  item.dataset.taskId = task.id;
+  if (ws.activeTaskId === task.id) item.setAttribute("aria-current", "true");
+  item.addEventListener("click", () => openTask(task.id));
+  row.appendChild(item);
+  row.appendChild(makeMoreButton(task.title + " seçenekleri", (trigger) => openTaskMenu(trigger, task)));
+  return row;
+}
+
 function renderProjects(): void {
   const list = must("project-list");
   clearNode(list);
@@ -953,6 +1156,38 @@ function renderProjects(): void {
       add.appendChild(makeIcon("plus"));
       add.addEventListener("click", () => startTaskInProject(project.id));
       row.appendChild(add);
+      row.appendChild(makeMoreButton(project.name + " seçenekleri", (trigger) => openProjectRowMenu(trigger, project)));
+      // Drag a project onto another one to put it in front of it.
+      row.draggable = true;
+      row.addEventListener("dragstart", (event) => {
+        dragProjectId = project.id;
+        wrap.classList.add("dragging");
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", project.id);
+        }
+      });
+      row.addEventListener("dragend", () => {
+        dragProjectId = null;
+        wrap.classList.remove("dragging");
+        for (const node of Array.from(document.querySelectorAll(".drop-target"))) node.classList.remove("drop-target");
+      });
+      wrap.addEventListener("dragover", (event) => {
+        if (dragProjectId === null || dragProjectId === project.id) return;
+        event.preventDefault();
+        wrap.classList.add("drop-target");
+      });
+      wrap.addEventListener("dragleave", () => wrap.classList.remove("drop-target"));
+      wrap.addEventListener("drop", (event) => {
+        event.preventDefault();
+        wrap.classList.remove("drop-target");
+        const moving = dragProjectId;
+        dragProjectId = null;
+        if (moving !== null && VyronModel.moveProjectBefore(ws, moving, project.id)) {
+          persist();
+          renderProjects();
+        }
+      });
     }
     wrap.appendChild(row);
 
@@ -972,15 +1207,7 @@ function renderProjects(): void {
       if (group.tasks.length === 0) {
         taskList.appendChild(make("p", "task-empty", "Henüz görev yok"));
       }
-      for (const task of visible) {
-        const item = make("button", "task-item", task.title);
-        item.type = "button";
-        item.title = task.title;
-        item.dataset.taskId = task.id;
-        if (ws.activeTaskId === task.id) item.setAttribute("aria-current", "true");
-        item.addEventListener("click", () => openTask(task.id));
-        taskList.appendChild(item);
-      }
+      for (const task of visible) taskList.appendChild(makeTaskRow(task));
       if (project && !searching && (hidden > 0 || (project.showAll && group.tasks.length > VyronModel.COLLAPSED_TASK_COUNT))) {
         const more = make("button", "task-more", project.showAll ? "Daha az göster" : "Daha Fazla");
         more.type = "button";
@@ -999,14 +1226,29 @@ function renderProjects(): void {
   must("project-search-empty").hidden = !(searching && shown === 0);
 }
 
+const collapsedManagers = new Set<string>();
+
+/** Starts a fresh task for a Manager (it becomes the selected Manager). */
+function startManagerTask(managerId: string): void {
+  ws.selectedManagerId = managerId;
+  startTaskInProject(ws.activeProjectId);
+  renderManagers();
+  renderChips();
+}
+
 function renderManagers(): void {
   const list = must("manager-list");
   clearNode(list);
   const searching = VyronModel.normalizeQuery(sidebarQuery).length > 0;
   let shown = 0;
   for (const manager of ws.managers) {
-    if (searching && !VyronModel.matchesQuery(sidebarQuery, manager.name, manager.description)) continue;
+    const jobs = VyronModel.tasksOfManager(ws, manager.id);
+    const matchingJobs = jobs.filter((t) => VyronModel.matchesQuery(sidebarQuery, t.title));
+    if (searching && !VyronModel.matchesQuery(sidebarQuery, manager.name, manager.description) && matchingJobs.length === 0) continue;
     shown += 1;
+    const group = make("div", "manager-group");
+    const expanded = searching ? matchingJobs.length > 0 : !collapsedManagers.has(manager.id);
+    group.dataset.expanded = expanded ? "true" : "false";
     const row = make("div", "manager-row");
     const isSelected = ws.selectedManagerId === manager.id;
     if (isSelected || (ws.view === "manager" && managerViewId === manager.id)) row.classList.add("is-active");
@@ -1021,8 +1263,34 @@ function renderManagers(): void {
     main.appendChild(make("span", "manager-name", manager.name));
     main.appendChild(make("span", "manager-tag", isSelected ? "Seçili" : manager.tag));
     main.addEventListener("click", () => openManager(manager.id));
+    if (jobs.length > 0) {
+      const caret = make("button", "icon-btn small manager-caret");
+      caret.type = "button";
+      caret.setAttribute("aria-label", manager.name + " işlerini " + (expanded ? "daralt" : "genişlet"));
+      caret.setAttribute("aria-expanded", expanded ? "true" : "false");
+      caret.appendChild(makeIcon(expanded ? "chevron-down" : "chevron-right"));
+      caret.addEventListener("click", () => {
+        if (collapsedManagers.has(manager.id)) collapsedManagers.delete(manager.id);
+        else collapsedManagers.add(manager.id);
+        renderManagers();
+      });
+      row.appendChild(caret);
+    }
     row.appendChild(main);
-    list.appendChild(row);
+    const add = make("button", "icon-btn small project-add");
+    add.type = "button";
+    add.setAttribute("aria-label", manager.name + " ile yeni görev");
+    add.title = "Yeni görev";
+    add.appendChild(makeIcon("plus"));
+    add.addEventListener("click", () => startManagerTask(manager.id));
+    row.appendChild(add);
+    group.appendChild(row);
+    if (expanded && jobs.length > 0) {
+      const taskList = make("div", "task-list");
+      for (const job of searching ? matchingJobs : jobs) taskList.appendChild(makeTaskRow(job));
+      group.appendChild(taskList);
+    }
+    list.appendChild(group);
   }
   must("manager-search-empty").hidden = !(searching && shown === 0);
 }
@@ -1124,6 +1392,7 @@ function openTask(taskId: string): void {
   if (!task) return;
   ws.activeTaskId = task.id;
   ws.activeProjectId = task.projectId;
+  if (task.managerId !== null) ws.selectedManagerId = task.managerId;
   persist();
   showView("new-task");
   focusSoon(el("task-input"));
@@ -1540,7 +1809,7 @@ async function sendCurrent(): Promise<void> {
   const composed = composedPrompt(raw);
   let task = VyronModel.findTask(ws, ws.activeTaskId);
   if (!task) {
-    task = VyronModel.createTask(ws, ws.activeProjectId, raw);
+    task = VyronModel.createTask(ws, ws.activeProjectId, raw, ws.selectedManagerId);
     ws.activeTaskId = task.id;
     const project = VyronModel.findProject(ws, task.projectId);
     if (project) project.expanded = true;
@@ -1725,7 +1994,7 @@ function openModeMenu(trigger: HTMLElement): void {
   });
 }
 
-function openNameForm(id: string, trigger: HTMLElement, options: { title: string; placeholder: string; submit: string; withDescription?: boolean; withRole?: boolean; onSubmit: (name: string, description: string, role: string) => boolean }): void {
+function openNameForm(id: string, trigger: HTMLElement, options: { title: string; placeholder: string; submit: string; initial?: string; maxLength?: number; withDescription?: boolean; withRole?: boolean; onSubmit: (name: string, description: string, role: string) => boolean }): void {
   closeAllMenus(false);
   const panel = make("div", "menu panel-form");
   panel.setAttribute("role", "dialog");
@@ -1734,9 +2003,10 @@ function openNameForm(id: string, trigger: HTMLElement, options: { title: string
   form.appendChild(make("div", "menu-heading", options.title));
   const name = make("input", "text-input");
   name.type = "text";
-  name.maxLength = 40;
+  name.maxLength = options.maxLength ?? 40;
   name.autocomplete = "off";
   name.placeholder = options.placeholder;
+  if (options.initial) name.value = options.initial;
   name.setAttribute("aria-label", options.placeholder);
   form.appendChild(name);
   let description: HTMLInputElement | null = null;
@@ -2389,6 +2659,15 @@ function renderManagerDetail(): void {
     );
   }
   box.appendChild(actions);
+  const jobs = VyronModel.tasksOfManager(ws, manager.id);
+  const section = make("div", "detail-jobs");
+  section.appendChild(make("h3", "detail-subtitle", "Yürüttüğü işler"));
+  if (jobs.length === 0) {
+    section.appendChild(make("p", "empty-note", "Bu manager henüz bir iş yürütmedi."));
+  } else {
+    for (const job of jobs) section.appendChild(makeTaskRow(job));
+  }
+  box.appendChild(section);
 }
 
 function renderResetControls(): void {

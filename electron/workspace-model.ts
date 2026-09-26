@@ -42,6 +42,8 @@ interface WsTask {
   projectId: string | null;
   title: string;
   createdAt: number;
+  /** The Manager that ran (or was chosen for) this task; null = a direct task. */
+  managerId: string | null;
 }
 
 interface WsManager {
@@ -275,6 +277,7 @@ const VyronModel = (() => {
       projectId,
       title,
       createdAt: 1_700_000_000_000 - index * 60_000,
+      managerId: null,
     }));
     return { projects, tasks };
   }
@@ -358,7 +361,8 @@ const VyronModel = (() => {
         if (!id || !title) return null;
         const projectId = typeof item.projectId === "string" && projectIds.has(item.projectId) ? item.projectId : null;
         const createdAt = typeof item.createdAt === "number" && isFinite(item.createdAt) ? item.createdAt : 0;
-        return { id, projectId, title, createdAt };
+        const managerId = typeof item.managerId === "string" && item.managerId.length > 0 && item.managerId.length <= 80 ? item.managerId : null;
+        return { id, projectId, title, createdAt, managerId };
       },
       MAX_TASKS,
     );
@@ -429,6 +433,7 @@ const VyronModel = (() => {
       workMode: pick(raw.workMode, ["local", "brief"] as const, "local"),
       models: sanitizeModels(raw.models),
     };
+    for (const task of state.tasks) if (task.managerId !== null && !state.managers.some((m) => m.id === task.managerId)) task.managerId = null;
     if (typeof raw.activeProjectId === "string" && state.projects.some((p) => p.id === raw.activeProjectId)) state.activeProjectId = raw.activeProjectId;
     if (typeof raw.selectedManagerId === "string" && state.managers.some((m) => m.id === raw.selectedManagerId)) state.selectedManagerId = raw.selectedManagerId;
     if (Array.isArray(raw.selectedSkillIds)) {
@@ -507,6 +512,79 @@ const VyronModel = (() => {
     return state.tasks.find((t) => t.id === id) ?? null;
   }
 
+  /** The tasks a Manager ran (newest first). */
+  function tasksOfManager(state: WsWorkspaceState, managerId: string): WsTask[] {
+    return state.tasks.filter((t) => t.managerId === managerId).sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  function renameProject(state: WsWorkspaceState, id: string, rawName: string): boolean {
+    const project = state.projects.find((p) => p.id === id);
+    const name = cleanName(rawName, 40);
+    if (!project || name === null) return false;
+    if (state.projects.some((p) => p.id !== id && normalizeQuery(p.name) === normalizeQuery(name))) return false;
+    project.name = name;
+    return true;
+  }
+
+  /** Removes a project together with its tasks; returns the ids of the removed tasks (empty when there was no such project). */
+  function removeProject(state: WsWorkspaceState, id: string): string[] {
+    if (!state.projects.some((p) => p.id === id)) return [];
+    const removed = state.tasks.filter((t) => t.projectId === id).map((t) => t.id);
+    state.projects = state.projects.filter((p) => p.id !== id);
+    state.tasks = state.tasks.filter((t) => t.projectId !== id);
+    if (state.activeProjectId === id) state.activeProjectId = null;
+    if (state.activeTaskId !== null && removed.indexOf(state.activeTaskId) >= 0) state.activeTaskId = null;
+    return removed;
+  }
+
+  /** Moves a project one place up (-1) or down (+1) in the list. */
+  function moveProject(state: WsWorkspaceState, id: string, delta: -1 | 1): boolean {
+    const from = state.projects.findIndex((p) => p.id === id);
+    const to = from + delta;
+    if (from < 0 || to < 0 || to >= state.projects.length) return false;
+    const [project] = state.projects.splice(from, 1);
+    state.projects.splice(to, 0, project!);
+    return true;
+  }
+
+  /** Drag and drop: puts a project right before another one (null = at the end). */
+  function moveProjectBefore(state: WsWorkspaceState, id: string, beforeId: string | null): boolean {
+    if (id === beforeId) return false;
+    const from = state.projects.findIndex((p) => p.id === id);
+    if (from < 0) return false;
+    const [project] = state.projects.splice(from, 1);
+    const at = beforeId === null ? state.projects.length : state.projects.findIndex((p) => p.id === beforeId);
+    if (at < 0) {
+      state.projects.splice(from, 0, project!);
+      return false;
+    }
+    state.projects.splice(at, 0, project!);
+    return true;
+  }
+
+  function renameTask(state: WsWorkspaceState, id: string, rawTitle: string): boolean {
+    const task = state.tasks.find((t) => t.id === id);
+    const title = cleanName(rawTitle, 80);
+    if (!task || title === null) return false;
+    task.title = title;
+    return true;
+  }
+
+  function removeTask(state: WsWorkspaceState, id: string): boolean {
+    if (!state.tasks.some((t) => t.id === id)) return false;
+    state.tasks = state.tasks.filter((t) => t.id !== id);
+    if (state.activeTaskId === id) state.activeTaskId = null;
+    return true;
+  }
+
+  /** Moves a task to another project (null = no project). */
+  function moveTask(state: WsWorkspaceState, id: string, projectId: string | null): boolean {
+    const task = state.tasks.find((t) => t.id === id);
+    if (!task || (projectId !== null && !state.projects.some((p) => p.id === projectId))) return false;
+    task.projectId = projectId;
+    return true;
+  }
+
   function tasksOfProject(state: WsWorkspaceState, projectId: string | null): WsTask[] {
     return state.tasks.filter((t) => t.projectId === projectId).sort((a, b) => b.createdAt - a.createdAt);
   }
@@ -533,8 +611,8 @@ const VyronModel = (() => {
     return project;
   }
 
-  function createTask(state: WsWorkspaceState, projectId: string | null, title: string): WsTask {
-    const task: WsTask = { id: newId("task"), projectId, title: titleFromPrompt(title), createdAt: Date.now() };
+  function createTask(state: WsWorkspaceState, projectId: string | null, title: string, managerId: string | null = null): WsTask {
+    const task: WsTask = { id: newId("task"), projectId, title: titleFromPrompt(title), createdAt: Date.now(), managerId };
     state.tasks.unshift(task);
     if (state.tasks.length > MAX_TASKS) state.tasks.length = MAX_TASKS;
     return task;
@@ -561,6 +639,7 @@ const VyronModel = (() => {
     const manager = state.managers.find((m) => m.id === id);
     if (!manager || !manager.custom) return false;
     state.managers = state.managers.filter((m) => m.id !== id);
+    for (const task of state.tasks) if (task.managerId === id) task.managerId = null;
     if (state.selectedManagerId === id) state.selectedManagerId = null;
     return true;
   }
@@ -767,6 +846,14 @@ const VyronModel = (() => {
     cleanName,
     createProject,
     createTask,
+    tasksOfManager,
+    renameProject,
+    removeProject,
+    moveProject,
+    moveProjectBefore,
+    renameTask,
+    removeTask,
+    moveTask,
     AGENT_ROLES,
     createManager,
     removeManager,

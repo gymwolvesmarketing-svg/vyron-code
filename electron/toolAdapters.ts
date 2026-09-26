@@ -242,8 +242,14 @@ export function createProductionToolRunner(getWindow: () => BrowserWindow | null
       return info();
     },
     clearWorkspace(projectId) {
-      clearCurrent();
-      if (isProjectId(projectId)) folders.remove(projectId);
+      if (isProjectId(projectId)) {
+        // Forgetting one project's folder drops the current grant only when that grant is this very folder.
+        const stored = folders.get(projectId);
+        folders.remove(projectId);
+        if (stored === null || stored === getCurrentCanonicalRoot()) clearCurrent();
+      } else {
+        clearCurrent();
+      }
       return info();
     },
     clearPermissions() {

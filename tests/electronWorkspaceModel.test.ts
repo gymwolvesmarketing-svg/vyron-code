@@ -317,3 +317,83 @@ describe("built-in managers survive older saves", () => {
     expect(loaded.managers.find((m: any) => m.id === "coder").agent).toBe("coder");
   });
 });
+
+describe("editing projects and tasks (pure model)", () => {
+  const m = model as any;
+
+  it("renames a project (not to an existing name) and a task", () => {
+    const state = m.defaultState();
+    expect(m.renameProject(state, "hangikargoo", "Kargo")).toBe(true);
+    expect(state.projects.find((p: any) => p.id === "hangikargoo").name).toBe("Kargo");
+    expect(m.renameProject(state, "hangikargoo", "  aetheris ")).toBe(false);
+    expect(m.renameProject(state, "yok", "X")).toBe(false);
+    expect(m.renameProject(state, "hangikargoo", "   ")).toBe(false);
+    const task = state.tasks[0];
+    expect(m.renameTask(state, task.id, "  Yeni ad ")).toBe(true);
+    expect(task.title).toBe("Yeni ad");
+    expect(m.renameTask(state, task.id, "")).toBe(false);
+  });
+
+  it("removes a project with its tasks and resets what pointed at it", () => {
+    const state = m.defaultState();
+    state.activeProjectId = "aetheris";
+    const some = state.tasks.find((t: any) => t.projectId === "aetheris");
+    state.activeTaskId = some.id;
+    const removed = m.removeProject(state, "aetheris");
+    expect(removed.length).toBeGreaterThan(3);
+    expect(state.projects.map((p: any) => p.id)).toEqual(["new-project", "hangikargoo"]);
+    expect(state.tasks.some((t: any) => t.projectId === "aetheris")).toBe(false);
+    expect(state.activeProjectId).toBeNull();
+    expect(state.activeTaskId).toBeNull();
+    expect(m.removeProject(state, "aetheris")).toEqual([]);
+  });
+
+  it("removes and moves a single task", () => {
+    const state = m.defaultState();
+    const task = state.tasks.find((t: any) => t.projectId === "aetheris");
+    expect(m.moveTask(state, task.id, "hangikargoo")).toBe(true);
+    expect(task.projectId).toBe("hangikargoo");
+    expect(m.moveTask(state, task.id, null)).toBe(true);
+    expect(task.projectId).toBeNull();
+    expect(m.moveTask(state, task.id, "yok")).toBe(false);
+    state.activeTaskId = task.id;
+    expect(m.removeTask(state, task.id)).toBe(true);
+    expect(state.activeTaskId).toBeNull();
+    expect(m.removeTask(state, task.id)).toBe(false);
+  });
+
+  it("reorders projects by step and by drag (before another, or to the end)", () => {
+    const state = m.defaultState();
+    const order = () => state.projects.map((p: any) => p.id);
+    expect(m.moveProject(state, "new-project", -1)).toBe(false);
+    expect(m.moveProject(state, "new-project", 1)).toBe(true);
+    expect(order()).toEqual(["aetheris", "new-project", "hangikargoo"]);
+    expect(m.moveProject(state, "hangikargoo", 1)).toBe(false);
+    expect(m.moveProjectBefore(state, "hangikargoo", "aetheris")).toBe(true);
+    expect(order()).toEqual(["hangikargoo", "aetheris", "new-project"]);
+    expect(m.moveProjectBefore(state, "hangikargoo", null)).toBe(true);
+    expect(order()).toEqual(["aetheris", "new-project", "hangikargoo"]);
+    expect(m.moveProjectBefore(state, "aetheris", "aetheris")).toBe(false);
+    expect(m.moveProjectBefore(state, "aetheris", "yok")).toBe(false);
+    expect(order()).toEqual(["aetheris", "new-project", "hangikargoo"]);
+  });
+
+  it("remembers the Manager of a task, and forgets a Manager that no longer exists", () => {
+    const state = m.defaultState();
+    const task = m.createTask(state, null, "Bir iş", "coder");
+    expect(task.managerId).toBe("coder");
+    expect(m.tasksOfManager(state, "coder").map((t: any) => t.id)).toEqual([task.id]);
+    const loaded = m.sanitizeState(JSON.parse(JSON.stringify(state)));
+    expect(loaded.tasks.find((t: any) => t.id === task.id).managerId).toBe("coder");
+    const stale = JSON.parse(JSON.stringify(state));
+    stale.tasks.find((t: any) => t.id === task.id).managerId = "silinmis-manager";
+    expect(m.sanitizeState(stale).tasks.find((t: any) => t.id === task.id).managerId).toBeNull();
+    const custom = m.createManager(state, "Özel", "x");
+    const owned = m.createTask(state, null, "Özel iş", custom.id);
+    m.removeManager(state, custom.id);
+    expect(owned.managerId).toBeNull();
+    const old = JSON.parse(JSON.stringify(m.defaultState()));
+    for (const t of old.tasks) delete t.managerId;
+    expect(m.sanitizeState(old).tasks.every((t: any) => t.managerId === null)).toBe(true);
+  });
+});

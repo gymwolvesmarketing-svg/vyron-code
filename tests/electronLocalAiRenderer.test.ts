@@ -1740,3 +1740,186 @@ describe("conversation history", () => {
     h.close();
   });
 });
+
+describe("editing the project list: rename, move, reorder and delete", () => {
+  const names = (h: Harness) => Array.from(h.doc.querySelectorAll("#project-list .project-name")).map((n) => n.textContent);
+  const moreOfProject = (h: Harness, name: string) => h.doc.querySelector<HTMLElement>('.project-row .row-more[aria-label="' + name + ' seçenekleri"]');
+  const moreOfTask = (h: Harness, title: string) => h.doc.querySelector<HTMLElement>('.task-row .row-more[aria-label="' + title + ' seçenekleri"]');
+  const submit = (h: Harness, value: string) => {
+    const input = h.doc.querySelector<HTMLInputElement>("#menu-layer input")!;
+    input.value = value;
+    h.doc.querySelector("#menu-layer form")!.dispatchEvent(new h.win.Event("submit", { bubbles: true, cancelable: true }));
+  };
+
+  it("every task and every project has an options button", async () => {
+    const h = await start();
+    expect(moreOfProject(h, "AETHERIS")).toBeTruthy();
+    expect(moreOfTask(h, "Cihaz bağlantısı")).toBeTruthy();
+    expect(h.doc.querySelectorAll("#project-list .task-row .task-item").length).toBeGreaterThan(0);
+  });
+
+  it("renames a task and a project (a duplicate project name is refused)", async () => {
+    const h = await start();
+    h.click(moreOfTask(h, "Cihaz bağlantısı"));
+    h.click(item(h, "Yeniden adlandır"));
+    await h.flush();
+    expect(h.doc.querySelector<HTMLInputElement>("#menu-layer input")!.value).toBe("Cihaz bağlantısı");
+    submit(h, "Cihaz eşleştirme");
+    expect(Array.from(h.doc.querySelectorAll("#project-list .task-item")).map((n) => n.textContent)).toContain("Cihaz eşleştirme");
+    h.click(moreOfProject(h, "HANGIKARGOO"));
+    h.click(item(h, "Yeniden adlandır"));
+    await h.flush();
+    submit(h, "aetheris");
+    expect(h.openMenus()).toHaveLength(1);
+    expect(names(h)).toContain("HANGIKARGOO");
+    submit(h, "Kargo Karşılaştırma");
+    expect(names(h)).toContain("Kargo Karşılaştırma");
+    expect(JSON.parse(h.storageText() ?? "{}").projects.map((p: { name: string }) => p.name)).toContain("Kargo Karşılaştırma");
+  });
+
+  it("deleting a task asks for a second confirmation, then removes it and its saved conversation", async () => {
+    const h = await start();
+    await sendTask(h, "Silinecek konuşma");
+    expect(h.turnsText()).toContain("Silinecek konuşma");
+    h.click(moreOfTask(h, "Silinecek konuşma"));
+    h.click(item(h, "Sil"));
+    expect(Array.from(h.doc.querySelectorAll("#project-list .task-item")).map((n) => n.textContent)).toContain("Silinecek konuşma");
+    h.click(item(h, "Evet, görevi sil"));
+    expect(Array.from(h.doc.querySelectorAll("#project-list .task-item")).map((n) => n.textContent)).not.toContain("Silinecek konuşma");
+    expect(h.turnsText() ?? "").not.toContain("Silinecek konuşma");
+    expect(h.el("view-new-task").dataset.mode).toBe("empty");
+  });
+
+  it("'Vazgeç' in the confirmation keeps the task", async () => {
+    const h = await start();
+    h.click(moreOfTask(h, "Mimari güncelleme"));
+    h.click(item(h, "Sil"));
+    h.click(item(h, "Vazgeç"));
+    expect(Array.from(h.doc.querySelectorAll("#project-list .task-item")).map((n) => n.textContent)).toContain("Mimari güncelleme");
+  });
+
+  it("moves a task to another project", async () => {
+    const h = await start();
+    h.click(moreOfTask(h, "Cihaz bağlantısı"));
+    h.click(item(h, "Projeye taşı"));
+    h.click(item(h, "HANGIKARGOO"));
+    const group = h.doc.querySelector('.project-group[data-project-id="hangikargoo"]')!;
+    expect(Array.from(group.querySelectorAll(".task-item")).map((n) => n.textContent)).toContain("Cihaz bağlantısı");
+    const aetheris = h.doc.querySelector('.project-group[data-project-id="aetheris"]')!;
+    expect(Array.from(aetheris.querySelectorAll(".task-item")).map((n) => n.textContent)).not.toContain("Cihaz bağlantısı");
+  });
+
+  it("moves projects up and down (the ends are disabled)", async () => {
+    const h = await start();
+    expect(names(h).slice(0, 3)).toEqual(["new-project", "AETHERIS", "HANGIKARGOO"]);
+    h.click(moreOfProject(h, "new-project"));
+    expect(item(h, "Yukarı taşı").getAttribute("aria-disabled")).toBe("true");
+    h.click(item(h, "Aşağı taşı"));
+    expect(names(h).slice(0, 3)).toEqual(["AETHERIS", "new-project", "HANGIKARGOO"]);
+    h.click(moreOfProject(h, "HANGIKARGOO"));
+    expect(item(h, "Aşağı taşı").getAttribute("aria-disabled")).toBe("true");
+    h.click(item(h, "Yukarı taşı"));
+    expect(names(h).slice(0, 3)).toEqual(["AETHERIS", "HANGIKARGOO", "new-project"]);
+    expect(JSON.parse(h.storageText() ?? "{}").projects.map((p: { name: string }) => p.name).slice(0, 3)).toEqual(["AETHERIS", "HANGIKARGOO", "new-project"]);
+  });
+
+  it("dragging a project onto another puts it in front of it", async () => {
+    const h = await start();
+    const rows = () => Array.from(h.doc.querySelectorAll<HTMLElement>("#project-list .project-group"));
+    const source = rows().find((r) => r.dataset.projectId === "hangikargoo")!;
+    const target = rows().find((r) => r.dataset.projectId === "new-project")!;
+    expect(source.querySelector<HTMLElement>(".project-row")!.draggable).toBe(true);
+    const fire = (node: Element, type: string) => node.dispatchEvent(new h.win.Event(type, { bubbles: true, cancelable: true }));
+    fire(source.querySelector(".project-row")!, "dragstart");
+    fire(target, "dragover");
+    fire(target, "drop");
+    expect(names(h).slice(0, 3)).toEqual(["HANGIKARGOO", "new-project", "AETHERIS"]);
+  });
+
+  it("deleting a project (after the confirmation) removes it with its tasks and forgets its folder", async () => {
+    const h = await start();
+    h.click(moreOfProject(h, "AETHERIS"));
+    h.click(item(h, "Projeyi sil"));
+    expect(names(h)).toContain("AETHERIS");
+    h.click(item(h, "Evet, projeyi ve görevlerini sil"));
+    await h.flush();
+    expect(names(h)).not.toContain("AETHERIS");
+    expect(Array.from(h.doc.querySelectorAll("#project-list .task-item")).map((n) => n.textContent)).not.toContain("Cihaz bağlantısı");
+    expect(h.calls.workspaceClears).toBe(1);
+  });
+
+  it("deleting the active project falls back to no project", async () => {
+    const h = await start();
+    h.click(h.doc.querySelector<HTMLElement>('.project-add[aria-label="AETHERIS projesinde yeni görev"]'));
+    expect(h.el("project-label").textContent).toBe("AETHERIS");
+    h.click(moreOfProject(h, "AETHERIS"));
+    h.click(item(h, "Projeyi sil"));
+    h.click(item(h, "Evet, projeyi ve görevlerini sil"));
+    await h.flush();
+    expect(h.el("project-label").textContent).toBe("Proje seç veya oluştur");
+  });
+});
+
+describe("Managers show the jobs they ran", () => {
+  async function runWith(h: Harness, manager: string, text: string): Promise<void> {
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, manager));
+    await sendTask(h, text);
+  }
+
+  it("a task run with a Manager appears under that Manager in the Managers tab (and still under its project)", async () => {
+    const h = await start();
+    await runWith(h, "Coder", "Giriş formunu yaz");
+    h.click(h.el("tab-managers"));
+    const group = Array.from(h.doc.querySelectorAll<HTMLElement>("#manager-list .manager-group")).find((g) => g.querySelector(".manager-name")?.textContent === "Coder")!;
+    expect(Array.from(group.querySelectorAll(".task-item")).map((n) => n.textContent)).toEqual(["Giriş formunu yaz"]);
+    const other = Array.from(h.doc.querySelectorAll<HTMLElement>("#manager-list .manager-group")).find((g) => g.querySelector(".manager-name")?.textContent === "Reviewer")!;
+    expect(other.querySelectorAll(".task-item")).toHaveLength(0);
+    h.click(h.el("tab-projects"));
+    expect(Array.from(h.doc.querySelectorAll("#project-list .task-item")).map((n) => n.textContent)).toContain("Giriş formunu yaz");
+  });
+
+  it("opening a Manager's job selects that Manager again", async () => {
+    const h = await start();
+    await runWith(h, "Coder", "Devam edecek iş");
+    h.click(h.doc.querySelector<HTMLElement>('.manager-row [aria-label="Reviewer ile yeni görev"]'));
+    expect(h.doc.querySelector("#chips")?.textContent).toContain("Reviewer");
+    h.click(h.el("tab-managers"));
+    h.click(h.doc.querySelector<HTMLElement>('#manager-list .task-item[data-task-id]'));
+    expect(h.doc.querySelector("#chips")?.textContent).toContain("Coder");
+  });
+
+  it("the caret collapses a Manager's jobs, and a Manager's + starts a task for it", async () => {
+    const h = await start();
+    await runWith(h, "Coder", "Bir iş");
+    h.click(h.el("tab-managers"));
+    expect(h.doc.querySelectorAll("#manager-list .task-item")).toHaveLength(1);
+    h.click(h.doc.querySelector<HTMLElement>('.manager-caret[aria-label^="Coder"]'));
+    expect(h.doc.querySelectorAll("#manager-list .task-item")).toHaveLength(0);
+    h.click(h.doc.querySelector<HTMLElement>('.manager-row [aria-label="Multi-Model Planner ile yeni görev"]'));
+    expect(h.doc.querySelector("#chips")?.textContent).toContain("Multi-Model Planner");
+    expect(h.el("view-new-task").dataset.mode).toBe("empty");
+  });
+
+  it("the Manager page lists the jobs it ran", async () => {
+    const h = await start();
+    await runWith(h, "Coder", "Sayfada görünen iş");
+    h.click(h.el("tab-managers"));
+    h.click(h.doc.querySelector<HTMLElement>('#manager-list .manager-main[data-manager-id="coder"]'));
+    expect(h.doc.querySelector("#manager-detail .detail-jobs")?.textContent).toContain("Sayfada görünen iş");
+    h.click(h.doc.querySelector<HTMLElement>('.manager-main[data-manager-id="genel"]'));
+    expect(h.doc.querySelector("#manager-detail .detail-jobs")?.textContent).toContain("henüz bir iş yürütmedi");
+  });
+
+  it("a task remembers a custom Manager by id", async () => {
+    const h = await start();
+    h.click(h.el("tab-managers"));
+    h.click(h.el("add-manager-btn"));
+    h.doc.querySelector<HTMLInputElement>("#menu-layer input")!.value = "Geçici";
+    h.doc.querySelector("#menu-layer form")!.dispatchEvent(new h.win.Event("submit", { bubbles: true, cancelable: true }));
+    await runWith(h, "Geçici", "Geçici işi");
+    const stored = JSON.parse(h.storageText() ?? "{}");
+    expect(stored.tasks.find((t: { title: string }) => t.title === "Geçici işi").managerId).toMatch(/^manager-/);
+  });
+});
