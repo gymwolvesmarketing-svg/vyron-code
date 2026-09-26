@@ -155,7 +155,7 @@ const VyronModel = (() => {
     }
     return out;
   }
-  const MAX_DRAFT_LENGTH = 4000;
+  const MAX_DRAFT_LENGTH = 20000;
   const MAX_TASKS = 300;
   const COLLAPSED_TASK_COUNT = 4;
 

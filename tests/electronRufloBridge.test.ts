@@ -138,7 +138,7 @@ describe("running an agent through the bridge", () => {
     const execute = toolCalls.find((c) => c.name === "agent_execute")!;
     expect(execute.arguments.prompt).toBe("İncele: x");
     expect(execute.arguments.agentId).toBe(spawn.arguments.agentId);
-    expect(execute.arguments.maxTokens).toBe(2048);
+    expect(execute.arguments.maxTokens).toBe(8192);
     expect(Object.keys(execute.arguments).sort()).toEqual(["agentId", "maxTokens", "prompt"]);
   });
 
@@ -156,7 +156,7 @@ describe("running an agent through the bridge", () => {
     expect((await bridge.run("hacker", "x")).ok).toBe(false);
     expect((await bridge.run("coder", "")).ok).toBe(false);
     expect((await bridge.run("coder", "   ")).ok).toBe(false);
-    expect((await bridge.run("coder", "x".repeat(4001))).ok).toBe(false);
+    expect((await bridge.run("coder", "x".repeat(30001))).ok).toBe(false);
     expect((await bridge.run("coder", 5)).ok).toBe(false);
     expect((await bridge.run(undefined, "x")).ok).toBe(false);
     expect(started).toHaveLength(0);

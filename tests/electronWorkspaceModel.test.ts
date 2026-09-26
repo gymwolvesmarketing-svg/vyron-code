@@ -244,10 +244,10 @@ describe("search, drafts, prompts and answers", () => {
   it("classifies drafts", () => {
     expect(model.draftProblem("")).toBe("empty");
     expect(model.draftProblem("  \n ")).toBe("empty");
-    expect(model.draftProblem("x".repeat(4001))).toBe("too_long");
+    expect(model.draftProblem("x".repeat(20001))).toBe("too_long");
     expect(model.draftProblem("a" + String.fromCharCode(7))).toBe("invalid");
     expect(model.draftProblem("a\n\tb\r\nc")).toBe("ok");
-    expect(model.draftProblem("x".repeat(4000))).toBe("ok");
+    expect(model.draftProblem("x".repeat(20000))).toBe("ok");
   });
 
   it("composes the outgoing prompt: unchanged without selections, prefixed context otherwise", () => {

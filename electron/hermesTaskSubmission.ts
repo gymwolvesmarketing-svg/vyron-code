@@ -54,7 +54,7 @@ export function setAgentAsk(ask: AgentAskFn | null): void {
   agentAsk = ask;
 }
 
-const MAX_TOOL_RESPONSE_CHARS = 8_000;
+const MAX_TOOL_RESPONSE_CHARS = 60_000;
 
 /**
  * Optional executor for Manager (SubAgent) tasks, injected by electron/main.ts. When a request names an agent
@@ -74,7 +74,7 @@ export function setTaskAgentExecutor(executor: TaskAgentExecutor | null): void {
  * (that module is never imported here — see its own header on why every consumer duplicates
  * these locally) — this module never trusts the renderer's own prior validation and always
  * re-checks independently before ever holding or sending a snapshot. */
-const MAX_DRAFT_LENGTH = 4_000;
+const MAX_DRAFT_LENGTH = 20_000;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
 
 /** A new, independently disclosed bound for this module's one request — generous enough for a
@@ -84,7 +84,7 @@ const SEND_TIMEOUT_MS = 60_000;
 
 /** Bounded renderer-facing response size — independent of whatever token/usage accounting the
  * server itself reports, which this module never forwards. */
-const MAX_RESPONSE_CHARS = 4_000;
+const MAX_RESPONSE_CHARS = 50_000;
 
 type AmbientState = "idle" | "sending" | "completed" | "unavailable" | "unauthorized" | "safe_failure" | "cancelled";
 

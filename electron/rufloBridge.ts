@@ -59,9 +59,9 @@ import {
   type SubTaskResult,
 } from "./rufloTeam";
 
-export const MAX_RUFLO_PROMPT_CHARS = 4_000;
+export const MAX_RUFLO_PROMPT_CHARS = 30_000;
 export const MAX_RUFLO_ASK_CHARS = 40_000;
-export const MAX_RUFLO_OUTPUT_CHARS = 20_000;
+export const MAX_RUFLO_OUTPUT_CHARS = 50_000;
 
 export interface RufloTransport {
   send(line: string): void;
@@ -243,7 +243,7 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
     const model = modelForRole(models, agentType);
     const spawned = await callTool("agent_spawn", model === undefined ? { agentType, agentId } : { agentType, agentId, model }, timings.callMs);
     if (!spawned || spawned.success !== true) return childGone() ? "gone" : null;
-    const executed = await callTool("agent_execute", { agentId, prompt, maxTokens: 2048 }, timings.executeMs);
+    const executed = await callTool("agent_execute", { agentId, prompt, maxTokens: 8192 }, timings.executeMs);
     // Best-effort cleanup of the tracked agent record; its result never matters to the caller.
     void callTool("agent_terminate", { agentId }, timings.callMs);
     if (!executed || executed.success !== true || typeof executed.output !== "string") return childGone() ? "gone" : null;
