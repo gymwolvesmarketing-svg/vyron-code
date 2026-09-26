@@ -79,10 +79,31 @@ function dirSize(dir) {
   return total;
 }
 
+export const RUFLO_TEXT_LIMIT = 200_000;
+const VALIDATE_INPUT = ["node_modules", "@claude-flow", "cli-core", "dist", "src", "mcp-tools", "validate-input.js"];
+
+/**
+ * Ruflo's `agent_execute` refuses any prompt over 10,000 characters (its `validateText` default), which made every long
+ * Manager task or tool run fail at once ("Yanıt alınamadı"). The runtime is a private copy that only Vyron Code talks to,
+ * so the default is raised here, once, in the copy that ships. Idempotent; throws when the file no longer has the
+ * expected shape (a Ruflo update) so a silent regression cannot ship.
+ */
+export function ensureRufloTextLimit(dir = RUNTIME_DIR) {
+  const file = path.join(dir, ...VALIDATE_INPUT);
+  const source = fs.readFileSync(file, "utf8");
+  const original = "export function validateText(value, label, maxLen = 10_000) {";
+  const patched = "export function validateText(value, label, maxLen = " + String(RUFLO_TEXT_LIMIT).replace(/\B(?=(\d{3})+(?!\d))/g, "_") + ") {";
+  if (source.includes(patched)) return false;
+  if (!source.includes(original)) throw new Error("Ruflo validateText changed: the prompt limit patch no longer applies");
+  fs.writeFileSync(file, source.replace(original, patched));
+  return true;
+}
+
 export function verifyRuntime(dir = RUNTIME_DIR) {
   const node = path.join(dir, "node.exe");
   const cli = path.join(dir, "node_modules", "ruflo", "bin", "ruflo.js");
   if (!fs.existsSync(node) || !fs.existsSync(cli)) throw new Error("Ruflo runtime is incomplete (node.exe or ruflo.js missing)");
+  ensureRufloTextLimit(dir);
   const version = execFileSync(node, [cli, "--version"], { encoding: "utf8", windowsHide: true, timeout: 120_000 }).trim();
   if (!version.includes(RUFLO_VERSION)) throw new Error("unexpected Ruflo version: " + version);
   // The native modules that Ruflo's memory/vector features depend on must load under the bundled Node.

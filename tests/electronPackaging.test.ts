@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { toAsarUnpackedPath } from "../electron/localAiAdapters";
 
@@ -205,5 +206,52 @@ describe("packaging - Ruflo runtime", () => {
 
   it("the runtime folder is never committed", () => {
     expect(gitignore).toContain("build/");
+  });
+});
+
+describe("Ruflo prompt limit patch (long Manager tasks and tool runs must not be refused)", () => {
+  async function mod() {
+    return (await import("../scripts/build-ruflo-runtime.mjs")) as unknown as { RUFLO_TEXT_LIMIT: number; ensureRufloTextLimit(dir: string): boolean };
+  }
+  function fakeRuntime(content: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vyron-ruflo-patch-"));
+    const file = path.join(dir, "node_modules", "@claude-flow", "cli-core", "dist", "src", "mcp-tools", "validate-input.js");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content, "utf8");
+    return dir;
+  }
+  const ORIGINAL = "export function validateText(value, label, maxLen = 10_000) {\n  return value;\n}\n";
+
+  it("raises Ruflo's 10,000-character default once, and is idempotent", async () => {
+    const { ensureRufloTextLimit, RUFLO_TEXT_LIMIT } = await mod();
+    const dir = fakeRuntime(ORIGINAL);
+    try {
+      expect(ensureRufloTextLimit(dir)).toBe(true);
+      const file = path.join(dir, "node_modules", "@claude-flow", "cli-core", "dist", "src", "mcp-tools", "validate-input.js");
+      expect(fs.readFileSync(file, "utf8")).toContain("maxLen = 200_000) {");
+      expect(RUFLO_TEXT_LIMIT).toBe(200_000);
+      expect(ensureRufloTextLimit(dir)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to ship when Ruflo's validator no longer has the expected shape", async () => {
+    const { ensureRufloTextLimit } = await mod();
+    const dir = fakeRuntime("export function validateText(value) { return value; }\n");
+    try {
+      expect(() => ensureRufloTextLimit(dir)).toThrow(/no longer applies/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("the shipped-runtime verification applies the patch, and the app's largest prompts fit under the limit", async () => {
+    const script = fs.readFileSync(path.join(__dirname, "..", "scripts", "build-ruflo-runtime.mjs"), "utf8");
+    expect(script).toMatch(/verifyRuntime[\s\S]*ensureRufloTextLimit\(dir\)/);
+    const { RUFLO_TEXT_LIMIT } = await mod();
+    const bridge = fs.readFileSync(path.join(__dirname, "..", "electron", "rufloBridge.ts"), "utf8");
+    const asks = Number(/MAX_RUFLO_ASK_CHARS = ([\d_]+)/.exec(bridge)![1]!.replace(/_/g, ""));
+    expect(asks).toBeLessThanOrEqual(RUFLO_TEXT_LIMIT);
   });
 });

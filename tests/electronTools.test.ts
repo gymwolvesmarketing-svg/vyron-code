@@ -28,6 +28,7 @@ import {
 } from "../electron/toolPolicy";
 import { commandEnvironment, listDir, projectOverview, readFile, resolveWritable, runCommand, writeFile } from "../electron/toolExecutors";
 import { runToolLoop, type ToolLoopDeps } from "../electron/toolLoop";
+import { MAX_RUFLO_ASK_CHARS } from "../electron/rufloBridge";
 
 vi.mock("electron", () => ({ clipboard: { writeText: () => undefined }, app: { getPath: () => os.tmpdir() }, dialog: {} }));
 
@@ -351,7 +352,7 @@ describe("runToolLoop", () => {
 
   it("fails safely when the model does not answer, and reports a failed execution as such", async () => {
     expect(await runToolLoop(makeDeps([null]).deps, "g")).toEqual({ ok: false });
-    expect(await runToolLoop(makeDeps(['{"tool":"list_dir","path":"."}', null]).deps, "g")).toEqual({ ok: false });
+    // After a tool already ran the work is kept: see "a model that stops answering half way".
     const { deps } = makeDeps(['{"tool":"read_file","path":"x"}', "SON"], { execute: async () => ({ ok: false, text: "yok" }) });
     const result = await runToolLoop(deps, "g");
     expect(result.ok && result.text).toContain("! başarısız: okuma x");
@@ -486,5 +487,28 @@ describe("workspace overview (the model starts from the real project)", () => {
     expect(MAX_TOOL_OUTPUT_CHARS).toBe(12_000);
     expect(MAX_TRANSCRIPT_CHARS).toBe(60_000);
     expect(TOOL_PROTOCOL).toContain("Var olan kodu okumadan üzerine yazma");
+  });
+});
+
+describe("a model that stops answering half way", () => {
+  it("keeps what was done: the answer says the work is unfinished and lists the real actions", async () => {
+    const { deps, executed } = makeDeps(['{"tool":"list_dir","path":"."}', '{"tool":"read_file","path":"a.txt"}', null]);
+    const result = await runToolLoop(deps, "görev");
+    expect(executed.map((c) => c.tool)).toEqual(["list_dir", "read_file"]);
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.text).toContain("Model yanıt vermeyi bıraktı; iş yarım kaldı");
+    expect(result.ok && result.text).toContain("✓ listeleme .");
+    expect(result.ok && result.text).toContain("✓ okuma a.txt");
+  });
+
+  it("with nothing done yet it is still an ordinary failure", async () => {
+    const { deps } = makeDeps([null]);
+    expect(await runToolLoop(deps, "görev")).toEqual({ ok: false });
+  });
+
+  it("the Ruflo prompt allowance covers the largest tool transcript (or a long run would be refused mid-way)", () => {
+    expect(MAX_RUFLO_ASK_CHARS).toBeGreaterThan(MAX_TRANSCRIPT_CHARS + 10_000);
+    const biggest = flattenTranscript([{ role: "user", content: "x".repeat(MAX_TRANSCRIPT_CHARS) }]);
+    expect(biggest.length).toBeLessThanOrEqual(MAX_RUFLO_ASK_CHARS);
   });
 });

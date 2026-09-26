@@ -598,7 +598,7 @@ describe("raw agent turns for the tool loop (bridge.ask)", () => {
   it("validates the role and the prompt, and returns null instead of throwing", async () => {
     const { deps, started } = makeDeps(goodHandler());
     const bridge = createRufloBridge(deps);
-    for (const [role, prompt] of [["hacker", "x"], ["coder", ""], ["coder", "  "], ["coder", 5], [undefined, "x"], ["coder", "x".repeat(40_001)]] as const) {
+    for (const [role, prompt] of [["hacker", "x"], ["coder", ""], ["coder", "  "], ["coder", 5], [undefined, "x"], ["coder", "x".repeat(90_001)]] as const) {
       expect(await bridge.ask(role, prompt)).toBeNull();
     }
     expect(started).toHaveLength(0);

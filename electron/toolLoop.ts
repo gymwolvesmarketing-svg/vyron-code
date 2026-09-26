@@ -52,7 +52,7 @@ export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<Too
 
   for (let step = 0; step < MAX_TOOL_STEPS; step += 1) {
     const reply = await deps.ask(trimTranscript(messages));
-    if (reply === null) return { ok: false };
+    if (reply === null) return interrupted(log);
     const parsed = parseToolCall(reply);
     if (parsed.kind === "final") {
       // A first plain reply is challenged once (the local model often invents "done" or "no tools"); after that it stands.
@@ -83,10 +83,19 @@ export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<Too
   // Step budget used up: ask once, without tools, for the final answer.
   messages = messages.concat({ role: "user", content: "Adım sınırına ulaşıldı. Araç kullanmadan, şimdiye kadarki işi özetleyen nihai yanıtı düz metin olarak yaz." });
   const closing = await deps.ask(trimTranscript(messages));
-  if (closing === null) return { ok: false };
+  if (closing === null) return interrupted(log);
   const parsedClosing = parseToolCall(closing);
   const text = parsedClosing.kind === "final" ? closing : "Adım sınırına ulaşıldı; iş tamamlanamadı.";
   return { ok: true, text: text + toolLogFooter(log) };
+}
+
+/**
+ * The model stopped answering half way. When tools already did something the user must not lose that: the answer says so
+ * plainly and lists what really happened. Nothing done yet = an ordinary failure.
+ */
+function interrupted(log: LogEntry[]): ToolLoopResult {
+  if (log.length === 0) return { ok: false };
+  return { ok: true, text: "Model yanıt vermeyi bıraktı; iş yarım kaldı. Şimdiye kadar yapılanlar aşağıda; aynı görevi tekrar göndererek kaldığın yerden devam edebilirsin." + toolLogFooter(log) };
 }
 
 async function handle(deps: ToolLoopDeps, call: ToolCall, log: LogEntry[]): Promise<string> {
