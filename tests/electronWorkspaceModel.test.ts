@@ -397,3 +397,97 @@ describe("editing projects and tasks (pure model)", () => {
     expect(m.sanitizeState(old).tasks.every((t: any) => t.managerId === null)).toBe(true);
   });
 });
+
+describe("skills with instructions and starter chips (pure model)", () => {
+  const m = model as any;
+
+  it("built-in skills carry instructions and starters carry default skills", () => {
+    for (const skill of m.SKILLS) {
+      expect(skill.instructions.length, skill.id).toBeGreaterThan(20);
+      expect(skill.custom).toBe(false);
+    }
+    const state = m.defaultState();
+    expect(m.quickStartSkillIds(state, "data-analysis")).toEqual(["confirmed-data-analysis"]);
+    expect(m.quickStartSkillIds(state, "build-app")).toEqual(["design-then-build", "frontend-design"]);
+    expect(m.quickStartSkillIds(state, "make-video")).toEqual([]);
+    expect(m.allQuickStarts(state)).toHaveLength(9);
+  });
+
+  it("creates and removes custom skills; names are unique across built-in and custom", () => {
+    const state = m.defaultState();
+    expect(m.createSkill(state, "  Kod İncele ", "Açıklama", "  Talimat  ")!.instructions).toBe("Talimat");
+    expect(m.createSkill(state, "kod incele", "x", "y")).toBeNull();
+    expect(m.createSkill(state, "create image", "x", "y")).toBeNull();
+    expect(m.createSkill(state, "", "x", "y")).toBeNull();
+    expect(m.createSkill(state, "Boş talimat", "x", "   ")).toBeNull();
+    expect(m.createSkill(state, "Çok uzun", "x", "a".repeat(m.MAX_SKILL_INSTRUCTIONS + 1))).toBeNull();
+    const skill = state.customSkills[0];
+    state.selectedSkillIds = [skill.id];
+    m.toggleQuickStartSkill(state, "make-video", skill.id);
+    expect(m.quickStartSkillIds(state, "make-video")).toEqual([skill.id]);
+    expect(m.removeSkill(state, skill.id)).toBe(true);
+    expect(state.selectedSkillIds).toEqual([]);
+    expect(m.quickStartSkillIds(state, "make-video")).toEqual([]);
+    expect(m.removeSkill(state, "create-image")).toBe(false);
+  });
+
+  it("limits the number of custom skills and starters", () => {
+    const state = m.defaultState();
+    for (let i = 0; i < 40; i += 1) m.createSkill(state, "Yetenek " + String(i), "x", "y");
+    expect(state.customSkills).toHaveLength(30);
+    for (let i = 0; i < 40; i += 1) m.createQuickStart(state, "Başlangıç " + String(i), "metin");
+    expect(state.customQuickStarts).toHaveLength(20);
+  });
+
+  it("starters: create, refuse duplicates, attach skills, remove", () => {
+    const state = m.defaultState();
+    const quick = m.createQuickStart(state, "Haftalık rapor", "Raporu hazırla");
+    expect(quick.custom).toBe(true);
+    expect(m.createQuickStart(state, "haftalık RAPOR", "x")).toBeNull();
+    expect(m.createQuickStart(state, "Fikri keşfet", "x")).toBeNull();
+    expect(m.createQuickStart(state, "Boş", "  ")).toBeNull();
+    expect(m.toggleQuickStartSkill(state, quick.id, "create-image")).toBe(true);
+    expect(m.toggleQuickStartSkill(state, quick.id, "yok")).toBe(false);
+    expect(m.toggleQuickStartSkill(state, "yok", "create-image")).toBe(false);
+    expect(m.quickStartSkillIds(state, quick.id)).toEqual(["create-image"]);
+    expect(m.toggleQuickStartSkill(state, quick.id, "create-image")).toBe(true);
+    expect(m.quickStartSkillIds(state, quick.id)).toEqual([]);
+    expect(m.removeQuickStart(state, "build-app")).toBe(false);
+    expect(m.removeQuickStart(state, quick.id)).toBe(true);
+  });
+
+  it("persistence: keeps valid custom items and drops hostile or stale ones", () => {
+    const state = m.defaultState();
+    const skill = m.createSkill(state, "Kalıcı", "d", "Talimat");
+    const quick = m.createQuickStart(state, "Kalıcı başlangıç", "metin");
+    m.toggleQuickStartSkill(state, quick.id, skill.id);
+    const loaded = m.sanitizeState(JSON.parse(JSON.stringify(state)));
+    expect(loaded.customSkills.map((s: any) => s.name)).toEqual(["Kalıcı"]);
+    expect(loaded.customQuickStarts.map((q: any) => q.label)).toEqual(["Kalıcı başlangıç"]);
+    expect(m.quickStartSkillIds(loaded, quick.id)).toEqual([skill.id]);
+    const hostile = JSON.parse(JSON.stringify(state));
+    hostile.customSkills.push({ id: "create-image", name: "Kopya", instructions: "x" }, { id: "s2", name: "", instructions: "x" }, { id: "s3", name: "İyi", instructions: "" }, 5, null);
+    hostile.customQuickStarts.push({ id: "build-app", label: "Kopya", draft: "x" }, { id: "q2", label: "Boş", draft: "" });
+    hostile.quickStartSkills["make-video"] = ["yok", "create-image", "create-image", 5];
+    hostile.selectedSkillIds = ["yok", skill.id];
+    const clean = m.sanitizeState(hostile);
+    expect(clean.customSkills.map((s: any) => s.name)).toEqual(["Kalıcı"]);
+    expect(clean.customQuickStarts.map((q: any) => q.label)).toEqual(["Kalıcı başlangıç"]);
+    expect(m.quickStartSkillIds(clean, "make-video")).toEqual(["create-image"]);
+    expect(clean.selectedSkillIds).toEqual([skill.id]);
+  });
+
+  it("composePrompt adds the instruction lines after the skill names", () => {
+    const text = m.composePrompt({
+      draft: "Görev",
+      workMode: "local",
+      planMode: "standard",
+      terminalMode: "off",
+      managerName: null,
+      skillNames: ["A"],
+      skillInstructions: ["Yetenek talimatı (A): şunu yap"],
+      connectorNames: [],
+    });
+    expect(text).toBe(["Kullanılacak yetenekler: A.", "Yetenek talimatı (A): şunu yap", "", "Görev"].join(String.fromCharCode(10)));
+  });
+});

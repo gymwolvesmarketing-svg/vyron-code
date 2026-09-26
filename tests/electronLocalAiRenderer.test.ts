@@ -94,7 +94,7 @@ describe("default new-task workspace shell", () => {
 
   it("shows the nine quick-start chips, in order", async () => {
     const h = await start();
-    const labels = Array.from(h.doc.querySelectorAll("#quick-starts .quick-btn")).map((n) => n.textContent);
+    const labels = Array.from(h.doc.querySelectorAll("#quick-starts .quick-btn[data-quick-id] > span:nth-of-type(1)")).map((n) => n.textContent);
     expect(labels).toEqual([
       "Fikri keşfet",
       "Uygulama oluştur",
@@ -690,7 +690,7 @@ describe("quick starts and work mode", () => {
 
   it("every quick start populates a non-empty draft", async () => {
     const h = await start();
-    for (const chip of Array.from(h.doc.querySelectorAll<HTMLElement>("#quick-starts .quick-btn"))) {
+    for (const chip of Array.from(h.doc.querySelectorAll<HTMLElement>("#quick-starts .quick-btn[data-quick-id]"))) {
       h.type("");
       h.click(chip);
       expect(h.el<HTMLTextAreaElement>("task-input").value.length, chip.textContent ?? "").toBeGreaterThan(20);
@@ -1921,5 +1921,124 @@ describe("Managers show the jobs they ran", () => {
     await runWith(h, "Geçici", "Geçici işi");
     const stored = JSON.parse(h.storageText() ?? "{}");
     expect(stored.tasks.find((t: { title: string }) => t.title === "Geçici işi").managerId).toMatch(/^manager-/);
+  });
+});
+
+describe("skills you write, and skills attached to the starter chips", () => {
+  const submitForm = (h: Harness, values: { name: string; description?: string; text?: string }) => {
+    const layer = h.doc.querySelector("#menu-layer")!;
+    layer.querySelector<HTMLInputElement>('input[aria-label="Yetenek adı"], input[aria-label="Başlangıç adı"]')!.value = values.name;
+    if (values.description !== undefined) layer.querySelector<HTMLInputElement>('input[aria-label="Kısa açıklama"]')!.value = values.description;
+    if (values.text !== undefined) layer.querySelector<HTMLTextAreaElement>("textarea")!.value = values.text;
+    layer.querySelector("form")!.dispatchEvent(new h.win.Event("submit", { bubbles: true, cancelable: true }));
+  };
+
+  it("adds a skill from the Yetenekler page; it shows up with its instructions and can be selected", async () => {
+    const h = await start();
+    h.click(h.el("nav-skills"));
+    h.click(h.el("add-skill-btn"));
+    submitForm(h, { name: "Kod İncele", description: "Kodu güvenlik açısından gözden geçirir", text: "Kodu satır satır oku, güvenlik açıklarını ve hataları listele." });
+    expect(h.openMenus()).toHaveLength(0);
+    const row = Array.from(h.doc.querySelectorAll<HTMLElement>("#skills-page-list .row")).find((r) => r.textContent?.includes("Kod İncele"))!;
+    expect(row).toBeTruthy();
+    expect(row.title).toContain("güvenlik açıklarını");
+    expect(row.textContent).toContain("Özel");
+    h.click(row.querySelector<HTMLElement>("button.btn"));
+    expect(h.doc.querySelector("#chips")?.textContent).toContain("Kod İncele");
+    h.click(h.el("nav-new-task"));
+    await sendTask(h, "Bu fonksiyona bak");
+    // The instruction of the selected skill travels with the task.
+    expect(h.calls.send[0]!.draft).toContain("Kullanılacak yetenekler: Kod İncele.");
+    expect(h.calls.send[0]!.draft).toContain("Yetenek talimatı (Kod İncele): Kodu satır satır oku");
+    expect(JSON.parse(h.storageText() ?? "{}").customSkills[0].name).toBe("Kod İncele");
+  });
+
+  it("refuses a skill without a name or instructions, or with an existing name", async () => {
+    const h = await start();
+    h.click(h.el("nav-skills"));
+    h.click(h.el("add-skill-btn"));
+    submitForm(h, { name: "Yeni", text: "   " });
+    expect(h.openMenus()).toHaveLength(1);
+    expect(h.doc.querySelector("#menu-layer .form-error")?.textContent).toContain("talimat");
+    submitForm(h, { name: "create image", text: "x" });
+    expect(h.openMenus()).toHaveLength(1);
+    expect(h.doc.querySelectorAll("#skills-page-list .row")).toHaveLength(6);
+  });
+
+  it("deletes a custom skill (with a confirmation) and drops it from selections and starter chips", async () => {
+    const h = await start();
+    h.click(h.el("nav-skills"));
+    h.click(h.el("add-skill-btn"));
+    submitForm(h, { name: "Geçici", text: "Bir şey yap." });
+    const row = () => Array.from(h.doc.querySelectorAll<HTMLElement>("#skills-page-list .row")).find((r) => r.textContent?.includes("Geçici"));
+    h.click(row()!.querySelector<HTMLElement>("button.btn"));
+    h.click(row()!.querySelector<HTMLElement>(".row-more"));
+    h.click(item(h, "Sil"));
+    h.click(item(h, "Evet, yeteneği sil"));
+    expect(row()).toBeUndefined();
+    expect(h.doc.querySelector("#chips")?.textContent ?? "").not.toContain("Geçici");
+    expect(JSON.parse(h.storageText() ?? "{}").customSkills).toEqual([]);
+    // The built-in skills have no delete button.
+    expect(h.doc.querySelectorAll("#skills-page-list .row .row-more")).toHaveLength(0);
+  });
+
+  it("a starter chip brings its skills along: Veri analizi selects Confirmed Data Analysis", async () => {
+    const h = await start();
+    expect(h.el("quick-data-analysis").title).toContain("Confirmed Data Analysis");
+    h.click(h.el("quick-data-analysis"));
+    expect(h.doc.querySelector("#chips")?.textContent).toContain("Confirmed Data Analysis");
+    h.type("Satış rakamlarını incele");
+    h.click(h.el("send-btn"));
+    await h.flush();
+    expect(h.calls.send[0]!.draft).toContain("Yetenek talimatı (Confirmed Data Analysis): Veriyi analiz etmeden önce");
+  });
+
+  it("skills can be attached to and detached from a starter chip, and the choice is remembered", async () => {
+    const h = await start();
+    expect(h.el("quick-make-video").title).toBe("");
+    h.click(h.doc.querySelector<HTMLElement>('.quick-item .row-more[aria-label="Video oluştur seçenekleri"]'));
+    h.click(item(h, "Yetenekleri seç"));
+    h.click(item(h, "Frontend Design"));
+    expect(h.el("quick-make-video").title).toBe("Yetenekler: Frontend Design");
+    expect(JSON.parse(h.storageText() ?? "{}").quickStartSkills["make-video"]).toEqual(["frontend-design"]);
+    h.click(h.doc.querySelector<HTMLElement>('.quick-item .row-more[aria-label="Video oluştur seçenekleri"]'));
+    h.click(item(h, "Yetenekleri seç"));
+    expect(item(h, "Frontend Design").getAttribute("aria-checked")).toBe("true");
+    h.click(item(h, "Frontend Design"));
+    expect(h.el("quick-make-video").title).toBe("");
+    const second = await ready({ storage: h.storageText() });
+    expect(second.el("quick-data-analysis").title).toContain("Confirmed Data Analysis");
+    second.close();
+  });
+
+  it("adds a starter chip of your own (a built-in one cannot be deleted, a custom one can)", async () => {
+    const h = await start();
+    h.click(h.el("quick-add"));
+    submitForm(h, { name: "Haftalık rapor", text: "Bu haftanın raporunu şu başlıklarla hazırla: [başlıklar]" });
+    const chip = h.doc.querySelector<HTMLElement>('#quick-starts .quick-btn[data-quick-id^="quick-"]')!;
+    expect(chip.textContent).toContain("Haftalık rapor");
+    h.click(chip);
+    expect(h.el<HTMLTextAreaElement>("task-input").value).toBe("Bu haftanın raporunu şu başlıklarla hazırla: [başlıklar]");
+    h.click(h.doc.querySelector<HTMLElement>('.quick-item .row-more[aria-label="Fikri keşfet seçenekleri"]'));
+    expect(h.menuLabels().some((l) => l.startsWith("Sil"))).toBe(false);
+    h.key(h.doc, "Escape");
+    h.click(h.doc.querySelector<HTMLElement>('.quick-item .row-more[aria-label="Haftalık rapor seçenekleri"]'));
+    h.click(item(h, "Sil"));
+    h.click(item(h, "Evet, başlangıcı sil"));
+    expect(h.doc.querySelector('#quick-starts .quick-btn[data-quick-id^="quick-"]')).toBeNull();
+    expect(JSON.parse(h.storageText() ?? "{}").customQuickStarts).toEqual([]);
+  });
+
+  it("a saved workspace from an older version (no custom skills or starters) still loads with the defaults", async () => {
+    const h = await start();
+    await sendTask(h, "Kaydı başlat");
+    const old = JSON.parse(h.storageText() as string);
+    delete old.customSkills;
+    delete old.customQuickStarts;
+    delete old.quickStartSkills;
+    const second = await ready({ storage: JSON.stringify(old) });
+    expect(second.el("quick-build-app").title).toContain("Design Then Build");
+    expect(second.doc.querySelectorAll("#quick-starts .quick-btn[data-quick-id]")).toHaveLength(9);
+    second.close();
   });
 });

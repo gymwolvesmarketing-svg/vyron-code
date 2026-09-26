@@ -833,7 +833,7 @@ function agentLabel(agent: string | null): string {
 }
 
 function selectedSkills(): WsSkill[] {
-  return VyronModel.SKILLS.filter((s) => ws.selectedSkillIds.indexOf(s.id) >= 0);
+  return VyronModel.allSkills(ws).filter((s) => ws.selectedSkillIds.indexOf(s.id) >= 0);
 }
 
 function selectedConnectors(): WsConnector[] {
@@ -857,6 +857,7 @@ function composedPrompt(draft: string): string {
     terminalMode: toolsActive() ? "off" : ws.terminalMode,
     managerName: managerName(),
     skillNames: selectedSkills().map((s) => s.name),
+    skillInstructions: selectedSkills().filter((s) => s.instructions.length > 0).map((s) => "Yetenek talimatı (" + s.name + "): " + s.instructions),
     connectorNames: selectedConnectors().map((c) => c.name),
   });
 }
@@ -1419,19 +1420,105 @@ function selectProject(projectId: string | null): void {
 // Task view: composer, chips, quick starts, conversation
 // ---------------------------------------------------------------------------------------------
 
+function refreshSkillViews(): void {
+  persist();
+  renderQuickStarts();
+  renderChips();
+  updateComposer();
+  if (ws.view === "skills") renderSkillsPage();
+}
+
+function openQuickMenu(trigger: HTMLElement, quick: WsQuickStart): void {
+  openMenuWith("row-more", trigger, (menu) => {
+    menu.setAttribute("aria-label", quick.label + " seçenekleri");
+    menu.appendChild(
+      makeMenuItem({
+        label: "Yetenekleri seç",
+        icon: "sparkles",
+        submenu: (item) =>
+          openMenuWith(
+            "quick-skills-sub",
+            item,
+            (sub) => {
+              sub.setAttribute("aria-label", "Bu başlangıçla gelen yetenekler");
+              const attached = VyronModel.quickStartSkillIds(ws, quick.id);
+              for (const skill of VyronModel.allSkills(ws)) {
+                sub.appendChild(
+                  makeMenuItem({
+                    label: skill.name,
+                    sub: skill.tag,
+                    role: "menuitemcheckbox",
+                    checked: attached.indexOf(skill.id) >= 0,
+                    onSelect: () => {
+                      VyronModel.toggleQuickStartSkill(ws, quick.id, skill.id);
+                      refreshSkillViews();
+                    },
+                  }),
+                );
+              }
+            },
+            1,
+            "right",
+          ),
+      }),
+    );
+    if (quick.custom) {
+      menu.appendChild(
+        makeConfirmItem("Sil", "Evet, başlangıcı sil", () => {
+          VyronModel.removeQuickStart(ws, quick.id);
+          refreshSkillViews();
+        }),
+      );
+    }
+  });
+}
+
+function openQuickCreate(trigger: HTMLElement): void {
+  openNameForm("quick-create", trigger, {
+    title: "Yeni hızlı başlangıç",
+    placeholder: "Başlangıç adı",
+    submit: "Ekle",
+    maxLength: 30,
+    withText: { placeholder: "Başlangıç metni (göreve yazılacak)", maxLength: VyronModel.MAX_DRAFT_LENGTH },
+    errorText: "Bir ad ve bir başlangıç metni yaz (aynı ad kullanılamaz).",
+    onSubmit: (name, _description, _role, text) => {
+      if (!VyronModel.createQuickStart(ws, name, text)) return false;
+      refreshSkillViews();
+      return true;
+    },
+  });
+}
+
 function renderQuickStarts(): void {
   const box = must("quick-starts");
   clearNode(box);
-  for (const quick of VyronModel.QUICK_STARTS) {
+  for (const quick of VyronModel.allQuickStarts(ws)) {
+    const item = make("div", "quick-item");
     const button = make("button", "quick-btn");
     button.type = "button";
     button.dataset.quickId = quick.id;
     button.id = "quick-" + quick.id;
     button.appendChild(makeIcon(quick.icon));
     button.appendChild(make("span", "", quick.label));
+    const skills = VyronModel.quickStartSkillIds(ws, quick.id);
+    if (skills.length > 0) {
+      const names = VyronModel.allSkills(ws).filter((s) => skills.indexOf(s.id) >= 0).map((s) => s.name);
+      button.title = "Yetenekler: " + names.join(", ");
+      button.appendChild(make("span", "quick-skills", String(skills.length)));
+    }
     button.addEventListener("click", () => applyQuickStart(quick));
-    box.appendChild(button);
+    item.appendChild(button);
+    item.appendChild(makeMoreButton(quick.label + " seçenekleri", (trigger) => openQuickMenu(trigger, quick)));
+    box.appendChild(item);
   }
+  const add = make("button", "quick-btn quick-add");
+  add.type = "button";
+  add.id = "quick-add";
+  add.setAttribute("aria-label", "Hızlı başlangıç ekle");
+  add.appendChild(makeIcon("plus"));
+  add.appendChild(make("span", "", "Ekle"));
+  add.addEventListener("click", () => toggleRootMenu("quick-create", add, () => openQuickCreate(add)));
+  box.appendChild(add);
 }
 
 function applyQuickStart(quick: WsQuickStart): void {
@@ -1443,6 +1530,9 @@ function applyQuickStart(quick: WsQuickStart): void {
   const close = open >= 0 ? quick.draft.indexOf("]", open) : -1;
   if (open >= 0 && close > open) input.setSelectionRange(open, close + 1);
   else input.setSelectionRange(quick.draft.length, quick.draft.length);
+  for (const skillId of VyronModel.quickStartSkillIds(ws, quick.id)) if (ws.selectedSkillIds.indexOf(skillId) < 0) ws.selectedSkillIds.push(skillId);
+  persist();
+  renderChips();
   updateComposer();
 }
 
@@ -1994,7 +2084,7 @@ function openModeMenu(trigger: HTMLElement): void {
   });
 }
 
-function openNameForm(id: string, trigger: HTMLElement, options: { title: string; placeholder: string; submit: string; initial?: string; maxLength?: number; withDescription?: boolean; withRole?: boolean; onSubmit: (name: string, description: string, role: string) => boolean }): void {
+function openNameForm(id: string, trigger: HTMLElement, options: { title: string; placeholder: string; submit: string; initial?: string; maxLength?: number; withDescription?: boolean; withRole?: boolean; withText?: { placeholder: string; maxLength: number }; errorText?: string; onSubmit: (name: string, description: string, role: string, text: string) => boolean }): void {
   closeAllMenus(false);
   const panel = make("div", "menu panel-form");
   panel.setAttribute("role", "dialog");
@@ -2019,6 +2109,15 @@ function openNameForm(id: string, trigger: HTMLElement, options: { title: string
     description.setAttribute("aria-label", "Kısa açıklama");
     form.appendChild(description);
   }
+  let text: HTMLTextAreaElement | null = null;
+  if (options.withText) {
+    text = make("textarea", "text-input form-text");
+    text.rows = 5;
+    text.maxLength = options.withText.maxLength;
+    text.placeholder = options.withText.placeholder;
+    text.setAttribute("aria-label", options.withText.placeholder);
+    form.appendChild(text);
+  }
   let role: HTMLSelectElement | null = null;
   if (options.withRole) {
     role = make("select", "text-input");
@@ -2042,11 +2141,11 @@ function openNameForm(id: string, trigger: HTMLElement, options: { title: string
   form.appendChild(actions);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    const ok = options.onSubmit(name.value, description ? description.value : "", role ? role.value : "");
+    const ok = options.onSubmit(name.value, description ? description.value : "", role ? role.value : "", text ? text.value : "");
     if (ok) {
       closeAllMenus(true);
     } else {
-      error.textContent = "Geçerli bir ad yaz.";
+      error.textContent = options.errorText ?? "Geçerli bir ad yaz.";
       error.hidden = false;
       name.focus();
     }
@@ -2336,7 +2435,7 @@ function openSkillsPicker(trigger: HTMLElement): void {
   const fill = () => {
     const focusedId = focusedDataId(parts.list, "skillId");
     clearNode(parts.list);
-    const matches = VyronModel.SKILLS.filter((s) => VyronModel.matchesQuery(query, s.name, s.tag, s.description, s.category));
+    const matches = VyronModel.allSkills(ws).filter((s) => VyronModel.matchesQuery(query, s.name, s.tag, s.description, s.category));
     if (matches.length === 0) {
       parts.list.appendChild(make("p", "panel-empty", "Sonuç bulunamadı."));
       return;
@@ -2370,10 +2469,27 @@ function openSkillsPicker(trigger: HTMLElement): void {
   parts.search.focus();
 }
 
+function openSkillCreate(trigger: HTMLElement): void {
+  openNameForm("skill-create", trigger, {
+    title: "Yeni yetenek",
+    placeholder: "Yetenek adı",
+    submit: "Ekle",
+    withDescription: true,
+    withText: { placeholder: "Talimat: model bu yetenek seçilince ne yapsın?", maxLength: VyronModel.MAX_SKILL_INSTRUCTIONS },
+    errorText: "Bir ad ve bir talimat yaz (aynı ad kullanılamaz).",
+    onSubmit: (name, description, _role, text) => {
+      const skill = VyronModel.createSkill(ws, name, description, text);
+      if (!skill) return false;
+      refreshSkillViews();
+      return true;
+    },
+  });
+}
+
 function renderSkillsPage(): void {
   const list = must("skills-page-list");
   clearNode(list);
-  const matches = VyronModel.SKILLS.filter((s) => VyronModel.matchesQuery(skillsQuery, s.name, s.tag, s.description, s.category));
+  const matches = VyronModel.allSkills(ws).filter((s) => VyronModel.matchesQuery(skillsQuery, s.name, s.tag, s.description, s.category));
   for (const skill of matches) {
     const selected = ws.selectedSkillIds.indexOf(skill.id) >= 0;
     const row = make("div", "row");
@@ -2388,7 +2504,23 @@ function renderSkillsPage(): void {
     body.appendChild(title);
     body.appendChild(make("div", "row-desc", skill.description));
     row.appendChild(body);
+    row.title = skill.instructions;
     const actions = make("div", "row-actions");
+    if (skill.custom) {
+      actions.appendChild(
+        makeMoreButton(skill.name + " seçenekleri", (trigger) =>
+          openMenuWith("row-more", trigger, (menu) => {
+            menu.setAttribute("aria-label", "Yetenek seçenekleri");
+            menu.appendChild(
+              makeConfirmItem("Sil", "Evet, yeteneği sil", () => {
+                VyronModel.removeSkill(ws, skill.id);
+                refreshSkillViews();
+              }),
+            );
+          }),
+        ),
+      );
+    }
     const toggle = makeButton(selected ? "btn primary small" : "btn small", selected ? "Kullanılıyor" : "Kullan", () => toggleSkill(skill.id));
     toggle.setAttribute("aria-pressed", selected ? "true" : "false");
     toggle.setAttribute("aria-label", skill.name + (selected ? " kullanılıyor, kaldırmak için seç" : " yeteneğini kullan"));
@@ -2821,6 +2953,7 @@ function openAddManager(trigger: HTMLElement): void {
 // ---------------------------------------------------------------------------------------------
 
 function renderAll(): void {
+  renderQuickStarts();
   renderSidebar();
   renderChips();
   renderTaskView();
@@ -2960,6 +3093,10 @@ function wire(): void {
     renderSitesPage();
   });
 
+  on("add-skill-btn", "click", () => {
+    const button = must("add-skill-btn");
+    toggleRootMenu("skill-create", button, () => openSkillCreate(button));
+  });
   on("ai-retry-btn", "click", () => void handleRetry());
   on("ai-copy-diagnostics-btn", "click", () => void handleCopyDiagnostics());
   on("settings-retry-btn", "click", () => void handleRetry());

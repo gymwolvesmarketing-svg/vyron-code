@@ -63,6 +63,9 @@ interface WsSkill {
   tag: string;
   description: string;
   icon: string;
+  /** What the model is told to do when the skill is selected. */
+  instructions: string;
+  custom: boolean;
 }
 
 interface WsConnector {
@@ -85,6 +88,7 @@ interface WsQuickStart {
   label: string;
   icon: string;
   draft: string;
+  custom?: boolean;
 }
 
 interface WsWorkspaceState {
@@ -106,6 +110,12 @@ interface WsWorkspaceState {
   terminalMode: WsTerminalMode;
   workMode: WsWorkMode;
   models: WsModelChoice;
+  /** Skills the user wrote (name, description, instructions). */
+  customSkills: WsSkill[];
+  /** Starter chips the user added under the built-in ones. */
+  customQuickStarts: WsQuickStart[];
+  /** Skills attached to each starter chip (built-in or custom), by chip id. */
+  quickStartSkills: Record<string, string[]>;
 }
 
 interface WsStorageLike {
@@ -121,6 +131,8 @@ interface WsPromptInput {
   terminalMode: WsTerminalMode;
   managerName: string | null;
   skillNames: string[];
+  /** Instructions of the selected skills that have any (same order as the names). */
+  skillInstructions?: string[];
   connectorNames: string[];
 }
 
@@ -144,6 +156,130 @@ const VyronModel = (() => {
     { id: "vyron-code", label: "vyron-code (Claude Web → Nemotron → ChatGPT Web)" },
     { id: "vyron-research", label: "vyron-research (Perplexity → ChatGPT Web)" },
   ];
+  /** Skills a built-in starter chip brings along by default (the user can change them). */
+  function defaultQuickStartSkills(): Record<string, string[]> {
+    return {
+      "explore-idea": ["find-skills"],
+      "build-app": ["design-then-build", "frontend-design"],
+      "design-first": ["design-then-build", "frontend-design"],
+      "data-analysis": ["confirmed-data-analysis"],
+      "doc-analysis": ["confirmed-data-analysis"],
+      "make-image": ["create-image"],
+    };
+  }
+
+  const MAX_CUSTOM_SKILLS = 30;
+  const MAX_CUSTOM_QUICK_STARTS = 20;
+  const MAX_SKILL_INSTRUCTIONS = 2000;
+
+  function allSkills(state: WsWorkspaceState): WsSkill[] {
+    return SKILLS.concat(state.customSkills);
+  }
+
+  function allQuickStarts(state: WsWorkspaceState): WsQuickStart[] {
+    return QUICK_STARTS.concat(state.customQuickStarts);
+  }
+
+  function quickStartSkillIds(state: WsWorkspaceState, quickId: string): string[] {
+    const ids = state.quickStartSkills[quickId] ?? [];
+    return ids.filter((id) => allSkills(state).some((s) => s.id === id));
+  }
+
+  function createSkill(state: WsWorkspaceState, rawName: string, rawDescription: string, rawInstructions: string): WsSkill | null {
+    const name = cleanName(rawName, 40);
+    const instructions = rawInstructions.trim();
+    if (name === null || instructions.length === 0 || instructions.length > MAX_SKILL_INSTRUCTIONS) return null;
+    if (state.customSkills.length >= MAX_CUSTOM_SKILLS) return null;
+    if (allSkills(state).some((s) => normalizeQuery(s.name) === normalizeQuery(name))) return null;
+    const skill: WsSkill = {
+      id: newId("skill"),
+      name,
+      category: "Özel",
+      tag: "Özel",
+      description: cleanText(rawDescription, 140) ?? "Özel yetenek.",
+      icon: "sparkles",
+      instructions,
+      custom: true,
+    };
+    state.customSkills.push(skill);
+    return skill;
+  }
+
+  function removeSkill(state: WsWorkspaceState, id: string): boolean {
+    if (!state.customSkills.some((s) => s.id === id)) return false;
+    state.customSkills = state.customSkills.filter((s) => s.id !== id);
+    state.selectedSkillIds = state.selectedSkillIds.filter((x) => x !== id);
+    for (const key of Object.keys(state.quickStartSkills)) state.quickStartSkills[key] = (state.quickStartSkills[key] ?? []).filter((x) => x !== id);
+    return true;
+  }
+
+  function createQuickStart(state: WsWorkspaceState, rawLabel: string, rawDraft: string): WsQuickStart | null {
+    const label = cleanName(rawLabel, 30);
+    const draft = rawDraft.trim();
+    if (label === null || draft.length === 0 || draft.length > MAX_DRAFT_LENGTH) return null;
+    if (state.customQuickStarts.length >= MAX_CUSTOM_QUICK_STARTS) return null;
+    if (allQuickStarts(state).some((q) => normalizeQuery(q.label) === normalizeQuery(label))) return null;
+    const quick: WsQuickStart = { id: newId("quick"), label, icon: "message", draft, custom: true };
+    state.customQuickStarts.push(quick);
+    return quick;
+  }
+
+  function removeQuickStart(state: WsWorkspaceState, id: string): boolean {
+    if (!state.customQuickStarts.some((q) => q.id === id)) return false;
+    state.customQuickStarts = state.customQuickStarts.filter((q) => q.id !== id);
+    delete state.quickStartSkills[id];
+    return true;
+  }
+
+  /** Attaches a skill to a starter chip, or detaches it when it is already attached. */
+  function toggleQuickStartSkill(state: WsWorkspaceState, quickId: string, skillId: string): boolean {
+    if (!allQuickStarts(state).some((q) => q.id === quickId) || !allSkills(state).some((s) => s.id === skillId)) return false;
+    const current = state.quickStartSkills[quickId] ?? [];
+    state.quickStartSkills[quickId] = current.indexOf(skillId) >= 0 ? current.filter((x) => x !== skillId) : current.concat(skillId);
+    return true;
+  }
+
+  function sanitizeCustomSkills(raw: unknown): WsSkill[] {
+    const out: WsSkill[] = [];
+    if (!Array.isArray(raw)) return out;
+    for (const item of raw) {
+      if (out.length >= MAX_CUSTOM_SKILLS || !isRecord(item)) continue;
+      const id = cleanText(item.id, 80);
+      const name = cleanName(typeof item.name === "string" ? item.name : "", 40);
+      const instructions = typeof item.instructions === "string" ? item.instructions.trim() : "";
+      if (!id || name === null || instructions.length === 0 || instructions.length > MAX_SKILL_INSTRUCTIONS) continue;
+      if (SKILLS.some((s) => s.id === id) || out.some((s) => s.id === id)) continue;
+      out.push({ id, name, category: "Özel", tag: "Özel", description: cleanText(item.description, 140) ?? "Özel yetenek.", icon: "sparkles", instructions, custom: true });
+    }
+    return out;
+  }
+
+  function sanitizeCustomQuickStarts(raw: unknown): WsQuickStart[] {
+    const out: WsQuickStart[] = [];
+    if (!Array.isArray(raw)) return out;
+    for (const item of raw) {
+      if (out.length >= MAX_CUSTOM_QUICK_STARTS || !isRecord(item)) continue;
+      const id = cleanText(item.id, 80);
+      const label = cleanName(typeof item.label === "string" ? item.label : "", 30);
+      const draft = typeof item.draft === "string" ? item.draft.trim() : "";
+      if (!id || label === null || draft.length === 0 || draft.length > MAX_DRAFT_LENGTH) continue;
+      if (QUICK_STARTS.some((q) => q.id === id) || out.some((q) => q.id === id)) continue;
+      out.push({ id, label, icon: "message", draft, custom: true });
+    }
+    return out;
+  }
+
+  function sanitizeQuickStartSkills(raw: unknown, skills: WsSkill[], quickIds: string[]): Record<string, string[]> {
+    const out = defaultQuickStartSkills();
+    if (!isRecord(raw)) return out;
+    for (const quickId of quickIds) {
+      const list = raw[quickId];
+      if (!Array.isArray(list)) continue;
+      out[quickId] = list.filter((id, index): id is string => typeof id === "string" && skills.some((s) => s.id === id) && list.indexOf(id) === index).slice(0, 12);
+    }
+    return out;
+  }
+
   function defaultModels(): WsModelChoice {
     return { assistant: "vyron-assistant", code: "vyron-code", research: "vyron-research" };
   }
@@ -177,12 +313,12 @@ const VyronModel = (() => {
   // ------------------------------------------------------------------------------------------
 
   const SKILLS: readonly WsSkill[] = [
-    { id: "confirmed-data-analysis", name: "Confirmed Data Analysis", category: "Kullanıcı", tag: "Analiz", description: "Verileri doğrulayarak analiz eder ve bulguları özetler.", icon: "chart" },
-    { id: "create-image", name: "Create Image", category: "Kullanıcı", tag: "Görsel", description: "Görsel fikirleri ve görsel üretim istemleri hazırlar.", icon: "image" },
-    { id: "design-then-build", name: "Design Then Build", category: "Kullanıcı", tag: "Tasarım", description: "Önce tasarımı çıkarır, sonra uygulamayı adım adım kurar.", icon: "palette" },
-    { id: "find-skills", name: "Find Skills", category: "Kullanıcı", tag: "Keşif", description: "Göreve uygun yetenekleri bulur ve önerir.", icon: "search" },
-    { id: "frontend-design", name: "Frontend Design", category: "Kullanıcı", tag: "Arayüz", description: "Arayüz yapısını, bileşenleri ve stil kararlarını planlar.", icon: "code" },
-    { id: "skill-creator", name: "Skill Creator", category: "Kullanıcı", tag: "Yetenek", description: "Yeni bir yeteneğin tanımını ve adımlarını yazar.", icon: "sparkles" },
+    { id: "confirmed-data-analysis", name: "Confirmed Data Analysis", category: "Kullanıcı", tag: "Analiz", description: "Verileri doğrulayarak analiz eder ve bulguları özetler.", icon: "chart", instructions: "Veriyi analiz etmeden önce eksik ve aykırı değerleri ile varsayımları doğrula; bulguları sayılarla destekle, belirsiz olanı açıkça belirt.", custom: false },
+    { id: "create-image", name: "Create Image", category: "Kullanıcı", tag: "Görsel", description: "Görsel fikirleri ve görsel üretim istemleri hazırlar.", icon: "image", instructions: "Görsel istemi yaz: konu, kompozisyon, stil, ışık, renk paleti ve kaçınılacaklar; kısa ve net tut.", custom: false },
+    { id: "design-then-build", name: "Design Then Build", category: "Kullanıcı", tag: "Tasarım", description: "Önce tasarımı çıkarır, sonra uygulamayı adım adım kurar.", icon: "palette", instructions: "Önce ekranları, akışı ve bileşenleri tasarla ve özetle; tasarım netleşince adım adım uygula.", custom: false },
+    { id: "find-skills", name: "Find Skills", category: "Kullanıcı", tag: "Keşif", description: "Göreve uygun yetenekleri bulur ve önerir.", icon: "search", instructions: "Görev için hangi yeteneklerin işe yarayacağını belirle ve her biri için nedenini bir cümleyle yaz.", custom: false },
+    { id: "frontend-design", name: "Frontend Design", category: "Kullanıcı", tag: "Arayüz", description: "Arayüz yapısını, bileşenleri ve stil kararlarını planlar.", icon: "code", instructions: "Arayüzü bileşenlere ayır; erişilebilirlik, duyarlılık ve tutarlı stil kararlarını gerekçeleriyle yaz.", custom: false },
+    { id: "skill-creator", name: "Skill Creator", category: "Kullanıcı", tag: "Yetenek", description: "Yeni bir yeteneğin tanımını ve adımlarını yazar.", icon: "sparkles", instructions: "Yeni bir yetenek tanımla: ad, ne zaman kullanılacağı, adımlar ve beklenen çıktı.", custom: false },
   ];
 
   const QUICK_STARTS: readonly WsQuickStart[] = [
@@ -303,6 +439,9 @@ const VyronModel = (() => {
       terminalMode: "off",
       workMode: "local",
       models: defaultModels(),
+      customSkills: [],
+      customQuickStarts: [],
+      quickStartSkills: defaultQuickStartSkills(),
     };
   }
 
@@ -432,12 +571,17 @@ const VyronModel = (() => {
       terminalMode: pick(raw.terminalMode, ["off", "suggest"] as const, "off"),
       workMode: pick(raw.workMode, ["local", "brief"] as const, "local"),
       models: sanitizeModels(raw.models),
+      customSkills: sanitizeCustomSkills(raw.customSkills),
+      customQuickStarts: [],
+      quickStartSkills: {},
     };
+    state.customQuickStarts = sanitizeCustomQuickStarts(raw.customQuickStarts);
+    state.quickStartSkills = sanitizeQuickStartSkills(raw.quickStartSkills, allSkills(state), allQuickStarts(state).map((q) => q.id));
     for (const task of state.tasks) if (task.managerId !== null && !state.managers.some((m) => m.id === task.managerId)) task.managerId = null;
     if (typeof raw.activeProjectId === "string" && state.projects.some((p) => p.id === raw.activeProjectId)) state.activeProjectId = raw.activeProjectId;
     if (typeof raw.selectedManagerId === "string" && state.managers.some((m) => m.id === raw.selectedManagerId)) state.selectedManagerId = raw.selectedManagerId;
     if (Array.isArray(raw.selectedSkillIds)) {
-      state.selectedSkillIds = raw.selectedSkillIds.filter((id): id is string => typeof id === "string" && SKILLS.some((s) => s.id === id));
+      state.selectedSkillIds = raw.selectedSkillIds.filter((id): id is string => typeof id === "string" && allSkills(state).some((s) => s.id === id));
     }
     if (Array.isArray(raw.selectedConnectorIds)) {
       state.selectedConnectorIds = raw.selectedConnectorIds.filter(
@@ -749,6 +893,7 @@ const VyronModel = (() => {
     const terminal = TERMINAL_MODES.find((m) => m.id === input.terminalMode);
     if (input.managerName) lines.push("Rol: " + input.managerName + ".");
     if (input.skillNames.length > 0) lines.push("Kullanılacak yetenekler: " + input.skillNames.join(", ") + ".");
+    for (const instruction of input.skillInstructions ?? []) lines.push(instruction);
     if (input.connectorNames.length > 0) lines.push("Bağlam olarak seçilen bağlayıcılar: " + input.connectorNames.join(", ") + ".");
     if (workMode && workMode.prefix) lines.push(workMode.prefix);
     if (plan && plan.prefix) lines.push(plan.prefix);
@@ -825,6 +970,15 @@ const VyronModel = (() => {
     MAX_TASKS,
     COLLAPSED_TASK_COUNT,
     SKILLS,
+    allSkills,
+    allQuickStarts,
+    quickStartSkillIds,
+    createSkill,
+    removeSkill,
+    createQuickStart,
+    removeQuickStart,
+    toggleQuickStartSkill,
+    MAX_SKILL_INSTRUCTIONS,
     QUICK_STARTS,
     PLAN_MODES,
     TERMINAL_MODES,

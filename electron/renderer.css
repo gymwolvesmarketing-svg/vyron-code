@@ -385,3 +385,10 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible), textarea:focu
 .project-group.drop-target > .project-row { box-shadow: inset 0 2px 0 var(--accent); }
 .detail-jobs { margin-top: 22px; }
 .detail-subtitle { margin: 0 0 8px; font-size: 14px; font-weight: 650; }
+.quick-item { position: relative; display: inline-flex; }
+.quick-item .row-more { position: absolute; top: -7px; right: -7px; width: 20px; height: 20px; border-radius: 50%; background: var(--surface-3, var(--surface-2)); border: 1px solid var(--border); }
+.quick-item:hover .row-more, .quick-item .row-more:focus-visible, .quick-item .row-more[aria-expanded="true"] { opacity: 1; }
+.quick-item .row-more .ico { width: 12px; height: 12px; }
+.quick-skills { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--selected); color: var(--text-2); font-size: 11px; line-height: 16px; text-align: center; }
+.quick-add { border-style: dashed; color: var(--muted); }
+.form-text { min-height: 90px; resize: vertical; font: inherit; }
