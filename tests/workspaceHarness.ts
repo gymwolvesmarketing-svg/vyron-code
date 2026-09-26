@@ -35,7 +35,7 @@ export interface Harness {
   dom: JSDOM;
   win: Window & typeof globalThis;
   doc: Document;
-  calls: { getState: number; retry: number; copy: number; send: Array<{ draft: string }>; clear: number; devTools: number; memoryClears: number; picks: number; workspaceClears: number; permissionClears: number };
+  calls: { getState: number; retry: number; copy: number; send: Array<{ draft: string }>; clear: number; devTools: number; memoryClears: number; picks: number; pickProjects: Array<string | null>; workspaceClears: number; permissionClears: number };
   behavior: {
     aiState: FakeAiState;
     retryState: FakeAiState;
@@ -58,6 +58,7 @@ export interface Harness {
   menuLabels(): string[];
   openMenus(): HTMLElement[];
   storageText(): string | null;
+  turnsText(): string | null;
   close(): void;
 }
 
@@ -65,11 +66,13 @@ export interface SetupOptions {
   bridge?: boolean;
   ai?: FakeAiState;
   storage?: string | null;
+  turns?: string | null;
 }
 
 export function setup(options: SetupOptions = {}): Harness {
   const errors: unknown[] = [];
-  const calls = { getState: 0, retry: 0, copy: 0, send: [] as Array<{ draft: string }>, clear: 0, devTools: 0, memoryClears: 0, picks: 0, workspaceClears: 0, permissionClears: 0 };
+  const calls = { getState: 0, retry: 0, copy: 0, send: [] as Array<{ draft: string }>, clear: 0, devTools: 0, memoryClears: 0, picks: 0, pickProjects: [] as Array<string | null>, workspaceClears: 0, permissionClears: 0 };
+  const folders = new Map<string, string>();
   const behavior: Harness["behavior"] = {
     aiState: options.ai ?? { state: "ready" },
     retryState: { state: "starting", stage: "checking" },
@@ -88,6 +91,7 @@ export function setup(options: SetupOptions = {}): Harness {
     pretendToBeVisual: true,
     beforeParse(window) {
       if (options.storage) window.localStorage.setItem("vyron.workspace.v1", options.storage);
+      if (options.turns) window.localStorage.setItem("vyron.turns.v1", options.turns);
       if (options.bridge !== false) {
         (window as unknown as Record<string, unknown>).vyronDesktop = {
           localAi: {
@@ -116,14 +120,23 @@ export function setup(options: SetupOptions = {}): Harness {
             },
           },
           tools: {
-            getWorkspace: async () => ({ folderName: behavior.folderName, alwaysCount: behavior.alwaysCount }),
-            pickWorkspace: async () => {
-              calls.picks += 1;
-              behavior.folderName = behavior.pickFolderName;
+            // Mirrors the main process: each project remembers its own folder; no project = no folder.
+            getWorkspace: async (projectId?: string) => {
+              if (typeof projectId === "string") behavior.folderName = folders.get(projectId) ?? null;
               return { folderName: behavior.folderName, alwaysCount: behavior.alwaysCount };
             },
-            clearWorkspace: async () => {
-              calls.workspaceClears += 1;
+            pickWorkspace: async (projectId?: string) => {
+              calls.picks += 1;
+              calls.pickProjects.push(projectId ?? null);
+              behavior.folderName = behavior.pickFolderName;
+              if (typeof projectId === "string") folders.set(projectId, behavior.pickFolderName ?? "");
+              return { folderName: behavior.folderName, alwaysCount: behavior.alwaysCount };
+            },
+            clearWorkspace: async (projectId?: string) => {
+              if (typeof projectId === "string") {
+                calls.workspaceClears += 1;
+                folders.delete(projectId);
+              }
               behavior.folderName = null;
               return { folderName: null, alwaysCount: behavior.alwaysCount };
             },
@@ -199,6 +212,9 @@ export function setup(options: SetupOptions = {}): Harness {
     },
     storageText() {
       return win.localStorage.getItem("vyron.workspace.v1");
+    },
+    turnsText() {
+      return win.localStorage.getItem("vyron.turns.v1");
     },
     close() {
       dom.window.close();

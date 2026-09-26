@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   dialogs: [] as Array<{ title?: string; message?: string; detail?: string; buttons?: string[]; defaultId?: number; cancelId?: number }>,
   throwOnDialog: false,
   picked: 0,
+  restored: [] as string[],
 }));
 
 vi.mock("electron", () => ({
@@ -35,9 +36,14 @@ vi.mock("../electron/workspace-grant", () => ({
   clearCurrent: () => {
     state.root = null;
   },
+  restoreGrant: (stored: string) => {
+    state.restored.push(stored);
+    state.root = fs.existsSync(stored) ? stored : null;
+    return { state: state.root ? "granted" : "no_workspace" };
+  },
 }));
 
-import { PERMISSIONS_FILE, createPermissionStore, createProductionToolRunner, workspaceKey } from "../electron/toolAdapters";
+import { PERMISSIONS_FILE, PROJECT_FOLDERS_FILE, createPermissionStore, createProductionToolRunner, createProjectFolderStore, isProjectId, workspaceKey } from "../electron/toolAdapters";
 import type { ChatMessage } from "../electron/toolPolicy";
 
 let base: string;
@@ -50,6 +56,7 @@ beforeEach(() => {
   state.dialogs = [];
   state.throwOnDialog = false;
   state.picked = 0;
+  state.restored = [];
 });
 afterEach(() => {
   fs.rmSync(base, { recursive: true, force: true });
@@ -192,5 +199,49 @@ describe("approval dialog and tool runner", () => {
     await runner.pickWorkspace();
     expect(state.picked).toBe(1);
     expect(runner.clearWorkspace().folderName).toBeNull();
+  });
+});
+
+describe("project folders (each project remembers its own folder)", () => {
+  it("accepts only plain slug ids", () => {
+    for (const good of ["aetheris", "project-lxyz-1abc", "a1"]) expect(isProjectId(good)).toBe(true);
+    for (const bad of ["", "A", "../x", "a b", "-a", 5, null, undefined, "x".repeat(81)]) expect(isProjectId(bad)).toBe(false);
+  });
+
+  it("stores, forgets and survives a restart; a corrupt or hostile file reads as empty", () => {
+    const file = path.join(base, PROJECT_FOLDERS_FILE);
+    const store = createProjectFolderStore(file);
+    expect(store.get("aetheris")).toBeNull();
+    store.set("aetheris", "C:\\dizin\\a");
+    store.set("b", "C:\\dizin\\b");
+    expect(createProjectFolderStore(file).get("aetheris")).toBe("C:\\dizin\\a");
+    store.remove("aetheris");
+    expect(createProjectFolderStore(file).get("aetheris")).toBeNull();
+    expect(createProjectFolderStore(file).get("b")).toBe("C:\\dizin\\b");
+    fs.writeFileSync(file, "{not json", "utf8");
+    expect(createProjectFolderStore(file).get("b")).toBeNull();
+    fs.writeFileSync(file, JSON.stringify({ version: 1, roots: { "../evil": "C:\\x", ok: 5, fine: "C:\\y" } }), "utf8");
+    const hostile = createProjectFolderStore(file);
+    expect(hostile.get("../evil")).toBeNull();
+    expect(hostile.get("ok")).toBeNull();
+    expect(hostile.get("fine")).toBe("C:\\y");
+  });
+
+  it("opening a project restores its remembered folder, another project has none, removing forgets it", () => {
+    const runner = createProductionToolRunner(() => null as never);
+    const granted = state.root as string;
+    const stored = createProjectFolderStore(path.join(state.userData, PROJECT_FOLDERS_FILE));
+    stored.set("aetheris", granted);
+    state.root = null;
+    expect(runner.getWorkspace("aetheris").folderName).not.toBeNull();
+    expect(state.restored).toEqual([granted]);
+    expect(runner.getWorkspace("hangikargoo").folderName).toBeNull();
+    expect(runner.getWorkspace("aetheris").folderName).not.toBeNull();
+    // Not a project id (or none): the grant is left alone.
+    expect(runner.getWorkspace("../x").folderName).not.toBeNull();
+    expect(runner.getWorkspace().folderName).not.toBeNull();
+    expect(runner.clearWorkspace("aetheris").folderName).toBeNull();
+    expect(createProjectFolderStore(path.join(state.userData, PROJECT_FOLDERS_FILE)).get("aetheris")).toBeNull();
+    expect(runner.getWorkspace("aetheris").folderName).toBeNull();
   });
 });

@@ -634,7 +634,13 @@ describe("result workspace", () => {
     await sendTask(h, "İlk");
     await sendTask(h, "Devam");
     expect(h.doc.querySelectorAll("#turns .turn")).toHaveLength(2);
-    expect(h.calls.send.map((c) => c.draft)).toEqual(["İlk", "Devam"]);
+    expect(h.calls.send[0]!.draft).toBe("İlk");
+    // The follow-up carries the earlier conversation, so the model continues where it left off.
+    const second = h.calls.send[1]!.draft;
+    expect(second.startsWith("Bu istek aynı görevin devamıdır.")).toBe(true);
+    expect(second).toContain("Kullanıcı: İlk");
+    expect(second).toContain("Yanıt: Yanıt metni");
+    expect(second.endsWith("Şimdiki istek:" + String.fromCharCode(10) + "Devam")).toBe(true);
     expect(Array.from(h.doc.querySelectorAll("#project-list .task-item")).filter((n) => n.textContent === "İlk")).toHaveLength(1);
   });
 
@@ -768,7 +774,7 @@ describe("+ menu, SubAgent, Plan and Terminal", () => {
     const h = await start();
     h.click(h.el("plus-btn"));
     h.click(item(h, "Terminal"));
-    expect(h.menuLabels().slice(4).map((l) => l.slice(0, 15))).toEqual(["Terminal kapalı", "Komut önerisi i", "Araçlar (onaylı"]);
+    expect(h.menuLabels().slice(4).map((l) => l.slice(0, 15))).toEqual(["Terminal kapalı", "Komut önerisi i"]);
     h.click(item(h, "Komut önerisi iste"));
     expect(h.doc.querySelector("#chips")?.textContent).toContain("komut önerisi");
     await sendTask(h, "Bir betik yaz");
@@ -1421,7 +1427,9 @@ describe("managers run through Ruflo roles", () => {
     h.click(item(h, "SubAgent"));
     h.click(item(h, "Multi-Model Planner"));
     await sendTask(h, "Plan yap");
-    expect(h.calls.send[1]).toEqual({ draft: "Plan yap", agent: "task-orchestrator", models: MODELS });
+    expect(h.calls.send[1]!.agent).toBe("task-orchestrator");
+    expect(h.calls.send[1]!.models).toEqual(MODELS);
+    expect(h.calls.send[1]!.draft.endsWith("Plan yap")).toBe(true);
     expect(h.calls.send[1]!.draft).not.toContain("Rol:");
   });
 
@@ -1578,40 +1586,51 @@ describe("project memory and the parallel team", () => {
   });
 });
 
-describe("approved tools (workspace folder + tool mode)", () => {
-  async function chooseTools(h: Harness): Promise<void> {
-    h.click(h.el("plus-btn"));
-    h.click(item(h, "Terminal"));
-    h.click(item(h, "Araçlar (onaylı)"));
-  }
+describe("workspace folder = project: tools are on, the folder follows the project, history is kept", () => {
+  const AETHERIS_ADD = '.project-add[aria-label="AETHERIS projesinde yeni görev"]';
 
-  it("offers the third Terminal choice, shows a chip, and asks for a folder before it can send", async () => {
+  it("the Terminal menu no longer has a separate tools mode (a folder is enough)", async () => {
     const h = await start();
     h.click(h.el("plus-btn"));
     h.click(item(h, "Terminal"));
-    expect(h.menuLabels().slice(4).map((l) => l.slice(0, 15))).toEqual(["Terminal kapalı", "Komut önerisi i", "Araçlar (onaylı"]);
-    h.click(item(h, "Araçlar (onaylı)"));
-    expect(h.doc.querySelector("#chips")?.textContent).toContain("araçlar (onaylı)");
-    h.type("Dosya oluştur");
-    expect(h.el<HTMLButtonElement>("send-btn").disabled).toBe(true);
-    expect(h.el("composer-error").textContent).toBe("Araçlar için önce bir çalışma klasörü seç.");
-    h.key(h.el("task-input"), "Enter", { ctrlKey: true });
-    await h.flush();
-    expect(h.calls.send).toHaveLength(0);
+    expect(h.menuLabels().slice(4).map((l) => l.slice(0, 15))).toEqual(["Terminal kapalı", "Komut önerisi i"]);
   });
 
-  it("the workspace pill starts empty, picks a folder through the native dialog and shows only its name", async () => {
+  it("the workspace pill starts empty; picking a folder opens a project named after it and shows only the name", async () => {
     const h = await start();
     expect(h.el("workspace-label").textContent).toBe("Çalışma klasörü seç");
     h.click(h.el("workspace-btn"));
     await h.flush();
     expect(h.calls.picks).toBe(1);
+    expect(h.calls.pickProjects[0]).toMatch(/^project-/);
     expect(h.el("workspace-label").textContent).toBe("ProjeKlasoru");
     expect(h.el("workspace-btn").classList.contains("has-selection")).toBe(true);
+    expect(h.el("project-label").textContent).toBe("ProjeKlasoru");
+    expect(Array.from(h.doc.querySelectorAll("#project-list .project-name")).map((n) => n.textContent)).toContain("ProjeKlasoru");
     expect(h.doc.body.textContent).not.toMatch(/[A-Za-z]:\\/);
   });
 
-  it("the pill offers to change or remove the folder once one is chosen", async () => {
+  it("a cancelled folder dialog leaves no project behind", async () => {
+    const h = await start();
+    h.behavior.pickFolderName = null;
+    const before = h.doc.querySelectorAll("#project-list .project-name").length;
+    h.click(h.el("workspace-btn"));
+    await h.flush();
+    expect(h.doc.querySelectorAll("#project-list .project-name")).toHaveLength(before);
+    expect(h.el("workspace-label").textContent).toBe("Çalışma klasörü seç");
+    expect(h.el("project-label").textContent).toBe("Proje seç veya oluştur");
+  });
+
+  it("with an existing project active, the folder is picked for that project", async () => {
+    const h = await start();
+    h.click(h.doc.querySelector<HTMLElement>(AETHERIS_ADD));
+    h.click(h.el("workspace-btn"));
+    await h.flush();
+    expect(h.calls.pickProjects).toEqual(["aetheris"]);
+    expect(h.el("workspace-label").textContent).toBe("ProjeKlasoru");
+  });
+
+  it("the pill offers to change or remove the folder once one is chosen; removing it forgets it for the project", async () => {
     const h = await start();
     h.click(h.el("workspace-btn"));
     await h.flush();
@@ -1623,50 +1642,37 @@ describe("approved tools (workspace folder + tool mode)", () => {
     expect(h.el("workspace-label").textContent).toBe("Çalışma klasörü seç");
   });
 
-  it("with a folder chosen, the task is sent with tools: true (and keeps its Manager role and project)", async () => {
+  it("with a folder the task is sent with tools: true, keeping its Manager role and project; without one it never is", async () => {
     const h = await start();
+    await sendTask(h, "Klasörsüz");
+    expect(h.calls.send[0]).toEqual({ draft: "Klasörsüz", models: MODELS });
+    h.click(h.el("new-task-btn"));
+    h.click(h.doc.querySelector<HTMLElement>(AETHERIS_ADD));
     h.click(h.el("workspace-btn"));
     await h.flush();
-    await chooseTools(h);
     await sendTask(h, "Bir dosya yaz");
-    expect(h.calls.send[0]).toEqual({ draft: "Bir dosya yaz", tools: true, models: MODELS });
+    expect(h.calls.send[1]).toEqual({ draft: "Bir dosya yaz", tools: true, models: MODELS });
     h.click(h.el("new-task-btn"));
     h.click(h.el("plus-btn"));
     h.click(item(h, "SubAgent"));
     h.click(item(h, "Reviewer"));
-    h.click(h.doc.querySelector<HTMLElement>('.project-add[aria-label="AETHERIS projesinde yeni görev"]'));
+    h.click(h.doc.querySelector<HTMLElement>(AETHERIS_ADD));
+    await h.flush();
     await sendTask(h, "Yöneticiyle yaz");
-    expect(h.calls.send[1]).toEqual({ draft: "Yöneticiyle yaz", agent: "reviewer", project: "aetheris", tools: true, models: MODELS });
+    expect(h.calls.send[2]).toEqual({ draft: "Yöneticiyle yaz", agent: "reviewer", project: "aetheris", tools: true, models: MODELS });
   });
 
-  it("without the tools mode the request never carries tools", async () => {
+  it("the folder follows the project: another project has none, and coming back brings the folder back", async () => {
     const h = await start();
+    h.click(h.doc.querySelector<HTMLElement>(AETHERIS_ADD));
     h.click(h.el("workspace-btn"));
     await h.flush();
-    await sendTask(h, "Sadece metin");
-    expect(h.calls.send[0]).toEqual({ draft: "Sadece metin", models: MODELS });
-  });
-
-  it("removing the folder while tools are on blocks sending again", async () => {
-    const h = await start();
-    h.click(h.el("workspace-btn"));
+    expect(h.el("workspace-label").textContent).toBe("ProjeKlasoru");
+    h.click(h.doc.querySelector<HTMLElement>('.project-add[aria-label="HANGIKARGOO projesinde yeni görev"]'));
     await h.flush();
-    await chooseTools(h);
-    h.type("x");
-    expect(h.el<HTMLButtonElement>("send-btn").disabled).toBe(false);
-    h.click(h.el("workspace-btn"));
-    h.click(item(h, "Klasörü kaldır"));
-    await h.flush();
-    expect(h.el<HTMLButtonElement>("send-btn").disabled).toBe(true);
-  });
-
-  it("the tools mode chip removes the mode, and the mode is remembered", async () => {
-    const h = await start();
-    await chooseTools(h);
-    expect(JSON.parse(h.storageText() as string).terminalMode).toBe("tools");
-    h.click(h.doc.querySelector<HTMLElement>('#chips .chip-remove[aria-label="Araçları kapat"]'));
-    expect(h.doc.querySelector("#chips")?.textContent).toBe("");
-    expect(JSON.parse(h.storageText() as string).terminalMode).toBe("off");
+    expect(h.el("workspace-label").textContent).toBe("Çalışma klasörü seç");
+    await sendTask(h, "Klasörsüz proje");
+    expect(h.calls.send[0]).toEqual({ draft: "Klasörsüz proje", models: MODELS });
   });
 
   it("the settings page shows the saved-permission count and resets it only after a confirmation", async () => {
@@ -1690,9 +1696,47 @@ describe("approved tools (workspace folder + tool mode)", () => {
     h.close();
   });
 
-  it("the renderer can neither read nor add permissions or paths: only the four argument-free workspace methods exist", () => {
-    const calls = new Set([...rendererSource.matchAll(/api\.tools\[(\w+)\]|callTools\("(\w+)"\)/g)].map((m) => m[2] ?? m[1]));
-    expect([...calls].sort()).toEqual(["clearPermissions", "clearWorkspace", "getWorkspace", "method", "pickWorkspace"].sort());
+  it("the renderer can neither read nor add permissions or paths: it only passes a project id to the folder methods", () => {
+    const accessed = new Set([...rendererSource.matchAll(/api\.tools(?:\.|\[)(\w+)/g)].map((m) => m[1]));
+    expect([...accessed].sort()).toEqual(["clearPermissions", "method", "pickWorkspace"].sort());
+    expect(rendererSource).toMatch(/method: "getWorkspace" \| "pickWorkspace" \| "clearWorkspace" \| "clearPermissions"/);
     expect(rendererSource).not.toMatch(/tools\.(add|grant|allow|setPermission|write|exec)/);
+  });
+});
+
+describe("conversation history", () => {
+  it("finished turns are saved and come back after a restart, in the same task", async () => {
+    const h = await start();
+    await sendTask(h, "Kalıcı soru");
+    const turns = h.turnsText();
+    expect(turns).toContain("Kalıcı soru");
+    expect(turns).toContain("Yanıt metni");
+    const second = await ready({ storage: h.storageText(), turns });
+    const task = Array.from(second.doc.querySelectorAll<HTMLElement>("#project-list .task-item")).find((n) => n.textContent === "Kalıcı soru");
+    expect(task).toBeTruthy();
+    second.click(task!);
+    expect(second.doc.querySelector("#turns .user-block .user-text")?.textContent).toBe("Kalıcı soru");
+    expect(second.doc.querySelector("#turns .assistant-block")?.textContent).toContain("Yanıt metni");
+    second.close();
+    h.close();
+  });
+
+  it("history of a task that no longer exists, or a corrupt history, is ignored", async () => {
+    const h = await start();
+    const second = await ready({ storage: h.storageText(), turns: "{not json" });
+    expect(second.doc.querySelectorAll("#turns .turn")).toHaveLength(0);
+    second.close();
+    const third = await ready({ storage: h.storageText(), turns: JSON.stringify({ version: 1, tasks: { "task-gone": [{ id: "t", prompt: "x", composed: "x", text: "y" }] } }) });
+    expect(third.doc.querySelectorAll("#turns .turn")).toHaveLength(0);
+    third.close();
+    h.close();
+  });
+
+  it("a cleared response is not kept in the history", async () => {
+    const h = await start();
+    await sendTask(h, "Silinecek");
+    h.click(h.el("clear-response-btn"));
+    expect(h.turnsText()).not.toContain("Silinecek");
+    h.close();
   });
 });

@@ -92,6 +92,23 @@ export async function pickDirectory(window: BrowserWindow): Promise<WorkspaceGra
   return stateFor("granted");
 }
 
+/**
+ * Re-establishes a grant for a folder the user picked earlier through the native dialog (and that a main-only file
+ * remembers per project). The path is re-resolved and re-checked with the same canonical-root and root-policy logic as a
+ * fresh pick; a folder that no longer resolves or is no longer allowed simply yields no grant. Never called with a value
+ * from the renderer.
+ */
+export function restoreGrant(storedRoot: string): WorkspaceGrantState {
+  if (currentGrant && currentGrant.canonicalRoot === storedRoot && getCurrentCanonicalRoot()) return stateFor("granted");
+  const canonicalRoot = resolveCanonicalRoot(storedRoot);
+  if (!canonicalRoot || !checkRootPolicy(canonicalRoot).allowed) {
+    currentGrant = null;
+    return stateFor("no_workspace");
+  }
+  currentGrant = { workspaceId: crypto.randomUUID(), canonicalRoot, displayName: path.basename(canonicalRoot) || "Selected folder" };
+  return stateFor("granted");
+}
+
 /** Returns the current grant's safe state, or `no_workspace` if none exists. */
 export function getCurrent(): WorkspaceGrantState {
   return stateFor(currentGrant ? "granted" : "no_workspace");

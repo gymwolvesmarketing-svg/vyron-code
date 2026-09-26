@@ -50,6 +50,53 @@ export function listDir(root: string, relative: string): ExecResult {
   }
 }
 
+const OVERVIEW_SKIP = new Set(["node_modules", ".git", "dist", "build", "out", ".next", ".turbo", ".cache", "coverage", "__pycache__", ".venv", "venv", "target", ".idea", ".vscode"]);
+/** Names that are never shown in the overview even though a directory listing would name them. */
+function overviewHidden(name: string): boolean {
+  return OVERVIEW_SKIP.has(name) || /^\.env/i.test(name) || /\.(pem|key|p12|pfx)$/i.test(name);
+}
+const OVERVIEW_MAX_ENTRIES = 150;
+const OVERVIEW_MAX_CHARS = 5_000;
+const OVERVIEW_KEY_FILES = ["README.md", "readme.md", "package.json", "pyproject.toml", "requirements.txt", "Cargo.toml", "go.mod", "pom.xml"];
+const OVERVIEW_KEY_FILE_CHARS = 1_200;
+
+/**
+ * A bounded, read-only picture of the workspace (two levels of the tree, without the usual generated/vendor folders, and the
+ * head of the main manifest files). Taken by the main process itself so the model can start from the real project, like a
+ * coding agent that opens a folder. Secrets and other denied names never appear: everything goes through listDir/readFile.
+ */
+export function projectOverview(root: string): string | null {
+  const lines: string[] = [];
+  const top = listDir(root, ".");
+  if (!top.ok) return null;
+  for (const entry of top.text.split("\n")) {
+    if (lines.length >= OVERVIEW_MAX_ENTRIES) break;
+    if (entry.length === 0 || entry === "(boş klasör)") continue;
+    const name = entry.endsWith("/") ? entry.slice(0, -1) : entry;
+    if (overviewHidden(name)) continue;
+    lines.push(entry);
+    if (entry.endsWith("/")) {
+      const inner = listDir(root, name);
+      if (inner.ok) {
+        for (const child of inner.text.split("\n")) {
+          if (lines.length >= OVERVIEW_MAX_ENTRIES) break;
+          const childName = child.endsWith("/") ? child.slice(0, -1) : child;
+          if (child.length === 0 || overviewHidden(childName)) continue;
+          lines.push("  " + name + "/" + child);
+        }
+      }
+    }
+  }
+  let text = lines.length === 0 ? "(boş klasör)" : lines.join("\n");
+  for (const keyFile of OVERVIEW_KEY_FILES) {
+    if (!top.text.split("\n").includes(keyFile)) continue;
+    const content = readFile(root, keyFile);
+    if (content.ok) text += "\n\n--- " + keyFile + " (başı) ---\n" + content.text.slice(0, OVERVIEW_KEY_FILE_CHARS);
+    if (text.length >= OVERVIEW_MAX_CHARS) break;
+  }
+  return text.slice(0, OVERVIEW_MAX_CHARS);
+}
+
 export function readFile(root: string, relative: string): ExecResult {
   const resolved = resolveCanonicalPath(root, relative);
   if (!resolved.ok) return fail("Bu dosyaya erişilemiyor (" + resolved.reason + ").");

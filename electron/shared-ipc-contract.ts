@@ -350,9 +350,9 @@ export interface ToolWorkspaceInfo {
 
 /** The tool workspace bridge - four methods, none takes an argument (the folder is chosen in a native dialog). */
 export interface DesktopToolsApi {
-  getWorkspace(): Promise<ToolWorkspaceInfo>;
-  pickWorkspace(): Promise<ToolWorkspaceInfo>;
-  clearWorkspace(): Promise<ToolWorkspaceInfo>;
+  getWorkspace(projectId?: string): Promise<ToolWorkspaceInfo>;
+  pickWorkspace(projectId?: string): Promise<ToolWorkspaceInfo>;
+  clearWorkspace(projectId?: string): Promise<ToolWorkspaceInfo>;
   clearPermissions(): Promise<ToolWorkspaceInfo>;
 }
 

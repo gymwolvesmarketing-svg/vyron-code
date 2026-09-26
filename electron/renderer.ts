@@ -60,9 +60,9 @@ interface ToolWorkspaceInfo {
 }
 
 interface DesktopToolsApi {
-  getWorkspace(): Promise<ToolWorkspaceInfo>;
-  pickWorkspace(): Promise<ToolWorkspaceInfo>;
-  clearWorkspace(): Promise<ToolWorkspaceInfo>;
+  getWorkspace(projectId?: string): Promise<ToolWorkspaceInfo>;
+  pickWorkspace(projectId?: string): Promise<ToolWorkspaceInfo>;
+  clearWorkspace(projectId?: string): Promise<ToolWorkspaceInfo>;
   clearPermissions(): Promise<ToolWorkspaceInfo>;
 }
 
@@ -275,6 +275,108 @@ let connectorsQuery = "";
 let resetConfirming = false;
 let overlayDismissed = false;
 const turnsByTask = new Map<string, Turn[]>();
+
+// Conversation history: finished turns are kept in the browser storage so a project's conversations survive a restart.
+const TURNS_KEY = "vyron.turns.v1";
+const MAX_SAVED_TURNS_PER_TASK = 40;
+const MAX_SAVED_TEXT_CHARS = 20_000;
+const MAX_SAVED_TOTAL_CHARS = 1_500_000;
+
+function saveTurns(): void {
+  const storage = getStorage();
+  if (!storage) return;
+  const tasks: Record<string, unknown[]> = {};
+  let total = 0;
+  const known = new Set(ws.tasks.map((t) => t.id));
+  // Newest tasks first, so when the size cap is hit it is the oldest conversations that are dropped.
+  for (const task of ws.tasks) {
+    const turns = (turnsByTask.get(task.id) ?? []).filter((t) => t.status === "done" && t.text !== null && !t.cleared).slice(-MAX_SAVED_TURNS_PER_TASK);
+    if (turns.length === 0 || !known.has(task.id)) continue;
+    const saved = turns.map((t) => ({ id: t.id, prompt: t.prompt, composed: t.composed, labels: t.labels, agent: t.agent, project: t.project, tools: t.tools, text: (t.text ?? "").slice(0, MAX_SAVED_TEXT_CHARS), truncated: t.truncated }));
+    const size = JSON.stringify(saved).length;
+    if (total + size > MAX_SAVED_TOTAL_CHARS) break;
+    total += size;
+    tasks[task.id] = saved;
+  }
+  try {
+    storage.setItem(TURNS_KEY, JSON.stringify({ version: 1, tasks }));
+  } catch {
+    // A full or blocked storage only means the history is not kept.
+  }
+}
+
+function loadTurns(): void {
+  const storage = getStorage();
+  if (!storage) return;
+  try {
+    const raw = storage.getItem(TURNS_KEY);
+    if (!raw) return;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || (parsed as Record<string, unknown>).version !== 1) return;
+    const tasks = (parsed as Record<string, unknown>).tasks;
+    if (typeof tasks !== "object" || tasks === null) return;
+    const text = (value: unknown, max: number): string | null => (typeof value === "string" && value.length <= max ? value : null);
+    for (const task of ws.tasks) {
+      const list = (tasks as Record<string, unknown>)[task.id];
+      if (!Array.isArray(list)) continue;
+      const turns: Turn[] = [];
+      for (const item of list.slice(0, MAX_SAVED_TURNS_PER_TASK)) {
+        if (typeof item !== "object" || item === null) continue;
+        const r = item as Record<string, unknown>;
+        const id = text(r.id, 80);
+        const prompt = text(r.prompt, 20_000);
+        const composed = text(r.composed, 20_000);
+        const answer = text(r.text, MAX_SAVED_TEXT_CHARS + 10);
+        if (id === null || prompt === null || composed === null || answer === null) continue;
+        const labels = Array.isArray(r.labels) ? r.labels.filter((l): l is string => typeof l === "string").slice(0, 12) : [];
+        turns.push({
+          id,
+          prompt,
+          composed,
+          labels,
+          agent: typeof r.agent === "string" ? r.agent : null,
+          project: typeof r.project === "string" ? r.project : null,
+          tools: r.tools === true,
+          status: "done",
+          text: answer,
+          truncated: r.truncated === true,
+          errorText: null,
+          cleared: false,
+        });
+      }
+      if (turns.length > 0) turnsByTask.set(task.id, turns);
+    }
+  } catch {
+    // Unreadable history is simply not restored.
+  }
+}
+
+const HISTORY_ROOM_CHARS = 9_000;
+const HISTORY_PROMPT_CHARS = 1_500;
+const HISTORY_ANSWER_CHARS = 2_500;
+
+/** The earlier conversation of this task, newest last, bounded so the whole request stays within the draft limit. */
+function historyPreamble(taskId: string, turn: Turn, composedLength: number): string {
+  const room = Math.min(HISTORY_ROOM_CHARS, VyronModel.MAX_DRAFT_LENGTH - composedLength - 300);
+  if (room < 600) return "";
+  const earlier: Turn[] = [];
+  for (const t of turnsByTask.get(taskId) ?? []) {
+    if (t === turn) break;
+    if (t.status === "done" && t.text !== null && !t.cleared) earlier.push(t);
+  }
+  const clip = (value: string, max: number) => (value.length > max ? value.slice(0, max) + "…" : value);
+  const entries: string[] = [];
+  let used = 0;
+  for (let i = earlier.length - 1; i >= 0; i -= 1) {
+    const t = earlier[i]!;
+    const entry = "Kullanıcı: " + clip(t.prompt, HISTORY_PROMPT_CHARS) + "\nYanıt: " + clip(t.text ?? "", HISTORY_ANSWER_CHARS);
+    if (used + entry.length > room) break;
+    entries.unshift(entry);
+    used += entry.length + 2;
+  }
+  if (entries.length === 0) return "";
+  return "Bu istek aynı görevin devamıdır. Önceki konuşma:\n" + entries.join("\n\n") + "\n\nŞimdiki istek:\n";
+}
 let menus: MenuInstance[] = [];
 
 // ---------------------------------------------------------------------------------------------
@@ -748,7 +850,8 @@ function composedPrompt(draft: string): string {
     draft,
     workMode: ws.workMode,
     planMode: ws.planMode,
-    terminalMode: ws.terminalMode,
+    // With a workspace folder the model really uses tools, so the "only suggest commands" wording is dropped.
+    terminalMode: toolsActive() ? "off" : ws.terminalMode,
     managerName: managerName(),
     skillNames: selectedSkills().map((s) => s.name),
     connectorNames: selectedConnectors().map((c) => c.name),
@@ -763,7 +866,6 @@ function selectionLabels(): string[] {
   for (const connector of selectedConnectors()) labels.push(connector.name);
   if (ws.planMode !== "standard") labels.push("Plan: " + planLabel());
   if (ws.terminalMode === "suggest") labels.push("Terminal: komut önerisi");
-  if (ws.terminalMode === "tools") labels.push("Terminal: araçlar (onaylı)");
   if (ws.workMode !== "local") labels.push(workModeLabel());
   return labels;
 }
@@ -1155,16 +1257,6 @@ function renderChips(): void {
       }),
     );
   }
-  if (ws.terminalMode === "tools") {
-    box.appendChild(
-      makeChip("terminal", "Terminal", "araçlar (onaylı)", "Araçları kapat", () => {
-        ws.terminalMode = "off";
-        persist();
-        renderChips();
-        updateComposer();
-      }),
-    );
-  }
   for (const file of attachments) {
     box.appendChild(
       makeChip(file.name.match(/\.(png|jpe?g|gif|webp|bmp|svg)$/i) ? "image" : "paperclip", file.name, VyronModel.formatFileSize(file.size), file.name + " ekini kaldır", () => {
@@ -1187,13 +1279,9 @@ let workspaceFolder: string | null = null;
 let toolPermissionCount = 0;
 let toolsConfirming = false;
 
-/** Tools are on for the next task only when the mode is chosen AND a workspace folder has been granted. */
+/** Like opening a folder in a coding agent: tools are on whenever the current project has a workspace folder. */
 function toolsActive(): boolean {
-  return ws.terminalMode === "tools" && workspaceFolder !== null;
-}
-
-function toolsNeedFolder(): boolean {
-  return ws.terminalMode === "tools" && workspaceFolder === null;
+  return workspaceFolder !== null;
 }
 
 function applyWorkspaceInfo(info: ToolWorkspaceInfo | null): void {
@@ -1205,21 +1293,71 @@ function applyWorkspaceInfo(info: ToolWorkspaceInfo | null): void {
   updateComposer();
 }
 
-async function callTools(method: "getWorkspace" | "pickWorkspace" | "clearWorkspace" | "clearPermissions"): Promise<void> {
+async function callTools(method: "getWorkspace" | "pickWorkspace" | "clearWorkspace" | "clearPermissions", projectId?: string | null): Promise<void> {
   const api = window.vyronDesktop;
   if (!api) return;
   try {
-    applyWorkspaceInfo(await api.tools[method]());
+    applyWorkspaceInfo(method === "clearPermissions" ? await api.tools.clearPermissions() : await api.tools[method](projectId ?? undefined));
   } catch {
     // The folder state simply stays as it was; nothing is exposed.
   }
 }
 
+/** The project the workspace folder was last synced for; the folder follows the active project. */
+let syncedProjectId: string | null | undefined;
+
+function syncProjectFolder(): void {
+  if (ws.activeProjectId === syncedProjectId) return;
+  syncedProjectId = ws.activeProjectId;
+  // A project brings back its own folder; with no project there is no folder (and so no tools).
+  void callTools(ws.activeProjectId === null ? "clearWorkspace" : "getWorkspace", ws.activeProjectId);
+}
+
+/**
+ * Opens the native folder dialog for the active project. With no project yet, a project named after the folder is created
+ * (opening a folder = opening a project); if the dialog is cancelled the temporary project is removed again.
+ */
+async function pickFolder(): Promise<void> {
+  const api = window.vyronDesktop;
+  if (!api) return;
+  let temp: WsProject | null = null;
+  let projectId = ws.activeProjectId;
+  if (projectId === null) {
+    temp = VyronModel.createProject(ws, "Klasör " + Date.now().toString(36));
+    projectId = temp ? temp.id : null;
+  }
+  let info: ToolWorkspaceInfo | null = null;
+  try {
+    info = await api.tools.pickWorkspace(projectId ?? undefined);
+  } catch {
+    info = null;
+  }
+  const folderName = info && typeof info.folderName === "string" ? info.folderName : null;
+  if (temp) {
+    const created = temp;
+    if (folderName !== null) {
+      let name = VyronModel.cleanName(folderName, 40) ?? "Proje";
+      const taken = (candidate: string) => ws.projects.some((p) => p.id !== created.id && VyronModel.normalizeQuery(p.name) === VyronModel.normalizeQuery(candidate));
+      for (let n = 2; taken(name) && n < 50; n += 1) name = (VyronModel.cleanName(folderName, 34) ?? "Proje") + " " + String(n);
+      created.name = name;
+      created.expanded = true;
+      ws.activeProjectId = created.id;
+      ws.activeTaskId = null;
+      syncedProjectId = created.id;
+    } else {
+      ws.projects = ws.projects.filter((p) => p.id !== created.id);
+    }
+    persist();
+    renderAll();
+  }
+  applyWorkspaceInfo(info);
+}
+
 function openWorkspaceMenu(trigger: HTMLElement): void {
   openMenuWith("workspace", trigger, (menu) => {
     menu.setAttribute("aria-label", "Çalışma klasörü");
-    menu.appendChild(makeMenuItem({ label: "Klasörü değiştir…", icon: "folder", onSelect: () => void callTools("pickWorkspace") }));
-    menu.appendChild(makeMenuItem({ label: "Klasörü kaldır", icon: "x", onSelect: () => void callTools("clearWorkspace") }));
+    menu.appendChild(makeMenuItem({ label: "Klasörü değiştir…", icon: "folder", onSelect: () => void pickFolder() }));
+    menu.appendChild(makeMenuItem({ label: "Klasörü kaldır", icon: "x", onSelect: () => void callTools("clearWorkspace", ws.activeProjectId) }));
   });
 }
 
@@ -1242,11 +1380,12 @@ function currentDraftProblem(): WsDraftProblem {
 }
 
 function updateComposer(): void {
+  syncProjectFolder();
   const input = must<HTMLTextAreaElement>("task-input");
   const problem = currentDraftProblem();
   const send = must<HTMLButtonElement>("send-btn");
   const composer = must("composer");
-  const canSend = problem === "ok" && aiPhase === "ready" && !sendInFlight && !toolsNeedFolder();
+  const canSend = problem === "ok" && aiPhase === "ready" && !sendInFlight;
 
   send.disabled = !canSend;
   const state = sendInFlight ? "sending" : canSend ? "ready" : "disabled";
@@ -1257,7 +1396,6 @@ function updateComposer(): void {
   let message = "";
   if (problem === "too_long") message = DRAFT_TOO_LONG_TEXT;
   else if (problem === "invalid") message = DRAFT_INVALID_TEXT;
-  else if (problem === "ok" && toolsNeedFolder()) message = "Araçlar için önce bir çalışma klasörü seç.";
   else if (problem === "ok" && aiPhase !== "ready") message = WAIT_FOR_AI_TEXT;
   const error = must("composer-error");
   error.textContent = message;
@@ -1395,7 +1533,7 @@ async function sendCurrent(): Promise<void> {
   if (sendInFlight) return;
   const input = must<HTMLTextAreaElement>("task-input");
   const raw = input.value;
-  if (currentDraftProblem() !== "ok" || aiPhase !== "ready" || toolsNeedFolder()) {
+  if (currentDraftProblem() !== "ok" || aiPhase !== "ready") {
     updateComposer();
     return;
   }
@@ -1442,7 +1580,7 @@ async function runTurn(taskId: string, turn: Turn): Promise<void> {
   let result: HermesTaskSubmissionState | null = null;
   if (api) {
     try {
-      result = await api.hermes.sendTask(taskRequest(turn));
+      result = await api.hermes.sendTask(taskRequest(turn, taskId));
     } catch {
       result = null;
     }
@@ -1458,6 +1596,7 @@ async function runTurn(taskId: string, turn: Turn): Promise<void> {
     turn.errorText = notReady ? NOT_READY_TEXT : FAILURE_TEXT;
     if (notReady || result === null) startPolling();
   }
+  saveTurns();
   refreshIfActive(taskId);
 }
 
@@ -1472,13 +1611,14 @@ function chosenModels(): { assistant?: string; code?: string; research?: string 
 }
 
 /** The direct request, or (for a Manager with a Ruflo role) the request that also carries its role and project. */
-function taskRequest(turn: Turn): HermesTaskRequest {
+function taskRequest(turn: Turn, taskId: string): HermesTaskRequest {
   const project = turn.project;
+  const draft = historyPreamble(taskId, turn, turn.composed.length) + turn.composed;
   const withProject = project !== null && /^[a-z0-9][a-z0-9-]{0,79}$/.test(project);
   const models = chosenModels();
   const withModels = models ? { models } : {};
-  if (!turn.agent) return turn.tools ? { draft: turn.composed, tools: true, ...withModels } : { draft: turn.composed, ...withModels };
-  const base = withProject ? { draft: turn.composed, agent: turn.agent, project, ...withModels } : { draft: turn.composed, agent: turn.agent, ...withModels };
+  if (!turn.agent) return turn.tools ? { draft, tools: true, ...withModels } : { draft, ...withModels };
+  const base = withProject ? { draft, agent: turn.agent, project, ...withModels } : { draft, agent: turn.agent, ...withModels };
   return turn.tools ? { ...base, tools: true } : base;
 }
 
@@ -1545,6 +1685,7 @@ function handleClearResponse(): void {
   last.cleared = true;
   last.text = null;
   last.truncated = false;
+  saveTurns();
   bestEffortClearTask();
   renderTaskView();
   focusSoon(el("task-input"));
@@ -2283,6 +2424,7 @@ async function clearAgentMemory(): Promise<void> {
 function resetWorkspace(): void {
   ws = VyronModel.resetState(getStorage());
   turnsByTask.clear();
+  saveTurns();
   attachments = [];
   managerViewId = null;
   sidebarQuery = "";
@@ -2455,7 +2597,7 @@ function wire(): void {
     workspaceButton.addEventListener("click", () => {
       if (workspaceFolder === null) {
         closeAllMenus(false);
-        void callTools("pickWorkspace");
+        void pickFolder();
         return;
       }
       toggleRootMenu("workspace", workspaceButton, () => openWorkspaceMenu(workspaceButton));
@@ -2598,8 +2740,9 @@ function main(): void {
   renderQuickStarts();
   wire();
   showView("new-task");
+  loadTurns();
   bestEffortClearTask();
-  void callTools("getWorkspace");
+  syncProjectFolder();
   startPolling();
 }
 

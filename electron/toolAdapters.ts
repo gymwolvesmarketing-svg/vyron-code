@@ -12,12 +12,69 @@ import { app, dialog, type BrowserWindow } from "electron";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { getCurrent, getCurrentCanonicalRoot, pickDirectory, clearCurrent } from "./workspace-grant";
-import { listDir, readFile, resolveWritable, runCommand, writeFile } from "./toolExecutors";
+import { getCurrent, getCurrentCanonicalRoot, pickDirectory, clearCurrent, restoreGrant } from "./workspace-grant";
+import { listDir, projectOverview, readFile, resolveWritable, runCommand, writeFile } from "./toolExecutors";
 import { runToolLoop, type ToolLoopDeps, type ToolLoopResult, type ToolWorkspace } from "./toolLoop";
 import type { ApprovalChoice, ApprovalRequest, ChatMessage, ToolCall } from "./toolPolicy";
 
 export const PERMISSIONS_FILE = "tool-permissions.json";
+export const PROJECT_FOLDERS_FILE = "project-folders.json";
+const MAX_PROJECT_FOLDERS = 200;
+
+/** A project id is a plain slug (the same rule the renderer and the task request use); anything else is ignored. */
+export function isProjectId(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z0-9][a-z0-9-]{0,79}$/.test(value);
+}
+
+export interface ProjectFolderStore {
+  get(projectId: string): string | null;
+  set(projectId: string, folder: string): void;
+  remove(projectId: string): void;
+}
+
+/**
+ * Which folder belongs to which project. Main-only file in the app data folder: the renderer can neither read a path from
+ * it nor write one into it; a folder gets in only after the user picked it in the native dialog. A corrupt file reads as empty.
+ */
+export function createProjectFolderStore(filePath: string): ProjectFolderStore {
+  let map: Map<string, string> | null = null;
+  function load(): Map<string, string> {
+    if (map) return map;
+    map = new Map<string, string>();
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      const roots = typeof parsed === "object" && parsed !== null && (parsed as Record<string, unknown>).version === 1 ? (parsed as Record<string, unknown>).roots : null;
+      if (typeof roots === "object" && roots !== null && !Array.isArray(roots)) {
+        for (const [id, folder] of Object.entries(roots as Record<string, unknown>)) {
+          if (isProjectId(id) && typeof folder === "string" && folder.length > 0 && folder.length < 1000 && map.size < MAX_PROJECT_FOLDERS) map.set(id, folder);
+        }
+      }
+    } catch {
+      // Missing or unreadable: no remembered folders.
+    }
+    return map;
+  }
+  function save(): void {
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, JSON.stringify({ version: 1, roots: Object.fromEntries(load()) }), "utf8");
+    } catch {
+      // A failed save only means the folder is not remembered.
+    }
+  }
+  return {
+    get: (projectId) => load().get(projectId) ?? null,
+    set(projectId, folder) {
+      const entries = load();
+      if (!entries.has(projectId) && entries.size >= MAX_PROJECT_FOLDERS) return;
+      entries.set(projectId, folder);
+      save();
+    },
+    remove(projectId) {
+      if (load().delete(projectId)) save();
+    },
+  };
+}
 const MAX_PERMISSIONS = 500;
 
 export interface PermissionStore {
@@ -81,14 +138,17 @@ export interface WorkspaceInfo {
 
 export interface ToolRunner {
   run(task: string, ask: (messages: readonly ChatMessage[]) => Promise<string | null>): Promise<ToolLoopResult>;
-  getWorkspace(): WorkspaceInfo;
-  pickWorkspace(): Promise<WorkspaceInfo>;
-  clearWorkspace(): WorkspaceInfo;
+  /** With a project id, switches to that project's remembered folder (or to none). */
+  getWorkspace(projectId?: unknown): WorkspaceInfo;
+  /** With a project id, remembers the picked folder for that project. */
+  pickWorkspace(projectId?: unknown): Promise<WorkspaceInfo>;
+  clearWorkspace(projectId?: unknown): WorkspaceInfo;
   clearPermissions(): WorkspaceInfo;
 }
 
 export function createProductionToolRunner(getWindow: () => BrowserWindow | null): ToolRunner {
   const store = createPermissionStore(path.join(app.getPath("userData"), PERMISSIONS_FILE));
+  const folders = createProjectFolderStore(path.join(app.getPath("userData"), PROJECT_FOLDERS_FILE));
 
   function currentWorkspace(): ToolWorkspace | null {
     const root = getCurrentCanonicalRoot();
@@ -150,6 +210,10 @@ export function createProductionToolRunner(getWindow: () => BrowserWindow | null
         workspace: currentWorkspace,
         approve,
         execute,
+        overview() {
+          const root = getCurrentCanonicalRoot();
+          return root ? projectOverview(root) : null;
+        },
         fileExists(relative) {
           const root = getCurrentCanonicalRoot();
           if (!root) return null;
@@ -159,14 +223,27 @@ export function createProductionToolRunner(getWindow: () => BrowserWindow | null
       };
       return runToolLoop(deps, task);
     },
-    getWorkspace: info,
-    async pickWorkspace() {
-      const window = getWindow();
-      if (window) await pickDirectory(window);
+    getWorkspace(projectId) {
+      // Opening a project brings back the folder it was last given (or none); no project = the grant stays as it is.
+      if (isProjectId(projectId)) {
+        const stored = folders.get(projectId);
+        if (stored) restoreGrant(stored);
+        else clearCurrent();
+      }
       return info();
     },
-    clearWorkspace() {
+    async pickWorkspace(projectId) {
+      const window = getWindow();
+      if (window) {
+        const result = await pickDirectory(window);
+        const root = result.state === "granted" ? getCurrentCanonicalRoot() : null;
+        if (root && isProjectId(projectId)) folders.set(projectId, root);
+      }
+      return info();
+    },
+    clearWorkspace(projectId) {
       clearCurrent();
+      if (isProjectId(projectId)) folders.remove(projectId);
       return info();
     },
     clearPermissions() {

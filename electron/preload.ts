@@ -78,9 +78,9 @@ interface ToolWorkspaceInfo {
 }
 
 interface DesktopToolsApi {
-  getWorkspace(): Promise<ToolWorkspaceInfo>;
-  pickWorkspace(): Promise<ToolWorkspaceInfo>;
-  clearWorkspace(): Promise<ToolWorkspaceInfo>;
+  getWorkspace(projectId?: string): Promise<ToolWorkspaceInfo>;
+  pickWorkspace(projectId?: string): Promise<ToolWorkspaceInfo>;
+  clearWorkspace(projectId?: string): Promise<ToolWorkspaceInfo>;
   clearPermissions(): Promise<ToolWorkspaceInfo>;
 }
 
@@ -120,9 +120,9 @@ const vyronDesktop: DesktopApi = {
     clearAgentMemory: () => ipcRenderer.invoke(APP_CLEAR_AGENT_MEMORY_CHANNEL),
   },
   tools: {
-    getWorkspace: () => ipcRenderer.invoke(TOOLS_GET_WORKSPACE_CHANNEL),
-    pickWorkspace: () => ipcRenderer.invoke(TOOLS_PICK_WORKSPACE_CHANNEL),
-    clearWorkspace: () => ipcRenderer.invoke(TOOLS_CLEAR_WORKSPACE_CHANNEL),
+    getWorkspace: (projectId) => ipcRenderer.invoke(TOOLS_GET_WORKSPACE_CHANNEL, typeof projectId === "string" ? projectId : undefined),
+    pickWorkspace: (projectId) => ipcRenderer.invoke(TOOLS_PICK_WORKSPACE_CHANNEL, typeof projectId === "string" ? projectId : undefined),
+    clearWorkspace: (projectId) => ipcRenderer.invoke(TOOLS_CLEAR_WORKSPACE_CHANNEL, typeof projectId === "string" ? projectId : undefined),
     clearPermissions: () => ipcRenderer.invoke(TOOLS_CLEAR_PERMISSIONS_CHANNEL),
   },
 };

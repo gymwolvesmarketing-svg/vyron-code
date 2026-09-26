@@ -26,7 +26,7 @@ import {
   type ChatMessage,
   type ToolCall,
 } from "../electron/toolPolicy";
-import { commandEnvironment, listDir, readFile, resolveWritable, runCommand, writeFile } from "../electron/toolExecutors";
+import { commandEnvironment, listDir, projectOverview, readFile, resolveWritable, runCommand, writeFile } from "../electron/toolExecutors";
 import { runToolLoop, type ToolLoopDeps } from "../electron/toolLoop";
 
 vi.mock("electron", () => ({ clipboard: { writeText: () => undefined }, app: { getPath: () => os.tmpdir() }, dialog: {} }));
@@ -428,5 +428,63 @@ describe("static properties", () => {
     expect(code).toContain("defaultId: 2");
     expect(code).toContain("cancelId: 2");
     expect(code).toContain("dialog.showMessageBox");
+  });
+});
+
+describe("workspace overview (the model starts from the real project)", () => {
+  let base: string;
+  beforeEach(() => {
+    base = fs.mkdtempSync(path.join(os.tmpdir(), "vyron-overview-"));
+  });
+  afterEach(() => {
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  it("shows two levels of the tree and the head of the manifest, and leaves out vendor folders and secrets", () => {
+    fs.mkdirSync(path.join(base, "src", "lib"), { recursive: true });
+    fs.mkdirSync(path.join(base, "node_modules", "x"), { recursive: true });
+    fs.mkdirSync(path.join(base, ".git"));
+    fs.writeFileSync(path.join(base, "package.json"), '{"name":"demo-proje"}', "utf8");
+    fs.writeFileSync(path.join(base, "README.md"), "# Demo", "utf8");
+    fs.writeFileSync(path.join(base, ".env"), "SECRET=1", "utf8");
+    fs.writeFileSync(path.join(base, "src", "index.ts"), "export {}", "utf8");
+    const root = fs.realpathSync.native(base);
+    const text = projectOverview(root) as string;
+    expect(text).toContain("src/");
+    expect(text).toContain("src/index.ts");
+    expect(text).toContain("package.json (başı)");
+    expect(text).toContain("demo-proje");
+    expect(text).toContain("# Demo");
+    expect(text).not.toMatch(/node_modules|\.git\b|SECRET|\.env/);
+    expect(text.length).toBeLessThanOrEqual(5_000);
+  });
+
+  it("is bounded on a huge folder and reports an empty one", () => {
+    for (let i = 0; i < 400; i += 1) fs.writeFileSync(path.join(base, "f" + String(i) + ".txt"), "x", "utf8");
+    expect((projectOverview(fs.realpathSync.native(base)) as string).split("\n").length).toBeLessThanOrEqual(160);
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), "vyron-empty-"));
+    try {
+      expect(projectOverview(fs.realpathSync.native(empty))).toBe("(boş klasör)");
+    } finally {
+      fs.rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  it("goes into the first message between the protocol and the task, and only when there is a folder", async () => {
+    expect(firstToolMessage("G", "src/\nindex.ts")).toBe(TOOL_PROTOCOL + "\n\nÇalışma klasörü özeti:\nsrc/\nindex.ts\n\nGörev:\nG");
+    expect(firstToolMessage("G")).toBe(TOOL_PROTOCOL + "\n\nGörev:\nG");
+    const { deps, seen } = makeDeps(["Bitti"], { overview: () => "OZET" });
+    await runToolLoop(deps, "GÖREV");
+    expect(seen[0]![0]!.content).toContain("Çalışma klasörü özeti:\nOZET");
+    const none = makeDeps(["Bitti"], { overview: () => "OZET", workspace: () => null });
+    await runToolLoop(none.deps, "GÖREV");
+    expect(none.seen[0]![0]!.content).not.toContain("OZET");
+  });
+
+  it("allows a real build session: 30 steps, larger outputs and transcript", () => {
+    expect(MAX_TOOL_STEPS).toBe(30);
+    expect(MAX_TOOL_OUTPUT_CHARS).toBe(12_000);
+    expect(MAX_TRANSCRIPT_CHARS).toBe(60_000);
+    expect(TOOL_PROTOCOL).toContain("Var olan kodu okumadan üzerine yazma");
   });
 });

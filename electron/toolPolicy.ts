@@ -16,12 +16,12 @@ export type ToolCall =
   | { readonly tool: "write_file"; readonly path: string; readonly content: string }
   | { readonly tool: "run_command"; readonly command: string };
 
-export const MAX_TOOL_STEPS = 8;
+export const MAX_TOOL_STEPS = 30;
 export const MAX_PATH_CHARS = 260;
 export const MAX_WRITE_CHARS = 200_000;
 export const MAX_COMMAND_CHARS = 1_000;
-export const MAX_TOOL_OUTPUT_CHARS = 6_000;
-export const MAX_TRANSCRIPT_CHARS = 30_000;
+export const MAX_TOOL_OUTPUT_CHARS = 12_000;
+export const MAX_TRANSCRIPT_CHARS = 60_000;
 export const MAX_LOG_LINES = 20;
 
 export type ApprovalChoice = "once" | "always" | "deny";
@@ -53,6 +53,7 @@ export const TOOL_PROTOCOL = [
   '{"tool":"run_command","command":"npm test"}  -> komut çalıştırır (kullanıcı onayı gerekir)',
   "Yollar çalışma klasörüne göreli olmalıdır. Kendin dosya yazmış ya da komut çalıştırmış gibi davranma: yalnızca köprü sonucunda gördüklerini söyle.",
   "Görev araç gerektirmiyorsa ya da iş bittiyse, JSON olmayan düz metinle nihai yanıtı yaz. Bir işlem reddedilirse başka bir yol dene ya da nedenini açıkla.",
+  "Bir yazılım projesi üzerinde çalışıyorsun: önce klasör özetine ve ilgili dosyalara bak (README, package.json, kaynak klasörleri), projenin ne olduğunu ve nerede kaldığını anla, sonra işi adım adım ilerlet. Var olan kodu okumadan üzerine yazma.",
 ].join("\n");
 
 /**
@@ -66,8 +67,10 @@ export const TOOL_REMINDER =
   "Bir araç gerekiyorsa YALNIZCA ilk adımın JSON'unu yaz, başka metin ekleme. Görev gerçekten araç gerektirmiyorsa aynı yanıtı kısaca yinele.";
 
 /** The first message of a tool run: the protocol followed by the user's task. */
-export function firstToolMessage(task: string): string {
-  return TOOL_PROTOCOL + "\n\nGörev:\n" + task;
+/** `overview` is a bounded, read-only listing of the workspace folder that the main process took itself (no model involved). */
+export function firstToolMessage(task: string, overview?: string | null): string {
+  const folder = overview && overview.length > 0 ? "\n\nÇalışma klasörü özeti:\n" + overview : "";
+  return TOOL_PROTOCOL + folder + "\n\nGörev:\n" + task;
 }
 
 function balancedEnd(text: string, start: number): number {

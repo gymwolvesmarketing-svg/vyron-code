@@ -210,9 +210,9 @@ function registerHermesIpcHandlers(): void {
 function registerToolsIpcHandlers(): void {
   const fromOwnWindow = (event: Electron.IpcMainInvokeEvent): boolean => mainWindow !== null && event.sender === mainWindow.webContents;
   const none = { folderName: null, alwaysCount: 0 };
-  ipcMain.handle(TOOLS_IPC_CHANNELS.TOOLS_GET_WORKSPACE, (event) => (fromOwnWindow(event) ? tools.getWorkspace() : none));
-  ipcMain.handle(TOOLS_IPC_CHANNELS.TOOLS_PICK_WORKSPACE, (event) => (fromOwnWindow(event) ? tools.pickWorkspace() : none));
-  ipcMain.handle(TOOLS_IPC_CHANNELS.TOOLS_CLEAR_WORKSPACE, (event) => (fromOwnWindow(event) ? tools.clearWorkspace() : none));
+  ipcMain.handle(TOOLS_IPC_CHANNELS.TOOLS_GET_WORKSPACE, (event, projectId: unknown) => (fromOwnWindow(event) ? tools.getWorkspace(projectId) : none));
+  ipcMain.handle(TOOLS_IPC_CHANNELS.TOOLS_PICK_WORKSPACE, (event, projectId: unknown) => (fromOwnWindow(event) ? tools.pickWorkspace(projectId) : none));
+  ipcMain.handle(TOOLS_IPC_CHANNELS.TOOLS_CLEAR_WORKSPACE, (event, projectId: unknown) => (fromOwnWindow(event) ? tools.clearWorkspace(projectId) : none));
   ipcMain.handle(TOOLS_IPC_CHANNELS.TOOLS_CLEAR_PERMISSIONS, (event) => (fromOwnWindow(event) ? tools.clearPermissions() : none));
 }
 

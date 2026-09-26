@@ -39,12 +39,14 @@ export interface ToolLoopDeps {
   execute(call: ToolCall): Promise<{ readonly ok: boolean; readonly text: string }>;
   /** Whether a file to be written already exists (only used to word the approval); null = unknown. */
   fileExists(relativePath: string): boolean | null;
+  /** A bounded read-only picture of the workspace folder (tree + key files), taken by the main process; null = none. */
+  overview?(): string | null;
 }
 
 export type ToolLoopResult = { readonly ok: true; readonly text: string } | { readonly ok: false };
 
 export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<ToolLoopResult> {
-  let messages: ChatMessage[] = [{ role: "user", content: firstToolMessage(task) }];
+  let messages: ChatMessage[] = [{ role: "user", content: firstToolMessage(task, deps.workspace() === null ? null : (deps.overview?.() ?? null)) }];
   const log: LogEntry[] = [];
   let reminded = false;
 
