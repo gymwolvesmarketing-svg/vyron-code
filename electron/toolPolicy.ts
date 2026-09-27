@@ -24,7 +24,10 @@ export const MAX_PATH_CHARS = 260;
 export const MAX_WRITE_CHARS = 200_000;
 export const MAX_COMMAND_CHARS = 1_000;
 export const MAX_TOOL_OUTPUT_CHARS = 12_000;
-export const MAX_TRANSCRIPT_CHARS = 60_000;
+// Measured against the real providers behind vyron-code: Nemotron and ChatGPT Web both answer a 150,000-character
+// prompt reliably; ChatGPT Web starts rejecting (413) around 250,000. Kept well under that so a long tool run does not
+// keep dropping early tool results (which made the model re-request files it had already read).
+export const MAX_TRANSCRIPT_CHARS = 100_000;
 export const MAX_LOG_LINES = 20;
 
 export type ApprovalChoice = "once" | "always" | "deny";

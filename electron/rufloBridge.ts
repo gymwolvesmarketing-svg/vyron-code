@@ -61,7 +61,7 @@ import {
 
 export const MAX_RUFLO_PROMPT_CHARS = 30_000;
 /** Must stay above the tool transcript limit (electron/toolPolicy.ts MAX_TRANSCRIPT_CHARS) plus the speaker labels, or a long tool run is refused mid-way. */
-export const MAX_RUFLO_ASK_CHARS = 90_000;
+export const MAX_RUFLO_ASK_CHARS = 120_000;
 export const MAX_RUFLO_OUTPUT_CHARS = 50_000;
 
 export interface RufloTransport {
