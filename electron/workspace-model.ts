@@ -294,7 +294,7 @@ const VyronModel = (() => {
     }
     return out;
   }
-  const MAX_DRAFT_LENGTH = 20000;
+  const MAX_DRAFT_LENGTH = 100000;
   const MAX_TASKS = 300;
   const COLLAPSED_TASK_COUNT = 4;
 
@@ -860,7 +860,9 @@ const VyronModel = (() => {
     return firstLine.length > 48 ? firstLine.slice(0, 47).trimEnd() + "…" : firstLine;
   }
 
-  const HANDOFF_INTRO = "Aşağıdaki planı sırayla uygula. Her adımı bitirdikçe ne yaptığını kısaca belirt; belirsiz bir nokta olursa varsayımını yaz ve devam et.";
+  const HANDOFF_INTRO =
+    "Aşağıdaki plan zaten projenin taranması ve mevcut kodun incelenmesiyle hazırlandı. Yeniden baştan bir kod denetimi ya da durum raporu çıkarma; " +
+    "doğrudan planı sırayla uygulamaya başla, değiştireceğin dosyayı yazmadan hemen önce yalnızca o dosyayı oku. Her adımı bitirdikçe ne yaptığını kısaca belirt; belirsiz bir nokta olursa varsayımını yaz ve devam et.";
 
   /** The task text that hands a finished plan to the Coder; the plan is cut so the whole text stays within the draft limit. */
   function composeHandoff(plan: string): string {

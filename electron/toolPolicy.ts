@@ -21,13 +21,13 @@ export const MAX_TOOL_STEPS = 30;
 export const MAX_CALLS_PER_REPLY = 8;
 export const MAX_TOOL_CALLS = 120;
 export const MAX_PATH_CHARS = 260;
-export const MAX_WRITE_CHARS = 200_000;
+export const MAX_WRITE_CHARS = 2_000_000;
 export const MAX_COMMAND_CHARS = 1_000;
-export const MAX_TOOL_OUTPUT_CHARS = 12_000;
+export const MAX_TOOL_OUTPUT_CHARS = 60_000;
 // Measured against the real providers behind vyron-code: Nemotron and ChatGPT Web both answer a 150,000-character
 // prompt reliably; ChatGPT Web starts rejecting (413) around 250,000. Kept well under that so a long tool run does not
 // keep dropping early tool results (which made the model re-request files it had already read).
-export const MAX_TRANSCRIPT_CHARS = 100_000;
+export const MAX_TRANSCRIPT_CHARS = 350_000;
 export const MAX_LOG_LINES = 20;
 
 export type ApprovalChoice = "once" | "always" | "deny";
@@ -60,7 +60,7 @@ export const TOOL_PROTOCOL = [
   "Yollar çalışma klasörüne göreli olmalıdır. Kendin dosya yazmış ya da komut çalıştırmış gibi davranma: yalnızca köprü sonucunda gördüklerini söyle.",
   "Birbirinden bağımsız işler için (örneğin birkaç dosyayı okumak) tek yanıtta en fazla 8 JSON nesnesi yazabilirsin, her biri ayrı satırda; sonuçlar sırayla gelir.",
   "Görev araç gerektirmiyorsa ya da iş bittiyse, JSON olmayan düz metinle nihai yanıtı yaz. Bir işlem reddedilirse başka bir yol dene ya da nedenini açıkla.",
-  "Bir yazılım projesi üzerinde çalışıyorsun: önce klasör özetine ve ilgili dosyalara bak (README, package.json, kaynak klasörleri), projenin ne olduğunu ve nerede kaldığını anla, sonra işi adım adım ilerlet. Var olan kodu okumadan üzerine yazma.",
+  "Bir yazılım projesi üzerinde çalışıyorsun. Bu mesajın başında bir çalışma klasörü özeti (README, package.json başı, iki seviyelik klasör ağacı) zaten verildiyse onu tekrar list_dir ile listeleme; sadece görevi yapmak için gerçekten okuman gereken belirli dosyaları aç. Özet verilmediyse önce kısaca klasöre bak. Var olan kodu okumadan üzerine yazma; bir plan zaten belirli dosyaları incelemişse aynı denetimi tekrarlamak yerine doğrudan uygulamaya geç.",
 ].join("\n");
 
 /**

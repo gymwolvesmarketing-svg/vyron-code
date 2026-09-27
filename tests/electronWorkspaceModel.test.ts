@@ -244,10 +244,10 @@ describe("search, drafts, prompts and answers", () => {
   it("classifies drafts", () => {
     expect(model.draftProblem("")).toBe("empty");
     expect(model.draftProblem("  \n ")).toBe("empty");
-    expect(model.draftProblem("x".repeat(20001))).toBe("too_long");
+    expect(model.draftProblem("x".repeat(100001))).toBe("too_long");
     expect(model.draftProblem("a" + String.fromCharCode(7))).toBe("invalid");
     expect(model.draftProblem("a\n\tb\r\nc")).toBe("ok");
-    expect(model.draftProblem("x".repeat(20000))).toBe("ok");
+    expect(model.draftProblem("x".repeat(100000))).toBe("ok");
   });
 
   it("composes the outgoing prompt: unchanged without selections, prefixed context otherwise", () => {
@@ -287,6 +287,17 @@ describe("search, drafts, prompts and answers", () => {
   it("toggles ids", () => {
     expect(model.toggleId(["a"], "b")).toEqual(["a", "b"]);
     expect(model.toggleId(["a", "b"], "a")).toEqual(["b"]);
+  });
+});
+
+describe("Coder handoff does not repeat the audit", () => {
+  it("composeHandoff tells the Coder the plan already comes from a real audit, and not to redo it", () => {
+    const state = model as any;
+    const text = state.composeHandoff("1. Adım\n2. Adım");
+    expect(text).toContain("zaten projenin taranması ve mevcut kodun incelenmesiyle hazırlandı");
+    expect(text).toContain("Yeniden baştan bir kod denetimi ya da durum raporu çıkarma");
+    expect(text).toContain("Plan:");
+    expect(text).toContain("1. Adım");
   });
 });
 

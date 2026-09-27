@@ -156,7 +156,7 @@ describe("running an agent through the bridge", () => {
     expect((await bridge.run("hacker", "x")).ok).toBe(false);
     expect((await bridge.run("coder", "")).ok).toBe(false);
     expect((await bridge.run("coder", "   ")).ok).toBe(false);
-    expect((await bridge.run("coder", "x".repeat(30001))).ok).toBe(false);
+    expect((await bridge.run("coder", "x".repeat(100001))).ok).toBe(false);
     expect((await bridge.run("coder", 5)).ok).toBe(false);
     expect((await bridge.run(undefined, "x")).ok).toBe(false);
     expect(started).toHaveLength(0);
@@ -598,7 +598,7 @@ describe("raw agent turns for the tool loop (bridge.ask)", () => {
   it("validates the role and the prompt, and returns null instead of throwing", async () => {
     const { deps, started } = makeDeps(goodHandler());
     const bridge = createRufloBridge(deps);
-    for (const [role, prompt] of [["hacker", "x"], ["coder", ""], ["coder", "  "], ["coder", 5], [undefined, "x"], ["coder", "x".repeat(120_001)]] as const) {
+    for (const [role, prompt] of [["hacker", "x"], ["coder", ""], ["coder", "  "], ["coder", 5], [undefined, "x"], ["coder", "x".repeat(400_001)]] as const) {
       expect(await bridge.ask(role, prompt)).toBeNull();
     }
     expect(started).toHaveLength(0);

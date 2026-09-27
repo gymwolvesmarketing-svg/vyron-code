@@ -444,14 +444,14 @@ describe("composer typing, empty state and direct send", () => {
     expect(h.el("composer").dataset.state).toBe("ready");
   });
 
-  it("shows a fixed error for a draft over 20000 characters and for control characters", async () => {
+  it("shows a fixed error for a draft over 100000 characters and for control characters", async () => {
     const h = await start();
-    h.type("a".repeat(20001));
+    h.type("a".repeat(100001));
     expect(h.el<HTMLButtonElement>("send-btn").disabled).toBe(true);
-    expect(h.el("composer-error").textContent).toBe("Metin çok uzun. En fazla 20000 karakter gönderilebilir.");
+    expect(h.el("composer-error").textContent).toBe("Metin çok uzun. En fazla 100000 karakter gönderilebilir.");
     h.type("merhaba" + String.fromCharCode(0) + "dünya");
     expect(h.el("composer-error").textContent).toBe("Metin desteklenmeyen karakterler içeriyor.");
-    h.type("a".repeat(20000));
+    h.type("a".repeat(100000));
     expect(h.el<HTMLButtonElement>("send-btn").disabled).toBe(false);
     expect(h.el("composer-error").hidden).toBe(true);
   });
@@ -562,7 +562,7 @@ describe("composer typing, empty state and direct send", () => {
     const h = await start();
     h.click(h.el("plan-btn"));
     h.click(item(h, "Derin plan"));
-    h.type("a".repeat(19970));
+    h.type("a".repeat(99970));
     expect(h.el<HTMLButtonElement>("send-btn").disabled).toBe(true);
     expect(h.el("composer-error").textContent).toContain("Metin çok uzun");
   });

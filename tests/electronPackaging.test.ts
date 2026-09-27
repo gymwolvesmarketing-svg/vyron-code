@@ -228,9 +228,21 @@ describe("Ruflo prompt limit patch (long Manager tasks and tool runs must not be
     try {
       expect(ensureRufloTextLimit(dir)).toBe(true);
       const file = path.join(dir, "node_modules", "@claude-flow", "cli-core", "dist", "src", "mcp-tools", "validate-input.js");
-      expect(fs.readFileSync(file, "utf8")).toContain("maxLen = 200_000) {");
-      expect(RUFLO_TEXT_LIMIT).toBe(200_000);
+      expect(fs.readFileSync(file, "utf8")).toContain("maxLen = " + String(RUFLO_TEXT_LIMIT).replace(/\B(?=(\d{3})+(?!\d))/g, "_") + ") {");
+      expect(RUFLO_TEXT_LIMIT).toBe(600_000);
       expect(ensureRufloTextLimit(dir)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("re-patches a runtime an older build already patched to a different limit (a version bump must not get stuck)", async () => {
+    const { ensureRufloTextLimit, RUFLO_TEXT_LIMIT } = await mod();
+    const dir = fakeRuntime("export function validateText(value, label, maxLen = 200_000) {\n  return value;\n}\n");
+    try {
+      expect(ensureRufloTextLimit(dir)).toBe(true);
+      const file = path.join(dir, "node_modules", "@claude-flow", "cli-core", "dist", "src", "mcp-tools", "validate-input.js");
+      expect(fs.readFileSync(file, "utf8")).toContain("maxLen = " + String(RUFLO_TEXT_LIMIT).replace(/\B(?=(\d{3})+(?!\d))/g, "_") + ") {");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

@@ -79,7 +79,7 @@ function dirSize(dir) {
   return total;
 }
 
-export const RUFLO_TEXT_LIMIT = 200_000;
+export const RUFLO_TEXT_LIMIT = 600_000;
 const VALIDATE_INPUT = ["node_modules", "@claude-flow", "cli-core", "dist", "src", "mcp-tools", "validate-input.js"];
 
 /**
@@ -91,11 +91,11 @@ const VALIDATE_INPUT = ["node_modules", "@claude-flow", "cli-core", "dist", "src
 export function ensureRufloTextLimit(dir = RUNTIME_DIR) {
   const file = path.join(dir, ...VALIDATE_INPUT);
   const source = fs.readFileSync(file, "utf8");
-  const original = "export function validateText(value, label, maxLen = 10_000) {";
+  const pattern = /export function validateText\(value, label, maxLen = [\d_]+\) \{/;
   const patched = "export function validateText(value, label, maxLen = " + String(RUFLO_TEXT_LIMIT).replace(/\B(?=(\d{3})+(?!\d))/g, "_") + ") {";
   if (source.includes(patched)) return false;
-  if (!source.includes(original)) throw new Error("Ruflo validateText changed: the prompt limit patch no longer applies");
-  fs.writeFileSync(file, source.replace(original, patched));
+  if (!pattern.test(source)) throw new Error("Ruflo validateText changed: the prompt limit patch no longer applies");
+  fs.writeFileSync(file, source.replace(pattern, patched));
   return true;
 }
 

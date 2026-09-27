@@ -90,7 +90,7 @@ describe("sendTask - validation and precondition gating (there is no review step
   it.each([
     ["empty", ""],
     ["whitespace-only", "  \n\t "],
-    ["over the maximum length", "x".repeat(20_001)],
+    ["over the maximum length", "x".repeat(100_001)],
     ["containing a NUL control character", "hello" + String.fromCharCode(0) + "world"],
     ["containing a bell control character", "hello" + String.fromCharCode(7)],
   ])("rejects a draft that is %s without sending", async (_label, draft) => {
@@ -102,7 +102,7 @@ describe("sendTask - validation and precondition gating (there is no review step
   it("accepts a draft of exactly the maximum length, and multi-line text with tabs", async () => {
     await authorizeAndConfigure();
     fetchMock.mockResolvedValue(okResponse("ok"));
-    expect((await sendTask({ draft: "x".repeat(20_000) })).state).toBe("completed");
+    expect((await sendTask({ draft: "x".repeat(100_000) })).state).toBe("completed");
     expect((await sendTask({ draft: "line one\n\tline two\r\nline three" })).state).toBe("completed");
   });
 
@@ -160,12 +160,12 @@ describe("sendTask - request contract (fixed POST /v1/chat/completions only)", (
 
   it("truncates a response exceeding the bounded maximum and flags truncated: true", async () => {
     await authorizeAndConfigure();
-    const longText = "x".repeat(60_000);
+    const longText = "x".repeat(250_000);
     fetchMock.mockResolvedValueOnce(okResponse(longText));
     const result = await sendTask({ draft: VALID_DRAFT });
     expect(result.state).toBe("completed");
     expect(result.truncated).toBe(true);
-    expect(result.text).toBe(longText.slice(0, 50_000));
+    expect(result.text).toBe(longText.slice(0, 200_000));
   });
 
   it("maps a non-ok HTTP response to safe_failure, never exposing the raw status", async () => {
@@ -403,10 +403,10 @@ describe("sendTask - Manager (agent) tasks run through the injected executor", (
 
   it("bounds and truncates an executor answer exactly like a direct one", async () => {
     await authorizeAndConfigure();
-    setTaskAgentExecutor(async () => ({ ok: true as const, text: "y".repeat(60000) }));
+    setTaskAgentExecutor(async () => ({ ok: true as const, text: "y".repeat(250000) }));
     const result = await sendTask({ draft: VALID_DRAFT, agent: "coder" });
     expect(result.truncated).toBe(true);
-    expect(result.text).toHaveLength(50000);
+    expect(result.text).toHaveLength(200000);
   });
 
   it("maps an executor failure or throw to safe_failure and lets the next task run", async () => {
@@ -548,12 +548,12 @@ describe("sendTask - approved tools (tools: true)", () => {
 
   it("allows a longer answer for tool runs (the log footer must not be cut off) and still truncates beyond it", async () => {
     await authorizeAndConfigure();
-    setToolRunner(async () => ({ ok: true as const, text: "z".repeat(55000) }));
+    setToolRunner(async () => ({ ok: true as const, text: "z".repeat(150000) }));
     expect((await sendTask({ draft: VALID_DRAFT, tools: true })).truncated).toBe(false);
-    setToolRunner(async () => ({ ok: true as const, text: "z".repeat(70000) }));
+    setToolRunner(async () => ({ ok: true as const, text: "z".repeat(250000) }));
     const long = await sendTask({ draft: VALID_DRAFT, tools: true });
     expect(long.truncated).toBe(true);
-    expect(long.text).toHaveLength(60000);
+    expect(long.text).toHaveLength(200000);
   });
 
   it.each([

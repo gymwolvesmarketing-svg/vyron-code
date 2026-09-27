@@ -499,9 +499,11 @@ describe("workspace overview (the model starts from the real project)", () => {
 
   it("allows a real build session: 30 steps, larger outputs and transcript", () => {
     expect(MAX_TOOL_STEPS).toBe(30);
-    expect(MAX_TOOL_OUTPUT_CHARS).toBe(12_000);
-    expect(MAX_TRANSCRIPT_CHARS).toBe(100_000);
+    expect(MAX_TOOL_OUTPUT_CHARS).toBe(60_000);
+    expect(MAX_TRANSCRIPT_CHARS).toBe(350_000);
     expect(TOOL_PROTOCOL).toContain("Var olan kodu okumadan üzerine yazma");
+    expect(TOOL_PROTOCOL).toContain("tekrar list_dir ile listeleme");
+    expect(TOOL_PROTOCOL).toContain("aynı denetimi tekrarlamak yerine doğrudan uygulamaya geç");
   });
 });
 

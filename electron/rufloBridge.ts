@@ -59,10 +59,10 @@ import {
   type SubTaskResult,
 } from "./rufloTeam";
 
-export const MAX_RUFLO_PROMPT_CHARS = 30_000;
+export const MAX_RUFLO_PROMPT_CHARS = 100_000;
 /** Must stay above the tool transcript limit (electron/toolPolicy.ts MAX_TRANSCRIPT_CHARS) plus the speaker labels, or a long tool run is refused mid-way. */
-export const MAX_RUFLO_ASK_CHARS = 120_000;
-export const MAX_RUFLO_OUTPUT_CHARS = 50_000;
+export const MAX_RUFLO_ASK_CHARS = 400_000;
+export const MAX_RUFLO_OUTPUT_CHARS = 200_000;
 
 export interface RufloTransport {
   send(line: string): void;
