@@ -360,6 +360,7 @@ const VyronModel = (() => {
     { id: "system-architect", label: "Sistem mimarı" },
     { id: "security-auditor", label: "Güvenlik denetçisi" },
     { id: "task-orchestrator", label: "Görev yöneticisi" },
+    { id: "council", label: "Konsey (4 model tartışır)" },
   ];
 
   function isAgentRole(value: unknown): value is string {
@@ -372,6 +373,7 @@ const VyronModel = (() => {
       { id: "vyron-helper", name: "Vyron Helper", description: "Vyron Code kullanımı ve iş akışları konusunda araştırıp yardım eder.", tag: "Yardımcı", custom: false, agent: "researcher" },
       { id: "coder", name: "Coder", description: "Kod yazar, düzenler ve hata ayıklar. Kod modeli grubunu kullanır.", tag: "Kod", custom: false, agent: "coder" },
       { id: "multi-model-planner", name: "Multi-Model Planner", description: "Büyük işleri en fazla üç bağımsız parçaya böler, ajanlarla paralel yürütür ve sonuçları birleştirir.", tag: "Paralel", custom: false, agent: "task-orchestrator" },
+      { id: "konsey", name: "Konsey", description: "Mimari/karar sorularını 4 farklı modele bağımsız sorar, birbirlerinin görüşlerini tartıştırır ve tek bir ortak plana varır.", tag: "Konsey", custom: false, agent: "council" },
       { id: "reviewer", name: "Reviewer", description: "Çıktıları gözden geçirir ve iyileştirme önerir.", tag: "İnceleme", custom: false, agent: "reviewer" },
     ];
   }

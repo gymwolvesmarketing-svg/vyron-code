@@ -250,7 +250,7 @@ describe("navigation between workspace views", () => {
     expect(h.el("panel-projects").hidden).toBe(true);
     expect(h.el("tab-managers").getAttribute("aria-selected")).toBe("true");
     const managers = Array.from(h.doc.querySelectorAll("#manager-list .manager-name")).map((n) => n.textContent);
-    expect(managers).toEqual(["Genel", "Vyron Helper", "Coder", "Multi-Model Planner", "Reviewer"]);
+    expect(managers).toEqual(["Genel", "Vyron Helper", "Coder", "Multi-Model Planner", "Konsey", "Reviewer"]);
     h.click(h.el("tab-projects"));
     expect(h.el("panel-projects").hidden).toBe(false);
   });
@@ -725,7 +725,15 @@ describe("+ menu, SubAgent, Plan and Terminal", () => {
     h.click(h.el("plus-btn"));
     h.click(item(h, "SubAgent"));
     expect(h.openMenus()).toHaveLength(2);
-    expect(h.menuLabels().slice(4)).toEqual(["SubAgent kullanma", "Genel" + "Varsayılan", "Vyron Helper" + "Yardımcı", "Coder" + "Kod", "Multi-Model Planner" + "Paralel", "Reviewer" + "İnceleme"]);
+    expect(h.menuLabels().slice(4)).toEqual([
+      "SubAgent kullanma",
+      "Genel" + "Varsayılan",
+      "Vyron Helper" + "Yardımcı",
+      "Coder" + "Kod",
+      "Multi-Model Planner" + "Paralel",
+      "Konsey" + "Konsey",
+      "Reviewer" + "İnceleme",
+    ]);
     h.click(item(h, "Reviewer"));
     expect(h.openMenus()).toHaveLength(0);
     const chip = h.doc.querySelector("#chips .chip")!;
@@ -1497,7 +1505,7 @@ describe("managers run through Ruflo roles", () => {
     const inputs = h.doc.querySelectorAll<HTMLInputElement>("#menu-layer input");
     inputs[0]!.value = "Denetçi";
     const role = h.doc.querySelector<HTMLSelectElement>("#menu-layer select")!;
-    expect(Array.from(role.options).map((o) => o.value)).toEqual(["coder", "reviewer", "tester", "planner", "researcher", "system-architect", "security-auditor", "task-orchestrator"]);
+    expect(Array.from(role.options).map((o) => o.value)).toEqual(["coder", "reviewer", "tester", "planner", "researcher", "system-architect", "security-auditor", "task-orchestrator", "council"]);
     role.value = "security-auditor";
     h.doc.querySelector("#menu-layer form")!.dispatchEvent(new h.win.Event("submit", { bubbles: true, cancelable: true }));
     expect(h.el("manager-detail").textContent).toContain("Ruflo · Güvenlik denetçisi");

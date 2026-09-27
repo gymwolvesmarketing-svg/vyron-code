@@ -31,6 +31,7 @@ export const RUFLO_AGENT_TYPES = [
   "system-architect",
   "security-auditor",
   "task-orchestrator",
+  "council",
 ] as const;
 
 export type RufloAgentType = (typeof RUFLO_AGENT_TYPES)[number];
@@ -56,8 +57,30 @@ import {
   teamFooter,
   withMemory,
   workerPrompt,
+  councilFooter,
+  councilRound1Prompt,
+  councilRound2Prompt,
+  councilSynthesisPrompt,
+  type CouncilOpinion,
+  type CouncilSeat,
   type SubTaskResult,
 } from "./rufloTeam";
+
+/**
+ * Konsey (council) seats - fixed wiring, not user-configurable. Each name is a single-purpose OmniRoute combo
+ * (created once via the management API; see the create-council-combos note in the project memory) that pins one
+ * seat to one specific model, with a short fallback so a temporarily rate-limited or retired model does not
+ * silence that seat. scripts/hermes-auth-proxy.mjs keeps its own copy of these four names (it cannot import this
+ * file) so it can add the `provider: "custom"` field Hermes needs to honour them.
+ */
+export const COUNCIL_SEATS: readonly CouncilSeat[] = [
+  { id: "nemotron", label: "Nemotron 3 Ultra 550B", model: "vyron-council-nemotron" },
+  { id: "kimi", label: "Kimi K3", model: "vyron-council-kimi" },
+  { id: "claude", label: "Claude", model: "vyron-council-claude" },
+  { id: "chatgpt", label: "ChatGPT", model: "vyron-council-chatgpt" },
+];
+/** The seat the final synthesis pass runs on - the one wired to a real (non-browser) API today. */
+const COUNCIL_SYNTHESIZER = COUNCIL_SEATS.find((seat) => seat.id === "nemotron") ?? COUNCIL_SEATS[0]!;
 
 export const MAX_RUFLO_PROMPT_CHARS = 100_000;
 /** Must stay above the tool transcript limit (electron/toolPolicy.ts MAX_TRANSCRIPT_CHARS) plus the speaker labels, or a long tool run is refused mid-way. */
@@ -237,11 +260,15 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
     return transport === null || transport.hasExited();
   }
 
-  /** Spawns a tracked agent, runs one prompt on it and cleans it up. null = failed; "gone" = the child died. */
-  async function executeAgent(agentType: RufloAgentType, prompt: string, models?: ModelChoice): Promise<string | null | "gone"> {
+  /**
+   * Spawns a tracked agent, runs one prompt on it and cleans it up. null = failed; "gone" = the child died.
+   * `modelOverride` pins an exact model regardless of the caller's per-role choice - only the council seats use it,
+   * since council deliberation needs each seat on a specific model, not whatever the user picked for that role.
+   */
+  async function executeAgent(agentType: RufloAgentType, prompt: string, models?: ModelChoice, modelOverride?: string): Promise<string | null | "gone"> {
     counter += 1;
     const agentId = "vyron-" + agentType + "-" + String(counter);
-    const model = modelForRole(models, agentType);
+    const model = modelOverride ?? modelForRole(models, agentType);
     const spawned = await callTool("agent_spawn", model === undefined ? { agentType, agentId } : { agentType, agentId, model }, timings.callMs);
     if (!spawned || spawned.success !== true) return childGone() ? "gone" : null;
     const executed = await callTool("agent_execute", { agentId, prompt, maxTokens: 8192 }, timings.executeMs);
@@ -293,6 +320,52 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
     return { ok: true, text: (answer + teamFooter(results)).slice(0, MAX_RUFLO_OUTPUT_CHARS), note: answer };
   }
 
+  /**
+   * Runs a full council deliberation: every seat answers the same question independently (round 1), each seat then
+   * sees the others' round-1 answers and revises or defends its position (round 2), and one seat merges the final
+   * positions into a single agreed decision. A seat whose model is down for this call is simply left out (its
+   * opinion is missing from later rounds) rather than failing the whole council; only a total wipeout fails.
+   */
+  async function runCouncil(prompt: string, snippets: string[]): Promise<RufloResult> {
+    const round1Settled = await Promise.all(
+      COUNCIL_SEATS.map((seat) => executeAgent("researcher", councilRound1Prompt(prompt, snippets, seat.label), undefined, seat.model)),
+    );
+    if (round1Settled.every((value) => value === "gone")) return { ok: false, reason: "unavailable" };
+    const round1: ReadonlyArray<CouncilOpinion | null> = COUNCIL_SEATS.map((seat, index) => {
+      const value = round1Settled[index];
+      return typeof value === "string" ? { label: seat.label, text: value } : null;
+    });
+    const answered1 = round1.filter((opinion): opinion is CouncilOpinion => opinion !== null);
+    if (answered1.length === 0) return { ok: false, reason: "failed" };
+
+    const round2Settled = await Promise.all(
+      COUNCIL_SEATS.map((seat, index) => {
+        const own = round1[index];
+        if (!own) return Promise.resolve(null); // this seat did not answer round 1; nothing to revise
+        const others = answered1.filter((opinion) => opinion.label !== seat.label);
+        return executeAgent("researcher", councilRound2Prompt(prompt, seat.label, own.text, others), undefined, seat.model);
+      }),
+    );
+    const round2: CouncilOpinion[] = [];
+    COUNCIL_SEATS.forEach((seat, index) => {
+      const value = round2Settled[index];
+      if (typeof value === "string") round2.push({ label: seat.label, text: value });
+    });
+    // If every round-2 call failed (but round 1 had answers), fall back to the round-1 positions for the synthesis.
+    const finalOpinions = round2.length > 0 ? round2 : answered1;
+
+    const merged = await executeAgent("task-orchestrator", councilSynthesisPrompt(prompt, finalOpinions), undefined, COUNCIL_SYNTHESIZER.model);
+    const mergedText =
+      typeof merged === "string" && merged.trim().length > 0 ? merged : finalOpinions.map((opinion) => "### " + opinion.label + "\n" + opinion.text).join("\n\n");
+    const seatLabels = COUNCIL_SEATS.map((seat) => seat.label);
+    const respondedLabels = finalOpinions.map((opinion) => opinion.label);
+    return {
+      ok: true,
+      text: (mergedText + councilFooter(seatLabels, respondedLabels)).slice(0, MAX_RUFLO_OUTPUT_CHARS),
+      note: mergedText,
+    };
+  }
+
   async function runOnce(agentType: RufloAgentType, prompt: string, project: unknown, models?: ModelChoice): Promise<RufloResult> {
     if (!(await ensureStarted())) return { ok: false, reason: "unavailable" };
     const namespace = memoryNamespace(project);
@@ -300,6 +373,8 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
     let outcome: RufloResult;
     if (agentType === "task-orchestrator") {
       outcome = await runTeam(prompt, snippets, models);
+    } else if (agentType === "council") {
+      outcome = await runCouncil(prompt, snippets);
     } else {
       const text = await executeAgent(agentType, withMemory(prompt, snippets), models);
       if (text === "gone") return { ok: false, reason: "unavailable" };
@@ -334,9 +409,12 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
       if (busy) return null;
       busy = true;
       try {
+        // A full council deliberation per tool-loop turn would be far too slow (three round trips per step); once a
+        // Konsey task is running with tools, each turn goes straight to the synthesizer seat instead.
+        const override = agentType === "council" ? COUNCIL_SYNTHESIZER.model : undefined;
         let text: string | null | "gone" = "gone";
-        if (await ensureStarted()) text = await executeAgent(agentType, prompt, models);
-        if (text === "gone" && !shuttingDown && (await ensureStarted())) text = await executeAgent(agentType, prompt, models);
+        if (await ensureStarted()) text = await executeAgent(agentType, prompt, models, override);
+        if (text === "gone" && !shuttingDown && (await ensureStarted())) text = await executeAgent(agentType, prompt, models, override);
         return typeof text === "string" && text !== "gone" ? text : null;
       } catch {
         return null;

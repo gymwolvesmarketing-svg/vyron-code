@@ -7,6 +7,7 @@ import {
   RUFLO_AGENT_TYPES,
   ALLOWED_RUFLO_TOOLS,
   MAX_RUFLO_OUTPUT_CHARS,
+  COUNCIL_SEATS,
   type RufloDeps,
   type RufloTransport,
 } from "../electron/rufloBridge";
@@ -94,7 +95,7 @@ afterEach(() => {
 
 describe("agent roles", () => {
   it("has the fixed role list and validates strictly", () => {
-    expect([...RUFLO_AGENT_TYPES]).toEqual(["coder", "reviewer", "tester", "planner", "researcher", "system-architect", "security-auditor", "task-orchestrator"]);
+    expect([...RUFLO_AGENT_TYPES]).toEqual(["coder", "reviewer", "tester", "planner", "researcher", "system-architect", "security-auditor", "task-orchestrator", "council"]);
     for (const good of RUFLO_AGENT_TYPES) expect(isRufloAgentType(good)).toBe(true);
     for (const bad of ["", "CODER", "coder ", "swarm_init", "../coder", 5, null, undefined, {}]) expect(isRufloAgentType(bad)).toBe(false);
   });
@@ -534,6 +535,121 @@ describe("project memory and team runs", () => {
   });
 });
 
+describe("council (konsey) runs", () => {
+  /**
+   * A Ruflo that tracks which seat model each spawned agent is running (from agent_spawn's `model` arg) so the
+   * execute handler can answer per seat, and classifies each call as round 1, round 2 or the final synthesis by
+   * the prompt's own shape.
+   */
+  function councilRuflo(options: { deadSeats?: string[]; deadRound2Seats?: string[]; synthesisFails?: boolean } = {}) {
+    const spawnModel = new Map<string, string>();
+    const executes: Array<{ agentId: string; model: string | undefined; prompt: string }> = [];
+    const handler = (message: Record<string, unknown>, t: FakeTransport) => {
+      if (message.id === undefined) return;
+      const params = (message.params ?? {}) as Record<string, unknown>;
+      if (message.method === "initialize") return t.emit({ jsonrpc: "2.0", id: message.id, result: {} });
+      const name = params.name as string;
+      const args = (params.arguments ?? {}) as Record<string, unknown>;
+      const reply = (payload: unknown) => t.emit({ jsonrpc: "2.0", id: message.id, result: toolText(payload) });
+      if (name === "agent_spawn") {
+        const model = args.model as string | undefined;
+        if (model && (options.deadSeats ?? []).includes(model)) return reply({ success: false });
+        spawnModel.set(String(args.agentId), model);
+        return reply({ success: true });
+      }
+      if (name === "agent_terminate") return reply({ success: true });
+      if (name === "memory_search") return reply({ results: [] });
+      if (name === "memory_store") return reply({ success: true });
+      if (name === "agent_execute") {
+        const agentId = String(args.agentId);
+        const model = spawnModel.get(agentId);
+        const prompt = String(args.prompt);
+        executes.push({ agentId, model, prompt });
+        if (prompt.includes("iki turda tartıştı")) {
+          // The synthesis pass.
+          if (options.synthesisFails) return reply({ success: false });
+          return reply({ success: true, output: "ORTAK KARAR" });
+        }
+        if (prompt.includes("diğer koltukların ilk turdaki görüşlerini")) {
+          // Round 2.
+          if (model && (options.deadRound2Seats ?? []).includes(model)) return reply({ success: false });
+          return reply({ success: true, output: model + " R2" });
+        }
+        // Round 1.
+        return reply({ success: true, output: model + " R1" });
+      }
+      t.emit({ jsonrpc: "2.0", id: message.id, error: { message: "unknown" } });
+    };
+    return { handler, executes: () => executes };
+  }
+
+  it("runs 4 seats independently, lets each revise after seeing the others, then merges one agreed decision", async () => {
+    const ruflo = councilRuflo();
+    const bridge = createRufloBridge(makeDeps(ruflo.handler).deps);
+    const result = await bridge.run("council", "Hangi mimari daha iyi?", "aetheris");
+    expect(result).toEqual({ ok: true, text: "ORTAK KARAR" + councilFooter(COUNCIL_SEATS.map((s) => s.label), COUNCIL_SEATS.map((s) => s.label)) });
+    const models = COUNCIL_SEATS.map((s) => s.model);
+    const round1 = ruflo.executes().filter((e) => e.prompt.includes("KENDİ BAŞINA"));
+    expect(round1.map((e) => e.model).sort()).toEqual([...models].sort());
+    const round2 = ruflo.executes().filter((e) => e.prompt.includes("diğer koltukların"));
+    expect(round2.map((e) => e.model).sort()).toEqual([...models].sort());
+    // Round 2 for one seat labels its own round-1 answer separately, and lists only the OTHER three under "### <label>".
+    const nemotronRound2 = round2.find((e) => e.model === "vyron-council-nemotron")!;
+    expect(nemotronRound2.prompt).toContain("Kendi ilk görüşün (Nemotron 3 Ultra 550B):\nvyron-council-nemotron R1");
+    expect(nemotronRound2.prompt).not.toContain("### Nemotron 3 Ultra 550B");
+    for (const other of COUNCIL_SEATS.filter((s) => s.model !== "vyron-council-nemotron")) {
+      expect(nemotronRound2.prompt).toContain("### " + other.label);
+      expect(nemotronRound2.prompt).toContain(other.model + " R1");
+    }
+    const synthesis = ruflo.executes().find((e) => e.prompt.includes("iki turda tartıştı"))!;
+    expect(synthesis.model).toBe("vyron-council-nemotron");
+    for (const label of COUNCIL_SEATS.map((s) => s.label)) expect(synthesis.prompt).toContain(label);
+  });
+
+  it("a seat that cannot even spawn is simply left out; the other three still reach a decision", async () => {
+    const ruflo = councilRuflo({ deadSeats: ["vyron-council-kimi"] });
+    const bridge = createRufloBridge(makeDeps(ruflo.handler).deps);
+    const result = await bridge.run("council", "Soru", "p");
+    expect(result).toEqual({ ok: true, text: "ORTAK KARAR" + councilFooter(COUNCIL_SEATS.map((s) => s.label), ["Nemotron 3 Ultra 550B", "Claude", "ChatGPT"]) });
+    const round1Models = ruflo.executes().filter((e) => e.prompt.includes("KENDİ BAŞINA")).map((e) => e.model);
+    expect(round1Models).not.toContain("vyron-council-kimi");
+    expect(round1Models).toHaveLength(3);
+  });
+
+  it("falls back to the round-1 positions for the synthesis when every round-2 call fails", async () => {
+    const ruflo = councilRuflo({ deadRound2Seats: COUNCIL_SEATS.map((s) => s.model) });
+    const bridge = createRufloBridge(makeDeps(ruflo.handler).deps);
+    const result = await bridge.run("council", "Soru", "p");
+    expect(result.ok).toBe(true);
+    const synthesis = ruflo.executes().find((e) => e.prompt.includes("iki turda tartıştı"))!;
+    for (const seat of COUNCIL_SEATS) expect(synthesis.prompt).toContain(seat.model + " R1");
+  });
+
+  it("when the synthesis call itself fails, the answer is the joined final opinions instead", async () => {
+    const ruflo = councilRuflo({ synthesisFails: true });
+    const bridge = createRufloBridge(makeDeps(ruflo.handler).deps);
+    const result = await bridge.run("council", "Soru", "p");
+    expect(result.ok).toBe(true);
+    const text = result.ok ? result.text : "";
+    for (const seat of COUNCIL_SEATS) expect(text).toContain(seat.label);
+    expect(text).toContain("R2");
+  });
+
+  it("fails only when every single seat is unreachable", async () => {
+    const ruflo = councilRuflo({ deadSeats: COUNCIL_SEATS.map((s) => s.model) });
+    const bridge = createRufloBridge(makeDeps(ruflo.handler).deps);
+    expect(await bridge.run("council", "Soru", "p")).toEqual({ ok: false, reason: "failed" });
+  });
+
+  it("a tool-loop turn for a running Konsey task skips full deliberation and goes straight to the synthesizer seat", async () => {
+    const ruflo = councilRuflo();
+    const bridge = createRufloBridge(makeDeps(ruflo.handler).deps);
+    const reply = await bridge.ask("council", "sıradaki adım ne?");
+    expect(reply).toBe("vyron-council-nemotron R1");
+    expect(ruflo.executes()).toHaveLength(1);
+  });
+});
+
 import {
   memoryNamespace,
   parsePlan,
@@ -545,6 +661,10 @@ import {
   teamFooter,
   MAX_SUBTASKS,
   MAX_CONTEXT_CHARS,
+  councilRound1Prompt,
+  councilRound2Prompt,
+  councilSynthesisPrompt,
+  councilFooter,
 } from "../electron/rufloTeam";
 
 describe("rufloTeam pure helpers", () => {
@@ -582,6 +702,34 @@ describe("rufloTeam pure helpers", () => {
     expect(plannerPrompt("GÖREV", [])).toContain("YALNIZCA şu biçimde geçerli JSON");
     expect(synthesisPrompt("G", [{ title: "A", role: "coder", text: null }])).toContain("(bu alt görev tamamlanamadı)");
     expect(teamFooter([{ title: "A", role: "coder", text: "x" }, { title: "B", role: "tester", text: null }])).toContain("2 alt görev paralel çalıştı (coder, tester), 1 tanesi tamamlandı");
+  });
+
+  it("shapes the council prompts: round 1 is independent, round 2 shows only the others, and the synthesis asks for one decision", () => {
+    const r1 = councilRound1Prompt("Hangi mimari?", [], "Nemotron");
+    expect(r1).toContain('"Nemotron" koltuğunu temsil ediyorsun');
+    expect(r1).toContain("KENDİ BAŞINA");
+    expect(r1).toContain("Hangi mimari?");
+
+    const r2 = councilRound2Prompt("Hangi mimari?", "Nemotron", "benim görüşüm", [
+      { label: "Kimi K3", text: "onun görüşü" },
+      { label: "Claude", text: "başka görüş" },
+    ]);
+    expect(r2).toContain("Kendi ilk görüşün (Nemotron):\nbenim görüşüm");
+    expect(r2).toContain("### Kimi K3 (ilk görüş)\nonun görüşü");
+    expect(r2).toContain("### Claude (ilk görüş)\nbaşka görüş");
+    expect(r2).not.toContain("### Nemotron");
+
+    const synth = councilSynthesisPrompt("Hangi mimari?", [
+      { label: "Nemotron", text: "son görüş A" },
+      { label: "Kimi K3", text: "son görüş B" },
+    ]);
+    expect(synth).toContain("TEK bir ortak karar yaz");
+    expect(synth).toContain("### Nemotron (son görüş)\nson görüş A");
+    expect(synth).toContain("### Kimi K3 (son görüş)\nson görüş B");
+
+    expect(councilFooter(["Nemotron", "Kimi K3", "Claude", "ChatGPT"], ["Nemotron", "Claude"])).toBe(
+      "\n\n— Konsey: Nemotron, Kimi K3, Claude, ChatGPT tartıştı (2/4 koltuk yanıt verdi). Ortak karar yukarıda.",
+    );
   });
 });
 

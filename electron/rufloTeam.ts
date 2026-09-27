@@ -182,3 +182,70 @@ export function teamFooter(results: readonly SubTaskResult[]): string {
   const roles = results.map((r) => r.role).join(", ");
   return "\n\n— " + String(results.length) + " alt görev paralel çalıştı (" + roles + "), " + String(done) + " tanesi tamamlandı. Sonuç proje hafızasına kaydedildi.";
 }
+
+// ---------------------------------------------------------------------------------------------
+// Konsey (council): several distinct models independently take a position on the SAME question,
+// see each other's first-round answers, revise or defend their position, and one final pass merges
+// the outcome into a single agreed decision. Unlike the planner/worker split above (which divides
+// ONE task into independent pieces), every seat here answers the whole question — this is
+// deliberation, not decomposition. The seat list is fixed wiring (electron/rufloBridge.ts pins each
+// seat to a specific OmniRoute combo), not something a task chooses.
+// ---------------------------------------------------------------------------------------------
+
+export interface CouncilSeat {
+  readonly id: string;
+  readonly label: string;
+  /** The fixed OmniRoute combo name for this seat (see scripts/hermes-auth-proxy.mjs's own copy of this list). */
+  readonly model: string;
+}
+
+export interface CouncilOpinion {
+  readonly label: string;
+  readonly text: string;
+}
+
+/** Round 1: every seat answers the same question independently, with no knowledge of the others. */
+export function councilRound1Prompt(task: string, snippets: readonly string[], seatLabel: string): string {
+  return (
+    memoryContextBlock(snippets) +
+    'Sen bir model konseyinde "' +
+    seatLabel +
+    '" koltuğunu temsil ediyorsun. Aşağıdaki soruyu ya da kararı KENDİ BAŞINA değerlendir; şu an başka bir modelin görüşünü bilmiyorsun. ' +
+    "Şunları yaz: 1) önerdiğin yaklaşım ve kısa gerekçesi, 2) en büyük risk ya da tereddüdün, 3) 1-10 arası kendi güven puanın.\n\nSoru/Görev:\n" +
+    task
+  );
+}
+
+/** Round 2: each seat sees the OTHER seats' round-1 answers (not its own) and revises or defends its position. */
+export function councilRound2Prompt(task: string, seatLabel: string, own: string, others: readonly CouncilOpinion[]): string {
+  let body = "Kendi ilk görüşün (" + seatLabel + "):\n" + own + "\n\n";
+  for (const other of others) body += "### " + other.label + " (ilk görüş)\n" + other.text + "\n\n";
+  return (
+    "Konseydeki diğer koltukların ilk turdaki görüşlerini aşağıda görüyorsun. Kendi görüşünle karşılaştır: nerede aynı fikirdesiniz, nerede " +
+    "ayrılıyorsunuz, kimin gerekçesi daha güçlü? Gerekirse görüşünü değiştir; değiştirmiyorsan neden ısrar ettiğini kısaca açıkla. Son cümlen net " +
+    "bir öneri olsun.\n\nSoru/Görev:\n" +
+    task +
+    "\n\n" +
+    body
+  );
+}
+
+/** The final pass: one seat reads every final position and writes the single agreed decision as an actionable plan. */
+export function councilSynthesisPrompt(task: string, finalOpinions: readonly CouncilOpinion[]): string {
+  let body = "";
+  for (const opinion of finalOpinions) body += "### " + opinion.label + " (son görüş)\n" + opinion.text + "\n\n";
+  return (
+    "Bir model konseyi aşağıdaki soruyu iki turda tartıştı. Şimdi TEK bir ortak karar yaz: hangi yaklaşım seçildi, neden, hangi noktalarda " +
+    "koltuklar anlaştı ya da ayrıştı ve ayrışma nasıl çözüldü. Sonunda Coder'ın doğrudan uygulayabileceği, adım adım bir plan ekle.\n\nSoru/Görev:\n" +
+    task +
+    "\n\nKonseyin son görüşleri:\n" +
+    body
+  );
+}
+
+/** A closing line naming every seat and how many actually answered, so the user can see who took part. */
+export function councilFooter(seats: readonly string[], responded: readonly string[]): string {
+  return (
+    "\n\n— Konsey: " + seats.join(", ") + " tartıştı (" + String(responded.length) + "/" + String(seats.length) + " koltuk yanıt verdi). Ortak karar yukarıda."
+  );
+}

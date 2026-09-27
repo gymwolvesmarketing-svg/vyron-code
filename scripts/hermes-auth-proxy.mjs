@@ -52,7 +52,16 @@ if (!REQUIRED_KEY) {
 
 const PUBLIC_PATHS = new Set(["/health", "/v1/health"]);
 const AUTHENTICATED_PATHS = new Set(["/v1/chat/completions"]);
-const ROUTED_MODELS = ["vyron-assistant", "vyron-code", "vyron-research"]; // fixed OmniRoute combo names (mirrors electron/modelRouting.ts)
+const ROUTED_MODELS = [
+  "vyron-assistant",
+  "vyron-code",
+  "vyron-research",
+  // Konsey (council) seats - fixed wiring, mirrors electron/rufloBridge.ts's own COUNCIL_SEATS list.
+  "vyron-council-nemotron",
+  "vyron-council-kimi",
+  "vyron-council-claude",
+  "vyron-council-chatgpt",
+]; // fixed OmniRoute combo names (mirrors electron/modelRouting.ts)
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MiB — generous for one plain-text task draft, still bounded.
 
 function timingSafeEqual(a, b) {
