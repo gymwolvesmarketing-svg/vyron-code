@@ -122,7 +122,11 @@ function createMainWindow(): BrowserWindow {
   // exist to classify the observed ~3-minute self-exit defect on the next user-owned run;
   // they do not change, delay, prevent, or suppress any lifecycle event's default behavior.
   window.on("close", () => logLifecycle("window close (user or programmatic close() called)"));
-  window.on("closed", () => logLifecycle("window closed (native handle destroyed)"));
+  window.on("closed", () => {
+    logLifecycle("window closed (native handle destroyed)");
+    // The agent browser window must not keep the app alive after the app window is gone.
+    tools.close();
+  });
   // Windows-specific OS session-lifecycle events — VYRON_CODE_V02_A00_RUNTIME_EXIT_TRACE_COMPLETION_AND_STABILITY_FIX_AUTHORIZATION,
   // second pass. Fired when Windows itself is restarting, the machine is losing power, the
   // user is logging off, or the machine is shutting down — a class of OS-level session
@@ -177,6 +181,7 @@ setToolRunner((task, ask) => tools.run(task, ask));
 
 /** Stops only what this app started: the Ruflo runtime and the local AI services. */
 function shutdownServices(): Promise<unknown> {
+  tools.close();
   return Promise.all([ruflo.shutdown(), localAi.shutdown()]);
 }
 

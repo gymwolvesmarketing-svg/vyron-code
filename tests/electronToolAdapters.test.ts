@@ -45,6 +45,7 @@ vi.mock("../electron/workspace-grant", () => ({
 
 import { PERMISSIONS_FILE, PROJECT_FOLDERS_FILE, createPermissionStore, createProductionToolRunner, createProjectFolderStore, isProjectId, workspaceKey } from "../electron/toolAdapters";
 import type { ChatMessage } from "../electron/toolPolicy";
+import type { BrowserDriver } from "../electron/browserTool";
 
 let base: string;
 beforeEach(() => {
@@ -243,5 +244,114 @@ describe("project folders (each project remembers its own folder)", () => {
     expect(runner.clearWorkspace("aetheris").folderName).toBeNull();
     expect(createProjectFolderStore(path.join(state.userData, PROJECT_FOLDERS_FILE)).get("aetheris")).toBeNull();
     expect(runner.getWorkspace("aetheris").folderName).toBeNull();
+  });
+});
+
+describe("browser tools through the production runner", () => {
+  function fakeBrowser() {
+    const calls: string[] = [];
+    let page: { host: string } | null = null;
+    const driver: BrowserDriver = {
+      async open(url) {
+        calls.push("open " + url);
+        page = { host: new URL(url).hostname };
+        return { ok: true, text: "Sayfa açıldı.\nSayfa: Deneme" };
+      },
+      async read() {
+        calls.push("read");
+        return page ? { ok: true, text: "Sayfa okundu." } : { ok: false, text: "Açık bir sayfa yok." };
+      },
+      async click(index) {
+        calls.push("click " + String(index));
+        return { ok: true, text: "Tıklandı." };
+      },
+      async type(index, text, submit) {
+        calls.push("type " + String(index) + " " + text + " " + String(submit));
+        return { ok: true, text: "Yazıldı." };
+      },
+      target: (index) => (page ? { host: page.host, label: index === 1 ? 'düğme "Sepete ekle"' : null } : null),
+      close() {
+        calls.push("close");
+        page = null;
+      },
+    };
+    return { driver, calls };
+  }
+  const OPEN = (host: string) => '{"tool":"browser_open","url":"https://' + host + '/"}';
+
+  it("asks natively before opening a site, then drives the browser with the validated address", async () => {
+    const { driver, calls } = fakeBrowser();
+    const runner = createProductionToolRunner(() => null, driver);
+    state.responses = [0];
+    const result = await runner.run("g", scripted([OPEN("magaza.example"), "Baktım."]).ask);
+    expect(state.dialogs).toHaveLength(1);
+    expect(state.dialogs[0]!.title).toContain("web sitesi açma izni");
+    expect(state.dialogs[0]!.buttons).toEqual(["Bir kez izin ver", "Her zaman izin ver", "Reddet"]);
+    expect(state.dialogs[0]!.detail).toContain("magaza.example");
+    expect(JSON.stringify(state.dialogs)).not.toContain(base);
+    expect(calls).toEqual(["open https://magaza.example/"]);
+    expect(result.ok && result.text).toContain("✓ tarayıcı aç magaza.example");
+  });
+
+  it("'Reddet' opens nothing", async () => {
+    const { driver, calls } = fakeBrowser();
+    const runner = createProductionToolRunner(() => null, driver);
+    state.responses = [2];
+    const result = await runner.run("g", scripted([OPEN("magaza.example"), "Peki."]).ask);
+    expect(calls).toEqual([]);
+    expect(result.ok && result.text).toContain("✗ reddedildi: tarayıcı aç magaza.example");
+  });
+
+  it("'Her zaman izin ver' for a site is remembered per site, and separately for open, click and type", async () => {
+    const { driver, calls } = fakeBrowser();
+    const runner = createProductionToolRunner(() => null, driver);
+    state.responses = [1];
+    await runner.run("g", scripted([OPEN("magaza.example"), "Bitti"]).ask);
+    expect(runner.getWorkspace().alwaysCount).toBe(1);
+    await runner.run("g", scripted([OPEN("magaza.example"), "Bitti"]).ask);
+    expect(state.dialogs).toHaveLength(1);
+    state.responses = [2];
+    await runner.run("g", scripted([OPEN("baska.example"), "Bitti"]).ask);
+    expect(state.dialogs).toHaveLength(2);
+
+    // A click on the same site is a different permission from opening it.
+    state.responses = [1];
+    await runner.run("g", scripted(['{"tool":"browser_click","index":1}', "Bitti"]).ask);
+    expect(state.dialogs).toHaveLength(3);
+    expect(state.dialogs[2]!.detail).toContain('[1] düğme "Sepete ekle"');
+    await runner.run("g", scripted(['{"tool":"browser_click","index":0}', "Bitti"]).ask);
+    expect(state.dialogs).toHaveLength(3);
+    state.responses = [0];
+    await runner.run("g", scripted(['{"tool":"browser_type","index":2,"text":"mont","submit":true}', "Bitti"]).ask);
+    expect(state.dialogs).toHaveLength(4);
+    expect(state.dialogs[3]!.detail).toContain("Yazılacak metin: mont");
+    expect(calls).toContain("type 2 mont true");
+    // Resetting the permissions forgets them all.
+    expect(runner.clearPermissions().alwaysCount).toBe(0);
+  });
+
+  it("reads the open page without any dialog, and a click with no page open is not asked about at all", async () => {
+    const { driver, calls } = fakeBrowser();
+    const runner = createProductionToolRunner(() => null, driver);
+    const result = await runner.run("g", scripted(['{"tool":"browser_read"}\n{"tool":"browser_click","index":0}', "Bitti"]).ask);
+    expect(state.dialogs).toHaveLength(0);
+    expect(calls).toEqual(["read", "click 0"]);
+    expect(result.ok && result.text).toContain("! başarısız: tarayıcı oku");
+  });
+
+  it("with no folder chosen the browser is never touched", async () => {
+    state.root = null;
+    const { driver, calls } = fakeBrowser();
+    const runner = createProductionToolRunner(() => null, driver);
+    const result = await runner.run("g", scripted([OPEN("magaza.example"), "Bitti"]).ask);
+    expect(state.dialogs).toHaveLength(0);
+    expect(calls).toEqual([]);
+    expect(result.ok && result.text).toContain("çalışma klasörü seçili değil");
+  });
+
+  it("close() shuts the agent browser window", () => {
+    const { driver, calls } = fakeBrowser();
+    createProductionToolRunner(() => null, driver).close();
+    expect(calls).toEqual(["close"]);
   });
 });

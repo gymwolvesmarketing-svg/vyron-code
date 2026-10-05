@@ -23,6 +23,7 @@ import {
   trimTranscript,
   type ApprovalChoice,
   type ApprovalRequest,
+  type BrowserTarget,
   type ChatMessage,
   type LogEntry,
   type ToolCall,
@@ -45,6 +46,8 @@ export interface ToolLoopDeps {
   fileExists(relativePath: string): boolean | null;
   /** A bounded read-only picture of the workspace folder (tree + key files), taken by the main process; null = none. */
   overview?(): string | null;
+  /** For a click / type: the site that is open and the element's label, taken BEFORE the action; null = no page is open. */
+  browserTarget?(call: ToolCall): BrowserTarget | null;
 }
 
 export type ToolLoopResult = { readonly ok: true; readonly text: string } | { readonly ok: false };
@@ -117,16 +120,21 @@ async function handle(deps: ToolLoopDeps, call: ToolCall, log: LogEntry[], maxOu
     log.push({ outcome: "failed", text: describeCall(call) + " — çalışma klasörü seçili değil" });
     return "Araç sonucu: çalışma klasörü seçili değil. Sonraki adımın JSON'unu yaz ya da düz metinle yanıtla.";
   }
-  if (needsApproval(call)) {
+  // A page action needs to know which site and element it is about; with no page open there is nothing to approve and the
+  // executor simply reports "no page is open".
+  const pageAction = call.tool === "browser_click" || call.tool === "browser_type";
+  const target = pageAction ? (deps.browserTarget?.(call) ?? null) : null;
+  const label = target ? target.label : null;
+  if (needsApproval(call) && !(pageAction && target === null)) {
     const existed = call.tool === "write_file" ? deps.fileExists(call.path) : null;
-    const request = approvalRequest(call, workspace.key, workspace.folderName, existed);
+    const request = approvalRequest(call, workspace.key, workspace.folderName, existed, target);
     const choice: ApprovalChoice = request === null ? "deny" : await deps.approve(request);
     if (choice === "deny") {
-      log.push({ outcome: "denied", text: describeCall(call) });
+      log.push({ outcome: "denied", text: describeCall(call, label) });
       return "Araç sonucu: kullanıcı bu işlemi reddetti. Sonraki adımın JSON'unu yaz ya da düz metinle yanıtla.";
     }
   }
   const result = await deps.execute(call);
-  log.push({ outcome: result.ok ? "ok" : "failed", text: describeCall(call) });
+  log.push({ outcome: result.ok ? "ok" : "failed", text: describeCall(call, label) });
   return "Araç sonucu (" + call.tool + "):\n" + boundOutput(result.text, maxOutput) + "\n\nSonraki adımın JSON'unu yaz; iş bittiyse JSON olmayan düz metinle nihai yanıtı ver.";
 }

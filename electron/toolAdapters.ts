@@ -14,6 +14,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { getCurrent, getCurrentCanonicalRoot, pickDirectory, clearCurrent, restoreGrant } from "./workspace-grant";
 import { listDir, projectOverview, readFile, resolveWritable, runCommand, writeFile } from "./toolExecutors";
+import { createBrowserDriver, type BrowserDriver } from "./browserTool";
+import { createElectronBrowserPage } from "./browserWindow";
 import { runToolLoop, type ToolLoopDeps, type ToolLoopResult, type ToolWorkspace } from "./toolLoop";
 import type { ApprovalChoice, ApprovalRequest, ChatMessage, ToolCall } from "./toolPolicy";
 
@@ -144,9 +146,15 @@ export interface ToolRunner {
   pickWorkspace(projectId?: unknown): Promise<WorkspaceInfo>;
   clearWorkspace(projectId?: unknown): WorkspaceInfo;
   clearPermissions(): WorkspaceInfo;
+  /** Closes the agent browser window (app shutdown). */
+  close(): void;
 }
 
-export function createProductionToolRunner(getWindow: () => BrowserWindow | null): ToolRunner {
+export function createProductionToolRunner(
+  getWindow: () => BrowserWindow | null,
+  // The browser window is only created when a task first opens a page, so building the driver costs nothing.
+  browser: BrowserDriver = createBrowserDriver(() => createElectronBrowserPage()),
+): ToolRunner {
   const store = createPermissionStore(path.join(app.getPath("userData"), PERMISSIONS_FILE));
   const folders = createProjectFolderStore(path.join(app.getPath("userData"), PROJECT_FOLDERS_FILE));
 
@@ -195,6 +203,14 @@ export function createProductionToolRunner(getWindow: () => BrowserWindow | null
         return writeFile(root, call.path, call.content);
       case "run_command":
         return runCommand(root, call.command);
+      case "browser_open":
+        return browser.open(call.url);
+      case "browser_read":
+        return browser.read();
+      case "browser_click":
+        return browser.click(call.index);
+      case "browser_type":
+        return browser.type(call.index, call.text, call.submit);
     }
   }
 
@@ -213,6 +229,9 @@ export function createProductionToolRunner(getWindow: () => BrowserWindow | null
         overview() {
           const root = getCurrentCanonicalRoot();
           return root ? projectOverview(root) : null;
+        },
+        browserTarget(call) {
+          return call.tool === "browser_click" || call.tool === "browser_type" ? browser.target(call.index) : null;
         },
         fileExists(relative) {
           const root = getCurrentCanonicalRoot();
@@ -255,6 +274,9 @@ export function createProductionToolRunner(getWindow: () => BrowserWindow | null
     clearPermissions() {
       store.clear();
       return info();
+    },
+    close() {
+      browser.close();
     },
   };
 }

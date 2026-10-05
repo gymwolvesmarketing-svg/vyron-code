@@ -117,9 +117,11 @@ describe("Electron scaffold source — no shell/child_process execution capabili
   });
 
   it("confirms exactly the expected scaffold .ts files exist, no more", () => {
-    expect(sourceFiles).toHaveLength(27);
+    expect(sourceFiles).toHaveLength(29);
     expect(sourceFiles.sort()).toEqual(
       [
+        "browserTool.ts",
+        "browserWindow.ts",
         "hermesApiServer.ts",
         "hermesAuthorization.ts",
         "hermesEndpoint.ts",
