@@ -85,11 +85,11 @@ describe("Electron scaffold source — no shell/child_process execution capabili
   // deliberate exceptions — one bounded `GET <origin>/health` probe and one bounded, explicit
   // `POST <origin>/v1/chat/completions` request respectively, the only two real network calls
   // this entire scaffold makes; see each file's own header for the full evidence trail.
-  const FILES_ALLOWED_FETCH = new Set(["hermesApiServer.ts", "hermesTaskSubmission.ts", "localAiAdapters.ts"]);
+  const FILES_ALLOWED_FETCH = new Set(["hermesApiServer.ts", "hermesTaskSubmission.ts", "localAiAdapters.ts", "deepResearchAdapter.ts"]);
   // localAiAdapters.ts is the one main-process module that starts the two local services
   // (fixed spawn of the Hermes gateway and the auth proxy, taskkill for cleanup) and probes them.
   const FILES_ALLOWED_CHILD_PROCESS = new Set(["localAiAdapters.ts", "rufloAdapters.ts", "toolExecutors.ts"]);
-  const FILES_ALLOWED_ENV_FS = new Set(["localAiAdapters.ts", "rufloAdapters.ts", "toolExecutors.ts", "toolAdapters.ts"]);
+  const FILES_ALLOWED_ENV_FS = new Set(["localAiAdapters.ts", "rufloAdapters.ts", "toolExecutors.ts", "toolAdapters.ts", "deepResearchAdapter.ts"]);
   const forbiddenPatterns: Array<[string, RegExp, (file: string) => boolean]> = [
     ["child_process import", /child_process/, (file) => !FILES_ALLOWED_CHILD_PROCESS.has(file)],
     ["exec( call", /\bexec\s*\(/, (file) => !FILES_ALLOWED_CHILD_PROCESS.has(file)],
@@ -117,11 +117,13 @@ describe("Electron scaffold source — no shell/child_process execution capabili
   });
 
   it("confirms exactly the expected scaffold .ts files exist, no more", () => {
-    expect(sourceFiles).toHaveLength(29);
+    expect(sourceFiles).toHaveLength(31);
     expect(sourceFiles.sort()).toEqual(
       [
         "browserTool.ts",
         "browserWindow.ts",
+        "deepResearch.ts",
+        "deepResearchAdapter.ts",
         "hermesApiServer.ts",
         "hermesAuthorization.ts",
         "hermesEndpoint.ts",

@@ -16,6 +16,8 @@ import { getCurrent, getCurrentCanonicalRoot, pickDirectory, clearCurrent, resto
 import { listDir, projectOverview, readFile, resolveWritable, runCommand, writeFile } from "./toolExecutors";
 import { createBrowserDriver, type BrowserDriver } from "./browserTool";
 import { createElectronBrowserPage } from "./browserWindow";
+import { createProductionDeepResearch } from "./deepResearchAdapter";
+import type { DeepResearch } from "./deepResearch";
 import { runToolLoop, type ToolLoopDeps, type ToolLoopResult, type ToolWorkspace } from "./toolLoop";
 import type { ApprovalChoice, ApprovalRequest, ChatMessage, ToolCall } from "./toolPolicy";
 
@@ -154,6 +156,7 @@ export function createProductionToolRunner(
   getWindow: () => BrowserWindow | null,
   // The browser window is only created when a task first opens a page, so building the driver costs nothing.
   browser: BrowserDriver = createBrowserDriver(() => createElectronBrowserPage()),
+  research: DeepResearch = createProductionDeepResearch(),
 ): ToolRunner {
   const store = createPermissionStore(path.join(app.getPath("userData"), PERMISSIONS_FILE));
   const folders = createProjectFolderStore(path.join(app.getPath("userData"), PROJECT_FOLDERS_FILE));
@@ -203,6 +206,8 @@ export function createProductionToolRunner(
         return writeFile(root, call.path, call.content);
       case "run_command":
         return runCommand(root, call.command);
+      case "deep_research":
+        return research.run(call.query, call.depth);
       case "browser_open":
         return browser.open(call.url);
       case "browser_read":
