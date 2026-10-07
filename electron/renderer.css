@@ -219,6 +219,7 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible), textarea:focu
 .tool-btn { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 10px; background: none; border: 1px solid var(--border); border-radius: 9px; color: var(--text-2); font-size: 13px; white-space: nowrap; }
 .tool-btn.icon-only { width: 30px; padding: 0; justify-content: center; }
 .tool-btn.subtle { border-color: transparent; color: var(--muted); }
+.tool-btn[hidden] { display: none; }
 .tool-btn:hover, .tool-btn[aria-expanded="true"] { background: var(--hover); color: var(--text); border-color: var(--border-strong); }
 .tool-btn .ico { width: 15px; height: 15px; }
 .tool-btn.has-selection { color: var(--accent); border-color: rgba(131, 145, 255, 0.4); }

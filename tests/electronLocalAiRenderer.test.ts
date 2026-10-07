@@ -688,23 +688,44 @@ describe("quick starts and work mode", () => {
     expect(h.el<HTMLButtonElement>("send-btn").disabled).toBe(false);
   });
 
-  it("the deep-research button selects the Derin Araştırma Manager, and the question goes out exactly as typed, with no tools even in a folder", async () => {
+  it("the deep-research button selects the Manager, opens the kind menu at the side, and the chosen kind decides the role sent", async () => {
     const h = await start();
+    expect(h.el("research-btn").hidden).toBe(true);
     h.click(h.el("plus-btn"));
     h.click(item(h, "Plan"));
     h.click(item(h, "Derin plan"));
     h.click(h.doc.querySelector<HTMLElement>('[data-quick-id="deep-research"]'));
-    const chip = h.doc.querySelector("#chips .chip")!;
-    expect(chip.textContent).toContain("Derin Araştırma");
-    // The placeholder is selected, ready to be typed over.
-    const input = h.el<HTMLTextAreaElement>("task-input");
-    expect(input.value.slice(input.selectionStart, input.selectionEnd)).toBe(input.value);
+    expect(h.doc.querySelector("#chips .chip")!.textContent).toContain("Derin Araştırma");
+    // The selector appears and its menu is already open, with the fast kind checked.
+    expect(h.el("research-btn").hidden).toBe(false);
+    expect(h.el("research-label").textContent).toBe("Hızlı araştırma");
+    expect(h.openMenus()).toHaveLength(1);
+    expect(h.menuLabels()).toEqual(["Hızlı araştırma" + "Genellikle birkaç dakika (en fazla 20 dk); daha ucuz.", "Max araştırma" + "Çok daha kapsamlı; uzun sürer (en fazla 45 dk) ve daha pahalıdır."]);
+    h.click(item(h, "Max araştırma"));
+    expect(h.el("research-label").textContent).toBe("Max araştırma");
+    expect(h.openMenus()).toHaveLength(0);
     h.click(h.el("workspace-btn"));
     await h.flush();
     await sendTask(h, "Türkiye'de performans spor giyim pazarını araştır");
     expect(h.calls.send).toHaveLength(1);
-    // No plan prefix, no "Rol:" line, no history, no tools flag: only the raw question and the Manager role.
-    expect(h.calls.send[0]).toEqual({ draft: "Türkiye'de performans spor giyim pazarını araştır", agent: "deep-research" });
+    // No plan prefix, no "Rol:" line, no history, no tools flag even in a folder: the raw question and the Max role.
+    expect(h.calls.send[0]).toEqual({ draft: "Türkiye'de performans spor giyim pazarını araştır", agent: "deep-research-max" });
+    // While it runs, the turn explains the wait (the fake send finishes at once, so the wording is checked in the source).
+    expect(rendererSource).toMatch(/isResearchRole\(turn\.agent\) \? RESEARCH_WORKING_TEXT : WORKING_TEXT/);
+    expect(rendererSource).toContain("Gemini derin araştırma sürüyor");
+  });
+
+  it("the fast kind sends the fast role, and the selector disappears with another Manager", async () => {
+    const h = await start();
+    h.click(h.doc.querySelector<HTMLElement>('[data-quick-id="deep-research"]'));
+    h.click(item(h, "Hızlı araştırma"));
+    await sendTask(h, "Kısa araştırma");
+    expect(h.calls.send[0]).toEqual({ draft: "Kısa araştırma", agent: "deep-research" });
+    h.click(h.el("new-task-btn"));
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "Reviewer"));
+    expect(h.el("research-btn").hidden).toBe(true);
   });
 
   it("every quick start populates a non-empty draft", async () => {
@@ -1525,7 +1546,7 @@ describe("managers run through Ruflo roles", () => {
     const inputs = h.doc.querySelectorAll<HTMLInputElement>("#menu-layer input");
     inputs[0]!.value = "Denetçi";
     const role = h.doc.querySelector<HTMLSelectElement>("#menu-layer select")!;
-    expect(Array.from(role.options).map((o) => o.value)).toEqual(["coder", "reviewer", "tester", "planner", "researcher", "system-architect", "security-auditor", "task-orchestrator", "council", "deep-research"]);
+    expect(Array.from(role.options).map((o) => o.value)).toEqual(["coder", "reviewer", "tester", "planner", "researcher", "system-architect", "security-auditor", "task-orchestrator", "council", "deep-research", "deep-research-max"]);
     role.value = "security-auditor";
     h.doc.querySelector("#menu-layer form")!.dispatchEvent(new h.win.Event("submit", { bubbles: true, cancelable: true }));
     expect(h.el("manager-detail").textContent).toContain("Ruflo · Güvenlik denetçisi");

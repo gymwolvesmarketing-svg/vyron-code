@@ -17,7 +17,7 @@ import { listDir, projectOverview, readFile, resolveWritable, runCommand, writeF
 import { createBrowserDriver, type BrowserDriver } from "./browserTool";
 import { createElectronBrowserPage } from "./browserWindow";
 import { createProductionDeepResearch } from "./deepResearchAdapter";
-import { MAX_RESEARCH_QUERY_CHARS, type DeepResearch } from "./deepResearch";
+import { MAX_RESEARCH_QUERY_CHARS, type DeepResearch, type ResearchDepth } from "./deepResearch";
 import { runToolLoop, type ToolLoopDeps, type ToolLoopResult, type ToolWorkspace } from "./toolLoop";
 import type { ApprovalChoice, ApprovalRequest, ChatMessage, ToolCall } from "./toolPolicy";
 
@@ -149,10 +149,11 @@ export interface ToolRunner {
   clearWorkspace(projectId?: unknown): WorkspaceInfo;
   clearPermissions(): WorkspaceInfo;
   /**
-   * The "Derin Araştırma" Manager: asks the user (native dialog, fast / Max / cancel) and runs the Gemini deep research on
-   * the whole question. Always answers with text the user can read (the report, or the plain reason it did not run).
+   * The "Derin Araştırma" Manager: runs the Gemini deep research on the whole question, in the kind (fast / Max) the user
+   * chose in the composer's research menu. Always answers with text the user can read (the report, or the plain reason it
+   * did not run).
    */
-  deepResearch(question: string): Promise<{ readonly ok: true; readonly text: string }>;
+  deepResearch(question: string, depth: ResearchDepth): Promise<{ readonly ok: true; readonly text: string }>;
   /** Closes the agent browser window (app shutdown). */
   close(): void;
 }
@@ -224,34 +225,12 @@ export function createProductionToolRunner(
     }
   }
 
-  async function deepResearch(question: string): Promise<{ readonly ok: true; readonly text: string }> {
+  async function deepResearch(question: string, depth: ResearchDepth): Promise<{ readonly ok: true; readonly text: string }> {
     const text = question.trim();
     if (text.length === 0) return { ok: true, text: "Araştırılacak bir konu yazmadın." };
     if (text.length > MAX_RESEARCH_QUERY_CHARS) return { ok: true, text: "Araştırma sorusu çok uzun (en fazla " + String(MAX_RESEARCH_QUERY_CHARS) + " karakter). Kısaltıp yeniden gönder." };
-    const window = getWindow();
-    const options: Electron.MessageBoxOptions = {
-      type: "question",
-      title: "Vyron Code — derin araştırma",
-      message: "Gemini Derin Araştırma başlatılsın mı?",
-      detail:
-        "Soru: " + (text.length > 300 ? text.slice(0, 299) + "…" : text) +
-        "\n\nSoru ve araştırma Google'ın Gemini API'sine gönderilir (kendi API anahtarınla, ücretli olabilir).\n" +
-        "Hızlı: genellikle birkaç dakika (en fazla 20 dk). Max: çok daha kapsamlı, uzun (en fazla 45 dk) ve daha pahalı.\n" +
-        "Araştırma bitene kadar bu görev bekler.",
-      buttons: ["Hızlı araştırma", "Max araştırma", "Vazgeç"],
-      defaultId: 2,
-      cancelId: 2,
-      noLink: true,
-    };
-    let response = 2;
-    try {
-      const result = window ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
-      response = result.response;
-    } catch {
-      response = 2;
-    }
-    if (response !== 0 && response !== 1) return { ok: true, text: "Derin araştırma başlatılmadı (vazgeçtin)." };
-    const outcome = await research.run(text, response === 1 ? "max" : "fast");
+    // The user already chose the kind in the composer's own research menu and pressed send; no second dialog.
+    const outcome = await research.run(text, depth);
     return { ok: true, text: outcome.text };
   }
 

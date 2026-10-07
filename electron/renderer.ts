@@ -106,6 +106,8 @@ const STATUS_TEXT = {
 } as const;
 
 const WORKING_TEXT = "Çalışıyor…";
+const RESEARCH_WORKING_TEXT =
+  "Gemini derin araştırma sürüyor. Ajan önce bir plan yapar, sonra birçok aramayı ve web sayfasını okuyup sonuçları birleştirerek raporu yazar; bu yüzden hızlıda birkaç dakika, Max'ta daha uzun sürer. Bitince rapor burada görünür.";
 const FAILURE_TEXT = "Yanıt alınamadı. Lütfen tekrar deneyin.";
 const NOT_READY_TEXT = "Yerel AI şu anda hazır değil.";
 const WAIT_FOR_AI_TEXT = "Yerel AI hazır olunca gönderebilirsin.";
@@ -818,6 +820,24 @@ function selectedManager(): WsManager | null {
 function selectedAgent(): string | null {
   const manager = selectedManager();
   return manager ? manager.agent : null;
+}
+
+/** The deep-research Manager answers through Gemini, not Ruflo; the kind (fast / Max) is picked in the composer's own menu. */
+type ResearchDepth = "fast" | "max";
+let researchDepth: ResearchDepth = "fast";
+
+function isResearchRole(agent: string | null): boolean {
+  return agent === "deep-research" || agent === "deep-research-max";
+}
+
+/** The role a task is sent with: for the research Manager the chosen kind decides between the two research roles. */
+function effectiveAgent(): string | null {
+  const agent = selectedAgent();
+  return isResearchRole(agent) ? (researchDepth === "max" ? "deep-research-max" : "deep-research") : agent;
+}
+
+function researchLabel(): string {
+  return researchDepth === "max" ? "Max araştırma" : "Hızlı araştırma";
 }
 
 /** A Manager with a Ruflo role is expressed through that role, so no "Rol:" line is added to the text. */
@@ -1539,6 +1559,12 @@ function applyQuickStart(quick: WsQuickStart): void {
   persist();
   renderChips();
   updateComposer();
+  // The deep-research button opens its kind menu at once: the choice is the first thing it asks.
+  if (quick.managerId && isResearchRole(selectedAgent())) {
+    const trigger = must("research-btn");
+    closeAllMenus(false);
+    openResearchMenu(trigger);
+  }
 }
 
 function makeChip(iconName: string, text: string, sub: string | null, removeLabel: string, onRemove: () => void): HTMLElement {
@@ -1769,6 +1795,10 @@ function updateComposer(): void {
   const active = VyronModel.findProject(ws, ws.activeProjectId);
   setText("project-label", active ? active.name : "Proje seç veya oluştur");
   setText("plan-label", planLabel());
+  // The research kind selector only exists while the deep-research Manager is selected.
+  const researching = isResearchRole(selectedAgent());
+  must("research-btn").hidden = !researching;
+  setText("research-label", researchLabel());
 
   must("skills-btn").classList.toggle("has-selection", ws.selectedSkillIds.length > 0);
   must("connectors-btn").classList.toggle("has-selection", selectedConnectors().length > 0);
@@ -1835,7 +1865,7 @@ function renderTurn(turn: Turn): HTMLElement {
     const working = make("div", "working");
     working.setAttribute("role", "status");
     working.appendChild(makeIcon("spinner"));
-    working.appendChild(make("span", "", WORKING_TEXT));
+    working.appendChild(make("span", "", isResearchRole(turn.agent) ? RESEARCH_WORKING_TEXT : WORKING_TEXT));
     wrap.appendChild(working);
   } else if (turn.status === "error") {
     const box = make("div", "turn-error");
@@ -1914,10 +1944,10 @@ async function sendCurrent(): Promise<void> {
     prompt: raw,
     composed,
     labels: selectionLabels(),
-    agent: selectedAgent(),
+    agent: effectiveAgent(),
     project: ws.activeProjectId,
     // The deep-research Manager is answered by the main process directly; it never runs the tool loop.
-    tools: toolsActive() && selectedAgent() !== "deep-research",
+    tools: toolsActive() && !isResearchRole(selectedAgent()),
     status: "running",
     text: null,
     truncated: false,
@@ -1979,7 +2009,7 @@ function chosenModels(): { assistant?: string; code?: string; research?: string;
 function taskRequest(turn: Turn, taskId: string): HermesTaskRequest {
   const project = turn.project;
   // The deep-research question goes to Gemini exactly as typed: no earlier turns, no mode prefixes, no skill text.
-  if (turn.agent === "deep-research") return { draft: turn.prompt.trim(), agent: turn.agent };
+  if (isResearchRole(turn.agent) && turn.agent !== null) return { draft: turn.prompt.trim(), agent: turn.agent };
   const draft = historyPreamble(taskId, turn, turn.composed.length) + turn.composed;
   const withProject = project !== null && /^[a-z0-9][a-z0-9-]{0,79}$/.test(project);
   const models = chosenModels();
@@ -2329,6 +2359,33 @@ function openPlusMenu(trigger: HTMLElement): void {
     menu.appendChild(makeMenuItem({ label: "SubAgent", icon: "bot", submenu: openSubAgentSubmenu }));
     menu.appendChild(makeMenuItem({ label: "Plan", icon: "list-check", submenu: openPlanSubmenu }));
     menu.appendChild(makeMenuItem({ label: "Terminal", icon: "terminal", submenu: openTerminalSubmenu }));
+  });
+}
+
+function setResearchDepth(depth: ResearchDepth): void {
+  researchDepth = depth;
+  updateComposer();
+  focusSoon(el("task-input"));
+}
+
+function openResearchMenu(trigger: HTMLElement): void {
+  openMenuWith("research", trigger, (menu) => {
+    menu.setAttribute("aria-label", "Araştırma türü");
+    const kinds: ReadonlyArray<{ id: ResearchDepth; label: string; sub: string }> = [
+      { id: "fast", label: "Hızlı araştırma", sub: "Genellikle birkaç dakika (en fazla 20 dk); daha ucuz." },
+      { id: "max", label: "Max araştırma", sub: "Çok daha kapsamlı; uzun sürer (en fazla 45 dk) ve daha pahalıdır." },
+    ];
+    for (const kind of kinds) {
+      menu.appendChild(
+        makeMenuItem({
+          label: kind.label,
+          sub: kind.sub,
+          role: "menuitemradio",
+          checked: researchDepth === kind.id,
+          onSelect: () => setResearchDepth(kind.id),
+        }),
+      );
+    }
   });
 }
 
@@ -3012,6 +3069,7 @@ function wire(): void {
   wireRootTrigger("skills-btn", "skills", openSkillsPicker);
   wireRootTrigger("connectors-btn", "connectors", openConnectorsPicker);
   wireRootTrigger("plan-btn", "plan", openPlanMenu);
+  wireRootTrigger("research-btn", "research", openResearchMenu);
   {
     const workspaceButton = must("workspace-btn");
     workspaceButton.addEventListener("click", () => {

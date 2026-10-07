@@ -32,11 +32,17 @@ export const RUFLO_AGENT_TYPES = [
   "security-auditor",
   "task-orchestrator",
   "council",
-  /** Not a Ruflo role: the Gemini deep-research Manager. electron/main.ts answers it through the tool runner; Ruflo never runs it. */
+  /** Not Ruflo roles: the Gemini deep-research Manager, fast and Max. electron/main.ts answers them through the tool runner; Ruflo never runs them. */
   "deep-research",
+  "deep-research-max",
 ] as const;
 
 export type RufloAgentType = (typeof RUFLO_AGENT_TYPES)[number];
+
+/** The two roles the main process answers itself (Gemini Deep Research); Ruflo is never asked to run them. */
+export function isDeepResearchRole(value: unknown): value is "deep-research" | "deep-research-max" {
+  return value === "deep-research" || value === "deep-research-max";
+}
 
 export function isRufloAgentType(value: unknown): value is RufloAgentType {
   return typeof value === "string" && (RUFLO_AGENT_TYPES as readonly string[]).indexOf(value) >= 0;
@@ -399,7 +405,7 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
     getState: () => state,
     async run(agentType, prompt, project, models) {
       if (shuttingDown) return { ok: false, reason: "unavailable" };
-      if (!isRufloAgentType(agentType) || agentType === "deep-research") return { ok: false, reason: "failed" };
+      if (!isRufloAgentType(agentType) || isDeepResearchRole(agentType)) return { ok: false, reason: "failed" };
       if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > MAX_RUFLO_PROMPT_CHARS) return { ok: false, reason: "failed" };
       if (busy) return { ok: false, reason: "failed" };
       busy = true;
@@ -415,7 +421,7 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
       }
     },
     async ask(agentType, prompt, models) {
-      if (shuttingDown || !isRufloAgentType(agentType) || agentType === "deep-research") return null;
+      if (shuttingDown || !isRufloAgentType(agentType) || isDeepResearchRole(agentType)) return null;
       if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > MAX_RUFLO_ASK_CHARS) return null;
       if (busy) return null;
       busy = true;
