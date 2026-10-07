@@ -10,6 +10,7 @@ import {
   COUNCIL_SEATS,
   COUNCIL_JUDGE,
   COUNCIL_JUDGE_BACKUP,
+  DEFAULT_RUFLO_TIMINGS,
   type RufloDeps,
   type RufloTransport,
 } from "../electron/rufloBridge";
@@ -93,6 +94,13 @@ function makeDeps(handler: Parameters<typeof makeTransport>[0], key: string | nu
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("agent turn time limit", () => {
+  it("lets one agent turn run long enough for a reasoning model (measured: a Kimi K3 planner call took 214 s)", () => {
+    expect(DEFAULT_RUFLO_TIMINGS.executeMs).toBeGreaterThanOrEqual(400_000);
+    expect(DEFAULT_RUFLO_TIMINGS.callMs).toBeLessThan(DEFAULT_RUFLO_TIMINGS.executeMs);
+  });
 });
 
 describe("agent roles", () => {

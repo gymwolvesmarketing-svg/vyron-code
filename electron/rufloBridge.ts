@@ -127,7 +127,12 @@ export interface RufloTimings {
   readonly executeMs: number;
 }
 
-export const DEFAULT_RUFLO_TIMINGS: RufloTimings = { handshakeMs: 60_000, callMs: 30_000, executeMs: 180_000 };
+/**
+ * Measured 2026-10-08: a Multi-Model Planner call on Kimi K3 (a reasoning model, 8192-token cap, ~10k-token prompt) took
+ * 214 s and succeeded, while the old 180 s limit had already abandoned it. A capped reasoning call tops out near 5 minutes,
+ * so one agent turn gets 10; the three-step team flow still bounds itself through its step count, not through this value.
+ */
+export const DEFAULT_RUFLO_TIMINGS: RufloTimings = { handshakeMs: 60_000, callMs: 30_000, executeMs: 600_000 };
 
 export type RufloState = "idle" | "starting" | "ready" | "failed";
 
