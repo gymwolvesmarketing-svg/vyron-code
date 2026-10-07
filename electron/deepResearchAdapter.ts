@@ -5,12 +5,12 @@
  *  - the key: read, on every run, from the same fixed Hermes `.env` file (LOCALAPPDATA\hermes\.env) the app already reads its
  *    Hermes key from, line `VYRON_GEMINI_API_KEY=...`. The user puts it there; Vyron stores nothing of its own, and the key
  *    stays in this module's call stack: it is sent only as the `x-goog-api-key` header, never logged, returned or exposed.
- *  - the call: a bare global fetch to ONE fixed origin (generativelanguage.googleapis.com) on two fixed path shapes, with no
+ *  - the call: a bare global fetch to ONE fixed origin (generativelanguage.googleapis.com) on fixed path shapes only, with no
  *    redirects followed and a per-request timeout.
  */
 import fs from "node:fs";
 import path from "node:path";
-import { createDeepResearch, type DeepResearch, type DeepResearchDeps, type HttpReply } from "./deepResearch";
+import { GROUNDED_SEARCH_PATH, createDeepResearch, type DeepResearch, type DeepResearchDeps, type HttpReply } from "./deepResearch";
 
 const ORIGIN = "https://generativelanguage.googleapis.com";
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -33,9 +33,9 @@ export function parseGeminiKey(text: string): string | null {
   return found;
 }
 
-/** Only the two fixed path shapes the driver uses are ever requested. */
+/** Only the three fixed path shapes the driver uses are ever requested (interactions, one interaction, the grounded search). */
 export function isAllowedPath(requestPath: string): boolean {
-  return requestPath === "/v1beta/interactions" || /^\/v1beta\/interactions\/[A-Za-z0-9_-]{1,200}$/.test(requestPath);
+  return requestPath === "/v1beta/interactions" || requestPath === GROUNDED_SEARCH_PATH || /^\/v1beta\/interactions\/[A-Za-z0-9_-]{1,200}$/.test(requestPath);
 }
 
 function readKey(): string | null {

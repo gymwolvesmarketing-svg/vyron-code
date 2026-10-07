@@ -106,6 +106,7 @@ const STATUS_TEXT = {
 } as const;
 
 const WORKING_TEXT = "Çalışıyor…";
+const SEARCH_WORKING_TEXT = "Gemini Google'da arıyor ve kaynakları okuyor; birkaç saniye sürer.";
 const RESEARCH_WORKING_TEXT =
   "Gemini derin araştırma sürüyor. Ajan önce bir plan yapar, sonra birçok aramayı ve web sayfasını okuyup sonuçları birleştirerek raporu yazar; bu yüzden hızlıda birkaç dakika, Max'ta daha uzun sürer. Bitince rapor burada görünür.";
 const FAILURE_TEXT = "Yanıt alınamadı. Lütfen tekrar deneyin.";
@@ -822,22 +823,26 @@ function selectedAgent(): string | null {
   return manager ? manager.agent : null;
 }
 
-/** The deep-research Manager answers through Gemini, not Ruflo; the kind (fast / Max) is picked in the composer's own menu. */
-type ResearchDepth = "fast" | "max";
-let researchDepth: ResearchDepth = "fast";
+/**
+ * The deep-research Manager answers through Gemini, not Ruflo; the kind is picked in the composer's own menu: a quick Google
+ * search (seconds, the default) or one of the two Deep Research agents (minutes).
+ */
+type ResearchDepth = "search" | "fast" | "max";
+let researchDepth: ResearchDepth = "search";
 
 function isResearchRole(agent: string | null): boolean {
-  return agent === "deep-research" || agent === "deep-research-max";
+  return agent === "deep-research" || agent === "deep-research-max" || agent === "deep-research-search";
 }
 
-/** The role a task is sent with: for the research Manager the chosen kind decides between the two research roles. */
+/** The role a task is sent with: for the research Manager the chosen kind decides which research role it is. */
 function effectiveAgent(): string | null {
   const agent = selectedAgent();
-  return isResearchRole(agent) ? (researchDepth === "max" ? "deep-research-max" : "deep-research") : agent;
+  if (!isResearchRole(agent)) return agent;
+  return researchDepth === "max" ? "deep-research-max" : researchDepth === "fast" ? "deep-research" : "deep-research-search";
 }
 
 function researchLabel(): string {
-  return researchDepth === "max" ? "Max araştırma" : "Hızlı araştırma";
+  return researchDepth === "max" ? "Max araştırma" : researchDepth === "fast" ? "Hızlı araştırma" : "Hızlı arama (Google ile)";
 }
 
 /** A Manager with a Ruflo role is expressed through that role, so no "Rol:" line is added to the text. */
@@ -1865,7 +1870,7 @@ function renderTurn(turn: Turn): HTMLElement {
     const working = make("div", "working");
     working.setAttribute("role", "status");
     working.appendChild(makeIcon("spinner"));
-    working.appendChild(make("span", "", isResearchRole(turn.agent) ? RESEARCH_WORKING_TEXT : WORKING_TEXT));
+    working.appendChild(make("span", "", turn.agent === "deep-research-search" ? SEARCH_WORKING_TEXT : isResearchRole(turn.agent) ? RESEARCH_WORKING_TEXT : WORKING_TEXT));
     wrap.appendChild(working);
   } else if (turn.status === "error") {
     const box = make("div", "turn-error");
@@ -2372,7 +2377,8 @@ function openResearchMenu(trigger: HTMLElement): void {
   openMenuWith("research", trigger, (menu) => {
     menu.setAttribute("aria-label", "Araştırma türü");
     const kinds: ReadonlyArray<{ id: ResearchDepth; label: string; sub: string }> = [
-      { id: "fast", label: "Hızlı araştırma", sub: "Genellikle birkaç dakika (en fazla 20 dk); daha ucuz." },
+      { id: "search", label: "Hızlı arama (Google ile)", sub: "Canlı Google araması + kaynak bağlantıları; saniyeler içinde yanıt. Çoğu soru için bu yeter." },
+      { id: "fast", label: "Hızlı araştırma", sub: "Derin Araştırma ajanı: çok kaynaklı rapor, genellikle birkaç dakika (en fazla 20 dk)." },
       { id: "max", label: "Max araştırma", sub: "Çok daha kapsamlı; uzun sürer (en fazla 45 dk) ve daha pahalıdır." },
     ];
     for (const kind of kinds) {

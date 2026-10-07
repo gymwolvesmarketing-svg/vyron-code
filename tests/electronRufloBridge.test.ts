@@ -97,7 +97,7 @@ afterEach(() => {
 
 describe("agent roles", () => {
   it("has the fixed role list and validates strictly", () => {
-    expect([...RUFLO_AGENT_TYPES]).toEqual(["coder", "reviewer", "tester", "planner", "researcher", "system-architect", "security-auditor", "task-orchestrator", "council", "deep-research", "deep-research-max"]);
+    expect([...RUFLO_AGENT_TYPES]).toEqual(["coder", "reviewer", "tester", "planner", "researcher", "system-architect", "security-auditor", "task-orchestrator", "council", "deep-research", "deep-research-max", "deep-research-search"]);
     for (const good of RUFLO_AGENT_TYPES) expect(isRufloAgentType(good)).toBe(true);
     for (const bad of ["", "CODER", "coder ", "swarm_init", "../coder", 5, null, undefined, {}]) expect(isRufloAgentType(bad)).toBe(false);
   });
@@ -105,7 +105,7 @@ describe("agent roles", () => {
   it("the deep-research role is never run or asked through Ruflo (the main process answers it)", async () => {
     const { deps, started } = makeDeps(goodHandler("Merhaba"));
     const bridge = createRufloBridge(deps);
-    for (const role of ["deep-research", "deep-research-max"]) {
+    for (const role of ["deep-research", "deep-research-max", "deep-research-search"]) {
       expect(await bridge.run(role, "soru", "p")).toEqual({ ok: false, reason: "failed" });
       expect(await bridge.ask(role, "soru")).toBeNull();
     }

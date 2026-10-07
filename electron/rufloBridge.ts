@@ -35,13 +35,19 @@ export const RUFLO_AGENT_TYPES = [
   /** Not Ruflo roles: the Gemini deep-research Manager, fast and Max. electron/main.ts answers them through the tool runner; Ruflo never runs them. */
   "deep-research",
   "deep-research-max",
+  "deep-research-search",
 ] as const;
 
 export type RufloAgentType = (typeof RUFLO_AGENT_TYPES)[number];
 
-/** The two roles the main process answers itself (Gemini Deep Research); Ruflo is never asked to run them. */
-export function isDeepResearchRole(value: unknown): value is "deep-research" | "deep-research-max" {
-  return value === "deep-research" || value === "deep-research-max";
+/** The three roles the main process answers itself (Gemini grounded search, Deep Research fast and Max); Ruflo is never asked to run them. */
+export function isDeepResearchRole(value: unknown): value is "deep-research" | "deep-research-max" | "deep-research-search" {
+  return value === "deep-research" || value === "deep-research-max" || value === "deep-research-search";
+}
+
+/** Which Gemini research kind a deep-research role stands for. */
+export function researchKindOfRole(role: "deep-research" | "deep-research-max" | "deep-research-search"): "fast" | "max" | "search" {
+  return role === "deep-research-max" ? "max" : role === "deep-research-search" ? "search" : "fast";
 }
 
 export function isRufloAgentType(value: unknown): value is RufloAgentType {

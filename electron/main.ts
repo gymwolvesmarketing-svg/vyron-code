@@ -44,7 +44,7 @@ import { APP_IPC_CHANNELS, HERMES_IPC_CHANNELS, LOCAL_AI_IPC_CHANNELS, TOOLS_IPC
 import { getTaskSubmissionState, sendTask, clearTaskSubmission, setTaskAgentExecutor, setToolRunner, setAgentAsk } from "./hermesTaskSubmission";
 import { createProductionLocalAiManager } from "./localAiAdapters";
 import { createProductionRufloBridge } from "./rufloAdapters";
-import { isDeepResearchRole } from "./rufloBridge";
+import { isDeepResearchRole, researchKindOfRole } from "./rufloBridge";
 import { createProductionToolRunner } from "./toolAdapters";
 
 /**
@@ -176,7 +176,7 @@ const ruflo = createProductionRufloBridge({
 });
 // The deep-research Manager (fast / Max, picked in the composer) is answered by the tool runner against Gemini; every other role runs in Ruflo.
 setTaskAgentExecutor((agentType, prompt, project, models) =>
-  isDeepResearchRole(agentType) ? tools.deepResearch(prompt, agentType === "deep-research-max" ? "max" : "fast") : ruflo.run(agentType, prompt, project, models),
+  isDeepResearchRole(agentType) ? tools.deepResearch(prompt, researchKindOfRole(agentType)) : ruflo.run(agentType, prompt, project, models),
 );
 setAgentAsk((agentType, prompt, models) => ruflo.ask(agentType, prompt, models));
 // Approved tools: workspace folder from a native dialog, native approval dialogs, confined executors.

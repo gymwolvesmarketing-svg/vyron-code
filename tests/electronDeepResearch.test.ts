@@ -11,6 +11,7 @@ import {
   type DeepResearchDeps,
   type HttpReply,
 } from "../electron/deepResearch";
+import { GROUNDED_SEARCH_PATH, groundedSources } from "../electron/deepResearch";
 import { isAllowedPath, parseGeminiKey } from "../electron/deepResearchAdapter";
 import { approvalRequest, describeCall, needsApproval, parseToolCall, parseToolCalls, TOOL_PROTOCOL } from "../electron/toolPolicy";
 
@@ -160,6 +161,63 @@ describe("deep research driver", () => {
   });
 });
 
+const grounded = (text: string, chunks: unknown[] = [{ web: { uri: "https://github.com/openfootball/football.json", title: "openfootball" } }]): HttpReply => ({
+  status: 200,
+  body: { candidates: [{ content: { parts: [{ text }] }, groundingMetadata: { groundingChunks: chunks } }] },
+});
+
+describe("quick grounded search (seconds, one call)", () => {
+  it("makes one Gemini call with Google Search on and returns the answer with a numbered source list", async () => {
+    const { deps, calls, sleeps } = makeDeps([
+      grounded("İşte 3 örnek: ...", [
+        { web: { uri: "https://a.example/x", title: "A" } },
+        { web: { uri: "https://a.example/x", title: "A tekrar" } },
+        { web: { uri: "javascript:alert(1)", title: "kötü" } },
+        { web: { uri: "https://b.example/y" } },
+      ]),
+    ]);
+    const result = await createDeepResearch(deps).run("  GitHub'da fikstür repoları  ", "search");
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain("hızlı arama");
+    expect(result.text).toContain("İşte 3 örnek");
+    expect(result.text).toContain("Kaynaklar:\n1. A — https://a.example/x\n2. https://b.example/y — https://b.example/y");
+    expect(result.text).not.toContain("javascript:");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.method).toBe("POST");
+    expect(calls[0]!.path).toBe(GROUNDED_SEARCH_PATH);
+    expect(calls[0]!.apiKey).toBe(KEY);
+    const body = calls[0]!.body as { contents: Array<{ parts: Array<{ text: string }> }>; tools: unknown[] };
+    expect(body.contents[0]!.parts[0]!.text).toBe("GitHub'da fikstür repoları");
+    expect(body.tools).toEqual([{ google_search: {} }]);
+    expect(sleeps).toEqual([]);
+  });
+
+  it("says so when no source came back, and reports empty answers, HTTP errors and a missing key plainly", async () => {
+    const noSources = makeDeps([grounded("Cevap", [])]);
+    expect((await createDeepResearch(noSources.deps).run("soru", "search")).text).toContain("kaynak bağlantısı dönmedi");
+    const empty = makeDeps([{ status: 200, body: { candidates: [{ content: { parts: [] } }] } }]);
+    expect((await createDeepResearch(empty.deps).run("soru", "search")).text).toContain("yanıt üretmedi");
+    for (const [status, expected] of [[403, "reddedildi"], [429, "kota"], [404, "bulunamadı"], [500, "HTTP 500"]] as const) {
+      const failed = makeDeps([{ status, body: null }]);
+      const result = await createDeepResearch(failed.deps).run("soru", "search");
+      expect(result.ok).toBe(false);
+      expect(result.text).toContain(expected);
+    }
+    expect((await createDeepResearch(makeDeps(["timeout"]).deps).run("soru", "search")).text).toContain("zaman aşımı");
+    expect((await createDeepResearch(makeDeps(["failed"]).deps).run("soru", "search")).ok).toBe(false);
+    const noKey = makeDeps([], { key: null });
+    expect(await createDeepResearch(noKey.deps).run("soru", "search")).toEqual({ ok: false, text: KEY_SETUP_HELP });
+    expect(noKey.calls).toHaveLength(0);
+  });
+
+  it("collects at most ten distinct http(s) sources and only from the first candidate", () => {
+    const many = Array.from({ length: 15 }, (_, i) => ({ web: { uri: "https://s.example/" + String(i), title: "S" + String(i) } }));
+    expect(groundedSources({ candidates: [{ groundingMetadata: { groundingChunks: many } }] })).toHaveLength(10);
+    expect(groundedSources({ candidates: [] })).toEqual([]);
+    expect(groundedSources(null)).toEqual([]);
+  });
+});
+
 describe("deep_research tool policy", () => {
   it("parses a request, defaulting to the fast agent and refusing bad fields", () => {
     expect(parseToolCall('{"tool":"deep_research","query":"  pazar analizi  "}')).toEqual({ kind: "call", call: { tool: "deep_research", query: "pazar analizi", depth: "fast" } });
@@ -212,6 +270,9 @@ describe("deep research adapter", () => {
   it("only ever requests the two fixed interaction paths", () => {
     expect(isAllowedPath("/v1beta/interactions")).toBe(true);
     expect(isAllowedPath("/v1beta/interactions/abc_DEF-123")).toBe(true);
+    expect(isAllowedPath("/v1beta/models/gemini-3.8-flash:generateContent")).toBe(true);
+    expect(isAllowedPath("/v1beta/models/gemini-3.8-flash:streamGenerateContent")).toBe(false);
+    expect(isAllowedPath("/v1beta/models/other-model:generateContent")).toBe(false);
     for (const bad of ["/v1beta/interactions/", "/v1beta/interactions/a/b", "/v1beta/interactions/../models", "/v1beta/models", "//evil.example/x", "/v1beta/interactions?key=1", ""]) {
       expect(isAllowedPath(bad)).toBe(false);
     }
