@@ -204,6 +204,19 @@ export interface CouncilOpinion {
   readonly text: string;
 }
 
+/**
+ * A seat's answer counts only when it looks like a real opinion. Providers sometimes return a wall as an ordinary 200
+ * answer ("sign up and try again", an empty reply, a one-word refusal); that must not be treated as a vote. A real
+ * round-1 or round-2 answer (approach, risk, confidence) is far longer than this floor.
+ */
+export const MIN_OPINION_CHARS = 80;
+export function isUsableOpinion(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length < MIN_OPINION_CHARS) return false;
+  // "[error" is Ruflo's own failure marker; "API call failed after N retries: ..." is what Hermes returns as an ordinary answer when the model route is down.
+  return !/^\s*(\[error|API call failed)/i.test(trimmed);
+}
+
 /** Round 1: every seat answers the same question independently, with no knowledge of the others. */
 export function councilRound1Prompt(task: string, snippets: readonly string[], seatLabel: string): string {
   return (
@@ -235,7 +248,7 @@ export function councilSynthesisPrompt(task: string, finalOpinions: readonly Cou
   let body = "";
   for (const opinion of finalOpinions) body += "### " + opinion.label + " (son görüş)\n" + opinion.text + "\n\n";
   return (
-    "Bir model konseyi aşağıdaki soruyu iki turda tartıştı. Şimdi TEK bir ortak karar yaz: hangi yaklaşım seçildi, neden, hangi noktalarda " +
+    "Sen konseyin tarafsız hakemisin ve konseyde oy kullanmadın. Bir model konseyi aşağıdaki soruyu iki turda tartıştı. Şimdi TEK bir ortak karar yaz: hangi yaklaşım seçildi, neden, hangi noktalarda " +
     "koltuklar anlaştı ya da ayrıştı ve ayrışma nasıl çözüldü. Sonunda Coder'ın doğrudan uygulayabileceği, adım adım bir plan ekle.\n\nSoru/Görev:\n" +
     task +
     "\n\nKonseyin son görüşleri:\n" +

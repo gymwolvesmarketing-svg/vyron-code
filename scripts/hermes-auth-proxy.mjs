@@ -56,11 +56,13 @@ const ROUTED_MODELS = [
   "vyron-assistant",
   "vyron-code",
   "vyron-research",
-  // Konsey (council) seats - fixed wiring, mirrors electron/rufloBridge.ts's own COUNCIL_SEATS list.
-  "vyron-council-nemotron",
-  "vyron-council-kimi",
+  // Konsey (council) seats and judge - fixed wiring, mirrors electron/rufloBridge.ts's COUNCIL_SEATS / COUNCIL_JUDGE.
   "vyron-council-claude",
-  "vyron-council-chatgpt",
+  "vyron-council-gpt",
+  "vyron-council-kimi",
+  "vyron-council-gemini",
+  "vyron-council-judge",
+  "vyron-council-judge-backup",
 ]; // fixed OmniRoute combo names (mirrors electron/modelRouting.ts)
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MiB — generous for one plain-text task draft, still bounded.
 

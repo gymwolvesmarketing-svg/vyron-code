@@ -61,26 +61,30 @@ import {
   councilRound1Prompt,
   councilRound2Prompt,
   councilSynthesisPrompt,
+  isUsableOpinion,
   type CouncilOpinion,
   type CouncilSeat,
   type SubTaskResult,
 } from "./rufloTeam";
 
 /**
- * Konsey (council) seats - fixed wiring, not user-configurable. Each name is a single-purpose OmniRoute combo
- * (created once via the management API; see the create-council-combos note in the project memory) that pins one
- * seat to one specific model, with a short fallback so a temporarily rate-limited or retired model does not
- * silence that seat. scripts/hermes-auth-proxy.mjs keeps its own copy of these four names (it cannot import this
- * file) so it can add the `provider: "custom"` field Hermes needs to honour them.
+ * Konsey (council) seats - fixed wiring, not user-configurable. Four voters, one per vendor (Anthropic, OpenAI, Moonshot,
+ * Google), plus a judge that does NOT vote. Each name is a single-purpose OmniRoute combo (created via the management
+ * API) that pins the seat to its model; a fallback stays inside the same vendor so it never changes whose voice a seat
+ * is. scripts/hermes-auth-proxy.mjs keeps its own copy of these names (it cannot import this file) so it can add the
+ * `provider: "custom"` field Hermes needs to honour them.
  */
 export const COUNCIL_SEATS: readonly CouncilSeat[] = [
-  { id: "nemotron", label: "Nemotron 3 Ultra 550B", model: "vyron-council-nemotron" },
+  { id: "claude", label: "Claude Sonnet", model: "vyron-council-claude" },
+  { id: "gpt", label: "GPT Sol", model: "vyron-council-gpt" },
   { id: "kimi", label: "Kimi K3", model: "vyron-council-kimi" },
-  { id: "claude", label: "Claude", model: "vyron-council-claude" },
-  { id: "chatgpt", label: "ChatGPT", model: "vyron-council-chatgpt" },
+  { id: "gemini", label: "Gemini", model: "vyron-council-gemini" },
 ];
-/** The seat the final synthesis pass runs on - the one wired to a real (non-browser) API today. */
-const COUNCIL_SYNTHESIZER = COUNCIL_SEATS.find((seat) => seat.id === "nemotron") ?? COUNCIL_SEATS[0]!;
+/** The neutral judge: reads the final positions and writes the one agreed decision. It is not one of the voters. */
+export const COUNCIL_JUDGE: CouncilSeat = { id: "judge", label: "Hakem", model: "vyron-council-judge" };
+/** Tried only when the judge's own call comes back empty (its provider is down); a different vendor from the primary judge. */
+export const COUNCIL_JUDGE_BACKUP: CouncilSeat = { id: "judge-backup", label: "Yedek hakem", model: "vyron-council-judge-backup" };
+const COUNCIL_SYNTHESIZER = COUNCIL_JUDGE;
 
 export const MAX_RUFLO_PROMPT_CHARS = 100_000;
 /** Must stay above the tool transcript limit (electron/toolPolicy.ts MAX_TRANSCRIPT_CHARS) plus the speaker labels, or a long tool run is refused mid-way. */
@@ -333,7 +337,7 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
     if (round1Settled.every((value) => value === "gone")) return { ok: false, reason: "unavailable" };
     const round1: ReadonlyArray<CouncilOpinion | null> = COUNCIL_SEATS.map((seat, index) => {
       const value = round1Settled[index];
-      return typeof value === "string" ? { label: seat.label, text: value } : null;
+      return typeof value === "string" && isUsableOpinion(value) ? { label: seat.label, text: value } : null;
     });
     const answered1 = round1.filter((opinion): opinion is CouncilOpinion => opinion !== null);
     if (answered1.length === 0) return { ok: false, reason: "failed" };
@@ -349,12 +353,17 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
     const round2: CouncilOpinion[] = [];
     COUNCIL_SEATS.forEach((seat, index) => {
       const value = round2Settled[index];
-      if (typeof value === "string") round2.push({ label: seat.label, text: value });
+      if (typeof value === "string" && isUsableOpinion(value)) round2.push({ label: seat.label, text: value });
     });
     // If every round-2 call failed (but round 1 had answers), fall back to the round-1 positions for the synthesis.
     const finalOpinions = round2.length > 0 ? round2 : answered1;
 
-    const merged = await executeAgent("task-orchestrator", councilSynthesisPrompt(prompt, finalOpinions), undefined, COUNCIL_SYNTHESIZER.model);
+    // The judge, then the backup judge if the first one's provider is down; only if both fail are the raw positions shown.
+    const synthesisPrompt = councilSynthesisPrompt(prompt, finalOpinions);
+    let merged = await executeAgent("task-orchestrator", synthesisPrompt, undefined, COUNCIL_SYNTHESIZER.model);
+    if (typeof merged !== "string" || merged.trim().length === 0) {
+      merged = await executeAgent("task-orchestrator", synthesisPrompt, undefined, COUNCIL_JUDGE_BACKUP.model);
+    }
     const mergedText =
       typeof merged === "string" && merged.trim().length > 0 ? merged : finalOpinions.map((opinion) => "### " + opinion.label + "\n" + opinion.text).join("\n\n");
     const seatLabels = COUNCIL_SEATS.map((seat) => seat.label);
