@@ -173,7 +173,8 @@ const ruflo = createProductionRufloBridge({
   resourcesPath: process.resourcesPath,
   isPackaged: app.isPackaged,
 });
-setTaskAgentExecutor((agentType, prompt, project, models) => ruflo.run(agentType, prompt, project, models));
+// The deep-research Manager is answered by the tool runner (native approval + Gemini); every other role runs in Ruflo.
+setTaskAgentExecutor((agentType, prompt, project, models) => (agentType === "deep-research" ? tools.deepResearch(prompt) : ruflo.run(agentType, prompt, project, models)));
 setAgentAsk((agentType, prompt, models) => ruflo.ask(agentType, prompt, models));
 // Approved tools: workspace folder from a native dialog, native approval dialogs, confined executors.
 const tools = createProductionToolRunner(() => mainWindow);

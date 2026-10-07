@@ -355,3 +355,66 @@ describe("browser tools through the production runner", () => {
     expect(calls).toEqual(["close"]);
   });
 });
+
+describe("deep-research Manager (native question, fast / Max / cancel)", () => {
+  function fakeResearch() {
+    const calls: Array<{ query: string; depth: string }> = [];
+    return {
+      calls,
+      research: {
+        async run(query: string, depth: "fast" | "max") {
+          calls.push({ query, depth });
+          return { ok: true, text: "RAPOR " + depth };
+        },
+      },
+    };
+  }
+  const browserOnly = (): BrowserDriver => ({
+    open: async () => ({ ok: true, text: "" }),
+    read: async () => ({ ok: true, text: "" }),
+    click: async () => ({ ok: true, text: "" }),
+    type: async () => ({ ok: true, text: "" }),
+    target: () => null,
+    close: () => undefined,
+  });
+
+  it("asks with three buttons (Vazgeç is default), then runs the chosen depth on the whole question", async () => {
+    const fake = fakeResearch();
+    const runner = createProductionToolRunner(() => null, browserOnly(), fake.research);
+    state.responses = [0, 1];
+    expect(await runner.deepResearch("  Türkiye spor giyim pazarı  ")).toEqual({ ok: true, text: "RAPOR fast" });
+    expect(await runner.deepResearch("ikinci soru")).toEqual({ ok: true, text: "RAPOR max" });
+    expect(fake.calls).toEqual([{ query: "Türkiye spor giyim pazarı", depth: "fast" }, { query: "ikinci soru", depth: "max" }]);
+    expect(state.dialogs[0]!.buttons).toEqual(["Hızlı araştırma", "Max araştırma", "Vazgeç"]);
+    expect(state.dialogs[0]!.defaultId).toBe(2);
+    expect(state.dialogs[0]!.cancelId).toBe(2);
+    expect(state.dialogs[0]!.detail).toContain("Türkiye spor giyim pazarı");
+    expect(state.dialogs[0]!.detail).toContain("ücretli");
+  });
+
+  it("does nothing when the user cancels, closes the dialog, or the dialog fails", async () => {
+    const fake = fakeResearch();
+    const runner = createProductionToolRunner(() => null, browserOnly(), fake.research);
+    state.responses = [2];
+    expect((await runner.deepResearch("soru")).text).toContain("başlatılmadı");
+    state.throwOnDialog = true;
+    expect((await runner.deepResearch("soru")).text).toContain("başlatılmadı");
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("refuses an empty or oversized question without asking", async () => {
+    const fake = fakeResearch();
+    const runner = createProductionToolRunner(() => null, browserOnly(), fake.research);
+    expect((await runner.deepResearch("   ")).text).toContain("konu yazmadın");
+    expect((await runner.deepResearch("x".repeat(4001))).text).toContain("çok uzun");
+    expect(state.dialogs).toHaveLength(0);
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("needs no workspace folder and returns the plain reason when the research cannot run", async () => {
+    state.root = null;
+    const runner = createProductionToolRunner(() => null, browserOnly(), { run: async () => ({ ok: false, text: "Gemini anahtarı bulunamadı." }) });
+    state.responses = [0];
+    expect(await runner.deepResearch("soru")).toEqual({ ok: true, text: "Gemini anahtarı bulunamadı." });
+  });
+});

@@ -1531,6 +1531,11 @@ function applyQuickStart(quick: WsQuickStart): void {
   if (open >= 0 && close > open) input.setSelectionRange(open, close + 1);
   else input.setSelectionRange(quick.draft.length, quick.draft.length);
   for (const skillId of VyronModel.quickStartSkillIds(ws, quick.id)) if (ws.selectedSkillIds.indexOf(skillId) < 0) ws.selectedSkillIds.push(skillId);
+  // A start that belongs to a Manager (the deep-research button) selects it, so pressing the button is all it takes.
+  if (quick.managerId && ws.managers.some((manager) => manager.id === quick.managerId)) {
+    ws.selectedManagerId = quick.managerId;
+    renderManagers();
+  }
   persist();
   renderChips();
   updateComposer();
@@ -1911,7 +1916,8 @@ async function sendCurrent(): Promise<void> {
     labels: selectionLabels(),
     agent: selectedAgent(),
     project: ws.activeProjectId,
-    tools: toolsActive(),
+    // The deep-research Manager is answered by the main process directly; it never runs the tool loop.
+    tools: toolsActive() && selectedAgent() !== "deep-research",
     status: "running",
     text: null,
     truncated: false,
@@ -1972,6 +1978,8 @@ function chosenModels(): { assistant?: string; code?: string; research?: string;
 /** The direct request, or (for a Manager with a Ruflo role) the request that also carries its role and project. */
 function taskRequest(turn: Turn, taskId: string): HermesTaskRequest {
   const project = turn.project;
+  // The deep-research question goes to Gemini exactly as typed: no earlier turns, no mode prefixes, no skill text.
+  if (turn.agent === "deep-research") return { draft: turn.prompt.trim(), agent: turn.agent };
   const draft = historyPreamble(taskId, turn, turn.composed.length) + turn.composed;
   const withProject = project !== null && /^[a-z0-9][a-z0-9-]{0,79}$/.test(project);
   const models = chosenModels();

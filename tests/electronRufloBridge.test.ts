@@ -97,9 +97,17 @@ afterEach(() => {
 
 describe("agent roles", () => {
   it("has the fixed role list and validates strictly", () => {
-    expect([...RUFLO_AGENT_TYPES]).toEqual(["coder", "reviewer", "tester", "planner", "researcher", "system-architect", "security-auditor", "task-orchestrator", "council"]);
+    expect([...RUFLO_AGENT_TYPES]).toEqual(["coder", "reviewer", "tester", "planner", "researcher", "system-architect", "security-auditor", "task-orchestrator", "council", "deep-research"]);
     for (const good of RUFLO_AGENT_TYPES) expect(isRufloAgentType(good)).toBe(true);
     for (const bad of ["", "CODER", "coder ", "swarm_init", "../coder", 5, null, undefined, {}]) expect(isRufloAgentType(bad)).toBe(false);
+  });
+
+  it("the deep-research role is never run or asked through Ruflo (the main process answers it)", async () => {
+    const { deps, started } = makeDeps(goodHandler("Merhaba"));
+    const bridge = createRufloBridge(deps);
+    expect(await bridge.run("deep-research", "soru", "p")).toEqual({ ok: false, reason: "failed" });
+    expect(await bridge.ask("deep-research", "soru")).toBeNull();
+    expect(started).toHaveLength(0);
   });
 
   it("the renderer model's role list is identical to the bridge's", () => {

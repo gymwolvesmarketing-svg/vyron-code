@@ -250,7 +250,7 @@ describe("navigation between workspace views", () => {
     expect(h.el("panel-projects").hidden).toBe(true);
     expect(h.el("tab-managers").getAttribute("aria-selected")).toBe("true");
     const managers = Array.from(h.doc.querySelectorAll("#manager-list .manager-name")).map((n) => n.textContent);
-    expect(managers).toEqual(["Genel", "Vyron Helper", "Coder", "Multi-Model Planner", "Konsey", "Reviewer"]);
+    expect(managers).toEqual(["Genel", "Vyron Helper", "Coder", "Multi-Model Planner", "Konsey", "Derin Araştırma", "Reviewer"]);
     h.click(h.el("tab-projects"));
     expect(h.el("panel-projects").hidden).toBe(false);
   });
@@ -688,6 +688,25 @@ describe("quick starts and work mode", () => {
     expect(h.el<HTMLButtonElement>("send-btn").disabled).toBe(false);
   });
 
+  it("the deep-research button selects the Derin Araştırma Manager, and the question goes out exactly as typed, with no tools even in a folder", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "Plan"));
+    h.click(item(h, "Derin plan"));
+    h.click(h.doc.querySelector<HTMLElement>('[data-quick-id="deep-research"]'));
+    const chip = h.doc.querySelector("#chips .chip")!;
+    expect(chip.textContent).toContain("Derin Araştırma");
+    // The placeholder is selected, ready to be typed over.
+    const input = h.el<HTMLTextAreaElement>("task-input");
+    expect(input.value.slice(input.selectionStart, input.selectionEnd)).toBe(input.value);
+    h.click(h.el("workspace-btn"));
+    await h.flush();
+    await sendTask(h, "Türkiye'de performans spor giyim pazarını araştır");
+    expect(h.calls.send).toHaveLength(1);
+    // No plan prefix, no "Rol:" line, no history, no tools flag: only the raw question and the Manager role.
+    expect(h.calls.send[0]).toEqual({ draft: "Türkiye'de performans spor giyim pazarını araştır", agent: "deep-research" });
+  });
+
   it("every quick start populates a non-empty draft", async () => {
     const h = await start();
     for (const chip of Array.from(h.doc.querySelectorAll<HTMLElement>("#quick-starts .quick-btn[data-quick-id]"))) {
@@ -732,6 +751,7 @@ describe("+ menu, SubAgent, Plan and Terminal", () => {
       "Coder" + "Kod",
       "Multi-Model Planner" + "Paralel",
       "Konsey" + "Konsey",
+      "Derin Araştırma" + "Araştırma",
       "Reviewer" + "İnceleme",
     ]);
     h.click(item(h, "Reviewer"));
@@ -1505,7 +1525,7 @@ describe("managers run through Ruflo roles", () => {
     const inputs = h.doc.querySelectorAll<HTMLInputElement>("#menu-layer input");
     inputs[0]!.value = "Denetçi";
     const role = h.doc.querySelector<HTMLSelectElement>("#menu-layer select")!;
-    expect(Array.from(role.options).map((o) => o.value)).toEqual(["coder", "reviewer", "tester", "planner", "researcher", "system-architect", "security-auditor", "task-orchestrator", "council"]);
+    expect(Array.from(role.options).map((o) => o.value)).toEqual(["coder", "reviewer", "tester", "planner", "researcher", "system-architect", "security-auditor", "task-orchestrator", "council", "deep-research"]);
     role.value = "security-auditor";
     h.doc.querySelector("#menu-layer form")!.dispatchEvent(new h.win.Event("submit", { bubbles: true, cancelable: true }));
     expect(h.el("manager-detail").textContent).toContain("Ruflo · Güvenlik denetçisi");

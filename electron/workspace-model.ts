@@ -89,6 +89,8 @@ interface WsQuickStart {
   icon: string;
   draft: string;
   custom?: boolean;
+  /** A built-in start that also selects this Manager when applied (the deep-research button). */
+  managerId?: string;
 }
 
 interface WsWorkspaceState {
@@ -329,7 +331,7 @@ const VyronModel = (() => {
     { id: "make-deck", label: "Sunum oluştur", icon: "presentation", draft: "[Konu] hakkında bir sunum hazırla: slayt başlıkları, her slaytın ana mesajı ve konuşmacı notları." },
     { id: "data-analysis", label: "Veri analizi", icon: "chart", draft: "Şu veriyi analiz et: [veriyi veya soruyu yaz]. Öne çıkan bulguları, riskleri ve önerileri özetle." },
     { id: "doc-analysis", label: "Doküman analizi", icon: "document", draft: "Şu dokümanı analiz et: [metni yapıştır]. Ana noktaları, çelişkileri ve yapılacakları çıkar." },
-    { id: "deep-research", label: "Derin araştırma", icon: "research", draft: "[Konu] hakkında derin bir araştırma planı hazırla: sorular, kaynak türleri, karşılaştırmalar ve sonuçta beklenen çıktı." },
+    { id: "deep-research", label: "Derin araştırma", icon: "research", draft: "[Araştırılacak konuyu ve beklediğin çıktıyı yaz]", managerId: "derin-arastirma" },
     { id: "make-image", label: "Görsel oluştur", icon: "image", draft: "[Görselin konusu] için görsel üretim istemi yaz: kompozisyon, stil, ışık ve renk paleti." },
     { id: "make-video", label: "Video oluştur", icon: "video", draft: "[Videonun konusu] için video senaryosu hazırla: sahneler, süre, anlatım metni ve çekim önerileri." },
   ];
@@ -361,6 +363,7 @@ const VyronModel = (() => {
     { id: "security-auditor", label: "Güvenlik denetçisi" },
     { id: "task-orchestrator", label: "Görev yöneticisi" },
     { id: "council", label: "Konsey (4 model tartışır)" },
+    { id: "deep-research", label: "Derin araştırma (Gemini)" },
   ];
 
   function isAgentRole(value: unknown): value is string {
@@ -374,6 +377,7 @@ const VyronModel = (() => {
       { id: "coder", name: "Coder", description: "Kod yazar, düzenler ve hata ayıklar. Kod modeli grubunu kullanır.", tag: "Kod", custom: false, agent: "coder" },
       { id: "multi-model-planner", name: "Multi-Model Planner", description: "Büyük işleri en fazla üç bağımsız parçaya böler, ajanlarla paralel yürütür ve sonuçları birleştirir.", tag: "Paralel", custom: false, agent: "task-orchestrator" },
       { id: "konsey", name: "Konsey", description: "Mimari/karar sorularını 4 farklı modele bağımsız sorar, birbirlerinin görüşlerini tartıştırır ve tek bir ortak plana varır.", tag: "Konsey", custom: false, agent: "council" },
+      { id: "derin-arastirma", name: "Derin Araştırma", description: "Sorunu Google Gemini Derin Araştırma ajanına verir; web'i tarayıp kaynaklı rapor yazar. Başlatmadan önce onayını ister (hızlı ya da Max); sorunun tamamı Gemini'ye gönderilir.", tag: "Araştırma", custom: false, agent: "deep-research" },
       { id: "reviewer", name: "Reviewer", description: "Çıktıları gözden geçirir ve iyileştirme önerir.", tag: "İnceleme", custom: false, agent: "reviewer" },
     ];
   }

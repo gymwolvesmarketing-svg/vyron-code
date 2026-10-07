@@ -242,7 +242,7 @@ describe("deep research sources keep the key and the network contained", () => {
 
   it("the key reaches neither the preload bridge nor the shared IPC contract nor the renderer", () => {
     for (const file of ["preload.ts", "shared-ipc-contract.ts", "renderer.ts"]) {
-      expect(fs.readFileSync(path.join(dir, file), "utf8")).not.toMatch(/GEMINI|deepResearch/i);
+      expect(strip(fs.readFileSync(path.join(dir, file), "utf8"))).not.toMatch(/GEMINI_API|VYRON_GEMINI|deepResearch(Adapter)?/i);
     }
   });
 });

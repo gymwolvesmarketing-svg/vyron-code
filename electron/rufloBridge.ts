@@ -32,6 +32,8 @@ export const RUFLO_AGENT_TYPES = [
   "security-auditor",
   "task-orchestrator",
   "council",
+  /** Not a Ruflo role: the Gemini deep-research Manager. electron/main.ts answers it through the tool runner; Ruflo never runs it. */
+  "deep-research",
 ] as const;
 
 export type RufloAgentType = (typeof RUFLO_AGENT_TYPES)[number];
@@ -397,7 +399,7 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
     getState: () => state,
     async run(agentType, prompt, project, models) {
       if (shuttingDown) return { ok: false, reason: "unavailable" };
-      if (!isRufloAgentType(agentType)) return { ok: false, reason: "failed" };
+      if (!isRufloAgentType(agentType) || agentType === "deep-research") return { ok: false, reason: "failed" };
       if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > MAX_RUFLO_PROMPT_CHARS) return { ok: false, reason: "failed" };
       if (busy) return { ok: false, reason: "failed" };
       busy = true;
@@ -413,7 +415,7 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
       }
     },
     async ask(agentType, prompt, models) {
-      if (shuttingDown || !isRufloAgentType(agentType)) return null;
+      if (shuttingDown || !isRufloAgentType(agentType) || agentType === "deep-research") return null;
       if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > MAX_RUFLO_ASK_CHARS) return null;
       if (busy) return null;
       busy = true;
