@@ -1759,6 +1759,20 @@ describe("workspace folder = project: tools are on, the folder follows the proje
     expect(h.calls.send[2]).toEqual({ draft: "Yöneticiyle yaz", agent: "reviewer", project: "aetheris", tools: true, models: MODELS });
   });
 
+  it("the Konsey never runs the tool loop, even in a project with a folder: its four seats must really deliberate", async () => {
+    const h = await start();
+    h.click(h.doc.querySelector<HTMLElement>(AETHERIS_ADD));
+    h.click(h.el("workspace-btn"));
+    await h.flush();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "Konsey"));
+    await sendTask(h, "Mimariyi tartışın");
+    expect(h.calls.send).toHaveLength(1);
+    // The agent and project go out, but no tools flag: the main process then runs the full council (seats, round 2, judge).
+    expect(h.calls.send[0]).toEqual({ draft: "Mimariyi tartışın", agent: "council", project: "aetheris", models: MODELS });
+  });
+
   it("the folder follows the project: another project has none, and coming back brings the folder back", async () => {
     const h = await start();
     h.click(h.doc.querySelector<HTMLElement>(AETHERIS_ADD));

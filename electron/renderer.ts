@@ -2010,7 +2010,8 @@ async function sendCurrent(): Promise<void> {
     agent: effectiveAgent(),
     project: ws.activeProjectId,
     // The deep-research Manager is answered by the main process directly; it never runs the tool loop.
-    tools: toolsActive() && !isResearchRole(selectedAgent()),
+    // Research Managers answer through Gemini, and the Konsey must really deliberate: in the tool loop a Konsey turn would go straight to the judge alone.
+    tools: toolsActive() && !isResearchRole(selectedAgent()) && selectedAgent() !== "council",
     status: "running",
     text: null,
     truncated: false,
