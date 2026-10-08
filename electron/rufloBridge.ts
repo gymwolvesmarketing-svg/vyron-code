@@ -54,7 +54,7 @@ export function isRufloAgentType(value: unknown): value is RufloAgentType {
   return typeof value === "string" && (RUFLO_AGENT_TYPES as readonly string[]).indexOf(value) >= 0;
 }
 
-export const ALLOWED_RUFLO_TOOLS = ["agent_spawn", "agent_execute", "agent_terminate", "memory_search", "memory_store"] as const;
+export const ALLOWED_RUFLO_TOOLS = ["agent_spawn", "agent_execute", "agent_terminate", "memory_search", "memory_retrieve", "memory_store"] as const;
 type RufloTool = (typeof ALLOWED_RUFLO_TOOLS)[number];
 
 import { modelForRole, type ModelChoice } from "./modelRouting";
@@ -63,6 +63,7 @@ import {
   MEMORY_SIMILARITY_THRESHOLD,
   fallbackPlan,
   memoryNamespace,
+  decisionNote,
   memoryNote,
   parsePlan,
   plannerPrompt,
@@ -137,7 +138,7 @@ export const DEFAULT_RUFLO_TIMINGS: RufloTimings = { handshakeMs: 60_000, callMs
 export type RufloState = "idle" | "starting" | "ready" | "failed";
 
 export type RufloResult =
-  | { readonly ok: true; readonly text: string; readonly note?: string }
+  | { readonly ok: true; readonly text: string; readonly note?: string; readonly decision?: boolean }
   | { readonly ok: false; readonly reason: "unavailable" | "failed" };
 
 export interface RufloBridge {
@@ -310,13 +311,41 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
       { query: query.slice(0, 500), namespace, limit: MAX_RECALLED_MEMORIES, threshold: MEMORY_SIMILARITY_THRESHOLD },
       timings.callMs,
     );
-    return recalledSnippets(reply);
+    return recalledSnippets(await withFullValues(reply, namespace));
   }
 
-  async function remember(namespace: string, task: string, answer: string): Promise<void> {
+  /**
+   * Ruflo's memory_search only returns a ~60-character preview of each hit; the lossless value comes from reading the entry by
+   * its exact key. Only keys this bridge itself wrote (gorev-/karar-<time>-<n>) are read, in this project's namespace; a hit
+   * that cannot be read in full keeps its preview.
+   */
+  async function withFullValues(reply: unknown, namespace: string): Promise<unknown> {
+    if (typeof reply !== "object" || reply === null) return reply;
+    const results = (reply as Record<string, unknown>).results;
+    if (!Array.isArray(results)) return reply;
+    const hydrated = await Promise.all(
+      results.slice(0, MAX_RECALLED_MEMORIES).map(async (item: unknown) => {
+        const key = typeof item === "object" && item !== null ? (item as Record<string, unknown>).key : undefined;
+        if (typeof key !== "string" || !/^(gorev|karar)-\d+-\d+$/.test(key)) return item;
+        const full = await callTool("memory_retrieve", { key, namespace }, timings.callMs);
+        if (full && full.found === true && typeof full.value === "string" && full.value.trim().length > 0) return { ...(item as object), value: full.value };
+        return item;
+      }),
+    );
+    return { ...(reply as object), results: hydrated };
+  }
+
+  /** `decision`: a judged Konsey decision is stored whole and marked; everything else keeps the short note. */
+  async function remember(namespace: string, task: string, answer: string, decision: boolean): Promise<void> {
     await callTool(
       "memory_store",
-      { key: "gorev-" + String(Date.now()) + "-" + String(counter), value: memoryNote(task, answer), namespace, tags: ["gorev"], upsert: true },
+      {
+        key: (decision ? "karar-" : "gorev-") + String(Date.now()) + "-" + String(counter),
+        value: decision ? decisionNote(task, answer) : memoryNote(task, answer),
+        namespace,
+        tags: decision ? ["gorev", "karar"] : ["gorev"],
+        upsert: true,
+      },
       timings.callMs,
     );
   }
@@ -386,14 +415,16 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
     if (typeof merged !== "string" || merged.trim().length === 0) {
       merged = await executeAgent("task-orchestrator", synthesisPrompt, undefined, COUNCIL_JUDGE_BACKUP.model);
     }
-    const mergedText =
-      typeof merged === "string" && merged.trim().length > 0 ? merged : finalOpinions.map((opinion) => "### " + opinion.label + "\n" + opinion.text).join("\n\n");
+    const judged = typeof merged === "string" && merged.trim().length > 0;
+    const mergedText = judged ? (merged as string) : finalOpinions.map((opinion) => "### " + opinion.label + "\n" + opinion.text).join("\n\n");
     const seatLabels = COUNCIL_SEATS.map((seat) => seat.label);
     const respondedLabels = finalOpinions.map((opinion) => opinion.label);
     return {
       ok: true,
       text: (mergedText + councilFooter(seatLabels, respondedLabels)).slice(0, MAX_RUFLO_OUTPUT_CHARS),
       note: mergedText,
+      // Only a decision the judge actually wrote is remembered whole; the raw joined positions are not a decision.
+      decision: judged,
     };
   }
 
@@ -411,7 +442,7 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
       if (text === "gone") return { ok: false, reason: "unavailable" };
       outcome = text === null ? { ok: false, reason: "failed" } : { ok: true, text: text.slice(0, MAX_RUFLO_OUTPUT_CHARS), note: text };
     }
-    if (outcome.ok && outcome.note !== undefined) await remember(namespace, prompt, outcome.note);
+    if (outcome.ok && outcome.note !== undefined) await remember(namespace, prompt, outcome.note, outcome.decision === true);
     return outcome.ok ? { ok: true, text: outcome.text } : outcome;
   }
 

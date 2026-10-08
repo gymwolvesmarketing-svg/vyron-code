@@ -127,8 +127,8 @@ describe("agent roles", () => {
     expect(roles).toEqual([...RUFLO_AGENT_TYPES]);
   });
 
-  it("only five Ruflo tools are ever callable (three agent tools and the memory pair)", () => {
-    expect([...ALLOWED_RUFLO_TOOLS]).toEqual(["agent_spawn", "agent_execute", "agent_terminate", "memory_search", "memory_store"]);
+  it("only six Ruflo tools are ever callable (three agent tools and the memory trio: search, exact read, store)", () => {
+    expect([...ALLOWED_RUFLO_TOOLS]).toEqual(["agent_spawn", "agent_execute", "agent_terminate", "memory_search", "memory_retrieve", "memory_store"]);
   });
 });
 
@@ -565,9 +565,11 @@ describe("council (konsey) runs", () => {
    * handler can answer per seat, and classifies each call as round 1, round 2 or the final judgement by the
    * prompt's own shape.
    */
-  function councilRuflo(options: { deadSeats?: string[]; deadRound2Seats?: string[]; synthesisFails?: boolean; primaryJudgeFails?: boolean; shortAnswerSeats?: string[] } = {}) {
+  function councilRuflo(options: { deadSeats?: string[]; deadRound2Seats?: string[]; synthesisFails?: boolean; primaryJudgeFails?: boolean; shortAnswerSeats?: string[]; judgeOutput?: string; recalled?: unknown[]; full?: Record<string, string>; retrieveFails?: boolean } = {}) {
     const spawnModel = new Map<string, string | undefined>();
     const executes: Array<{ agentId: string; model: string | undefined; prompt: string }> = [];
+    const stores: Array<Record<string, unknown>> = [];
+    const retrieves: Array<Record<string, unknown>> = [];
     const handler = (message: Record<string, unknown>, t: FakeTransport) => {
       if (message.id === undefined) return;
       const params = (message.params ?? {}) as Record<string, unknown>;
@@ -582,8 +584,17 @@ describe("council (konsey) runs", () => {
         return reply({ success: true });
       }
       if (name === "agent_terminate") return reply({ success: true });
-      if (name === "memory_search") return reply({ results: [] });
-      if (name === "memory_store") return reply({ success: true });
+      if (name === "memory_search") return reply({ results: options.recalled ?? [] });
+      if (name === "memory_retrieve") {
+        retrieves.push(args);
+        const full = options.full?.[String(args.key)];
+        if (options.retrieveFails || full === undefined) return reply({ key: args.key, value: null, found: false });
+        return reply({ key: args.key, namespace: args.namespace, value: full, found: true });
+      }
+      if (name === "memory_store") {
+        stores.push(args);
+        return reply({ success: true });
+      }
       if (name === "agent_execute") {
         const agentId = String(args.agentId);
         const model = spawnModel.get(agentId);
@@ -593,7 +604,7 @@ describe("council (konsey) runs", () => {
           // The judgement pass.
           if (options.synthesisFails) return reply({ success: false });
           if (options.primaryJudgeFails && model === "vyron-council-judge") return reply({ success: false });
-          return reply({ success: true, output: "ORTAK KARAR" });
+          return reply({ success: true, output: options.judgeOutput ?? "ORTAK KARAR" });
         }
         const short = model !== undefined && (options.shortAnswerSeats ?? []).includes(model);
         if (prompt.includes("diğer koltukların ilk turdaki görüşlerini")) {
@@ -606,7 +617,7 @@ describe("council (konsey) runs", () => {
       }
       t.emit({ jsonrpc: "2.0", id: message.id, error: { message: "unknown" } });
     };
-    return { handler, executes: () => executes };
+    return { handler, executes: () => executes, stores: () => stores, retrieves: () => retrieves };
   }
 
   const LABELS = COUNCIL_SEATS.map((s) => s.label);
@@ -681,6 +692,45 @@ describe("council (konsey) runs", () => {
     expect(isUsableOpinion("Önerim A: " + PAD)).toBe(true);
   });
 
+  it("stores the judge's whole decision in project memory, marked, with its line breaks, and recalls it for the next run", async () => {
+    const decision = "## Karar\n\n1. Mimari A seçildi.\n2. Veri katmanı ayrı kalır.\n\n" + "Gerekçe: ".padEnd(5_000, "x");
+    const ruflo = councilRuflo({ judgeOutput: decision });
+    const bridge = createRufloBridge(makeDeps(ruflo.handler).deps);
+    const result = await bridge.run("council", "Bu işi nasıl yapalım?", "tahminist");
+    expect(result.ok && result.text.startsWith(decision)).toBe(true);
+    const stored = ruflo.stores();
+    expect(stored).toHaveLength(1);
+    expect(String(stored[0]!.key).startsWith("karar-")).toBe(true);
+    expect(stored[0]!.tags).toEqual(["gorev", "karar"]);
+    expect(stored[0]!.namespace).toBe("vyron-tahminist");
+    const value = String(stored[0]!.value);
+    expect(value.startsWith(DECISION_MARK + " Görev: Bu işi nasıl yapalım?")).toBe(true);
+    // Whole: far past the old 900-character note, line breaks kept.
+    expect(value).toContain("## Karar\n\n1. Mimari A seçildi.\n2. Veri katmanı ayrı kalır.");
+    expect(value.length).toBeGreaterThan(5_000);
+    // A later run recalls it whole: the round-1 prompt of every seat carries the full decision.
+    const again = councilRuflo({ recalled: [{ value }] });
+    await createRufloBridge(makeDeps(again.handler).deps).run("council", "Devam: ikinci adım ne?", "tahminist");
+    const round1 = again.executes().filter((e) => e.prompt.includes("KENDİ BAŞINA"));
+    expect(round1).toHaveLength(4);
+    for (const e of round1) {
+      expect(e.prompt).toContain("1. Mimari A seçildi.\n2. Veri katmanı ayrı kalır.");
+      expect(e.prompt).toContain("Gerekçe: xxxx");
+    }
+  });
+
+  it("does not store the raw joined positions as a decision when the judge failed", async () => {
+    const ruflo = councilRuflo({ synthesisFails: true });
+    const result = await createRufloBridge(makeDeps(ruflo.handler).deps).run("council", "Soru", "p");
+    expect(result.ok).toBe(true);
+    const stored = ruflo.stores();
+    expect(stored).toHaveLength(1);
+    expect(String(stored[0]!.key).startsWith("gorev-")).toBe(true);
+    expect(stored[0]!.tags).toEqual(["gorev"]);
+    expect(String(stored[0]!.value).startsWith(DECISION_MARK)).toBe(false);
+    expect(String(stored[0]!.value).length).toBeLessThanOrEqual(MEMORY_NOTE_MAX_CHARS + 5);
+  });
+
   it("falls back to the round-1 positions for the judgement when every round-2 call fails", async () => {
     const ruflo = councilRuflo({ deadRound2Seats: COUNCIL_SEATS.map((s) => s.model) });
     const bridge = createRufloBridge(makeDeps(ruflo.handler).deps);
@@ -716,6 +766,50 @@ describe("council (konsey) runs", () => {
     expect(await createRufloBridge(makeDeps(walls.handler).deps).run("council", "Soru", "p")).toEqual({ ok: false, reason: "failed" });
   });
 
+  describe("recalling whole memories (Ruflo's memory_search only returns a ~60-character preview)", () => {
+    const KEY = "karar-1790000000000-7";
+    const full = decisionLong();
+    function decisionLong(): string {
+      return "[Konsey kararı] Görev: Mimari?\n\nKarar:\n## Karar\n\n1. Mimari A seçildi.\n2. Veri katmanı ayrı kalır.\n\n" + "Gerekçe: ".padEnd(4_000, "x");
+    }
+    const preview = full.slice(0, 60) + "...";
+
+    it("reads each hit's whole value by its exact key, in the project's namespace, and puts it in the seats' context", async () => {
+      const ruflo = councilRuflo({ recalled: [{ key: KEY, namespace: "yanlis-namespace", value: preview }], full: { [KEY]: full } });
+      await createRufloBridge(makeDeps(ruflo.handler).deps).run("council", "Devam sorusu", "tahminist");
+      expect(ruflo.retrieves()).toEqual([{ key: KEY, namespace: "vyron-tahminist" }]);
+      const round1 = ruflo.executes().filter((e) => e.prompt.includes("KENDİ BAŞINA"));
+      expect(round1).toHaveLength(4);
+      for (const e of round1) {
+        expect(e.prompt).toContain("1. Mimari A seçildi.\n2. Veri katmanı ayrı kalır.");
+        expect(e.prompt).toContain("Gerekçe: xxxx");
+        expect(e.prompt).not.toContain("...");
+      }
+    });
+
+    it("keeps the preview when the entry cannot be read in full", async () => {
+      const ruflo = councilRuflo({ recalled: [{ key: KEY, value: preview }], retrieveFails: true });
+      const result = await createRufloBridge(makeDeps(ruflo.handler).deps).run("council", "Devam sorusu", "tahminist");
+      expect(result.ok).toBe(true);
+      expect(ruflo.retrieves()).toHaveLength(1);
+      expect(ruflo.executes().filter((e) => e.prompt.includes("KENDİ BAŞINA"))[0]!.prompt).toContain("[Konsey kararı] Görev: Mimari?");
+    });
+
+    it("only reads keys this bridge wrote: anything else in a search reply is never fetched", async () => {
+      const odd = [{ key: "../baska", value: "a" }, { key: "gizli-anahtar", value: "b" }, { key: "gorev-12-3; drop", value: "c" }, { value: "anahtarsız" }, null, "metin"];
+      const ruflo = councilRuflo({ recalled: odd });
+      await createRufloBridge(makeDeps(ruflo.handler).deps).run("council", "Soru", "p");
+      expect(ruflo.retrieves()).toEqual([]);
+    });
+
+    it("also reads ordinary task notes in full, so they are no longer reduced to the preview", async () => {
+      const note = "Görev: eski görev → Sonuç: " + "uzun sonuç ".repeat(50);
+      const ruflo = councilRuflo({ recalled: [{ key: "gorev-1790000000000-2", value: "Görev: eski görev → Son..." }], full: { "gorev-1790000000000-2": note } });
+      await createRufloBridge(makeDeps(ruflo.handler).deps).run("council", "Soru", "p");
+      expect(ruflo.executes().filter((e) => e.prompt.includes("KENDİ BAŞINA"))[0]!.prompt).toContain("uzun sonuç uzun sonuç");
+    });
+  });
+
   it("a tool-loop turn for a running Konsey task skips full deliberation and goes straight to the judge", async () => {
     const ruflo = councilRuflo();
     const bridge = createRufloBridge(makeDeps(ruflo.handler).deps);
@@ -741,6 +835,15 @@ import {
   councilSynthesisPrompt,
   councilFooter,
   isUsableOpinion,
+  DECISION_MARK,
+  MEMORY_NOTE_MAX_CHARS,
+  MEMORY_DECISION_MAX_CHARS,
+  MAX_DECISION_SNIPPET_CHARS,
+  MAX_DECISIONS_RECALLED,
+  MAX_DECISION_CONTEXT_CHARS,
+  MAX_MEMORY_SNIPPET_CHARS,
+  currentRequest,
+  decisionNote,
 } from "../electron/rufloTeam";
 
 describe("rufloTeam pure helpers", () => {
@@ -869,5 +972,54 @@ describe("per-role model choice", () => {
     const { deps, started } = makeDeps(goodHandler());
     await createRufloBridge(deps).run("coder", "yaz");
     expect(spawnArgs(started[0]!).every((a) => !("model" in a))).toBe(true);
+  });
+});
+
+describe("Konsey decisions in project memory (pure helpers)", () => {
+  const decision = "## Karar\n\n- bir\n- iki\n\n\n\nSon satır";
+
+  it("marks the decision, keeps its structure, and labels it with the real request rather than the old conversation", () => {
+    const followUp = "Bu istek aynı görevin devamıdır. Önceki konuşma:\nKullanıcı: eski soru\nYanıt: eski cevap\n\nŞimdiki istek:\nİkinci adım ne olsun?";
+    expect(currentRequest(followUp)).toBe("İkinci adım ne olsun?");
+    expect(currentRequest("Düz görev")).toBe("Düz görev");
+    const note = decisionNote(followUp, decision);
+    expect(note.startsWith(DECISION_MARK + " Görev: İkinci adım ne olsun?")).toBe(true);
+    expect(note).not.toContain("eski soru");
+    expect(note).toContain("Karar:\n## Karar\n\n- bir\n- iki\n\nSon satır");
+    // Short notes get the same clean label.
+    expect(memoryNote(followUp, "cevap")).toContain("Görev: İkinci adım ne olsun?");
+    expect(memoryNote(followUp, "cevap")).not.toContain("eski soru");
+  });
+
+  it("caps a stored decision at the allowance, far above the 900-character note", () => {
+    const huge = decisionNote("g", "x".repeat(MEMORY_DECISION_MAX_CHARS * 2));
+    expect(huge.length).toBeLessThan(MEMORY_DECISION_MAX_CHARS + 400);
+    expect(huge.length).toBeGreaterThan(MEMORY_NOTE_MAX_CHARS * 20);
+  });
+
+  it("recalls a decision whole (line breaks kept, up to its own allowance) while ordinary notes stay at 500 characters", () => {
+    const stored = decisionNote("g", decision);
+    const long = decisionNote("g", "y".repeat(MAX_DECISION_SNIPPET_CHARS * 2));
+    const out = recalledSnippets({ results: [{ value: stored }, { value: long }, { value: "a ".repeat(900) }] });
+    expect(out[0]).toContain("## Karar\n\n- bir\n- iki");
+    expect(out[1]!.length).toBeLessThanOrEqual(MAX_DECISION_SNIPPET_CHARS);
+    expect(out[1]!.length).toBeGreaterThan(MAX_MEMORY_SNIPPET_CHARS * 10);
+    expect(out[2]!.length).toBeLessThanOrEqual(MAX_MEMORY_SNIPPET_CHARS);
+  });
+
+  it("recalls at most two decisions, but still the ordinary notes after them", () => {
+    const results = [1, 2, 3, 4].map((n) => ({ value: decisionNote("g" + String(n), "karar " + String(n)) })).concat([{ value: "sıradan not" }]);
+    const out = recalledSnippets({ results });
+    expect(out.filter((s) => s.startsWith(DECISION_MARK))).toHaveLength(MAX_DECISIONS_RECALLED);
+    expect(out).toContain("sıradan not");
+  });
+
+  it("gives recalled decisions their own context budget, and keeps the small budget when there are none", () => {
+    const big = decisionNote("g", "z".repeat(MAX_DECISION_SNIPPET_CHARS * 2));
+    const block = memoryContextBlock([big.slice(0, MAX_DECISION_SNIPPET_CHARS)]);
+    expect(block.length).toBeGreaterThan(MAX_CONTEXT_CHARS * 2);
+    expect(block.length).toBeLessThanOrEqual(MAX_DECISION_CONTEXT_CHARS + 200);
+    const plain = memoryContextBlock(["a".repeat(1_900), "b".repeat(1_900)]);
+    expect(plain.length).toBeLessThanOrEqual(MAX_CONTEXT_CHARS + 100);
   });
 });
