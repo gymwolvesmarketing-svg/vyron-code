@@ -64,6 +64,7 @@ const ROUTED_MODELS = [
   "vyron-council-judge",
   "vyron-council-judge-backup",
 ]; // fixed OmniRoute combo names (mirrors electron/modelRouting.ts)
+const KEEPALIVE_MS = Number(process.env.HERMES_PROXY_KEEPALIVE_MS || 20_000); // spacing of the blank keep-alive bytes (overridable for tests)
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MiB — generous for one plain-text task draft, still bounded.
 
 function timingSafeEqual(a, b) {
@@ -144,15 +145,62 @@ const server = http.createServer((req, res) => {
     }
     const forwardHeaders = { "Content-Type": "application/json" };
     if (isAuthenticated) forwardHeaders["Authorization"] = `Bearer ${REQUIRED_KEY}`;
+    // Ruflo (the Manager runtime) calls this proxy for long model turns (a reasoning model can think for minutes) and its
+    // Node fetch gives up on an answer whose headers have not arrived after 300 s. Hermes only answers once the whole reply
+    // is ready, so for Ruflo's own requests (it identifies itself with `X-Title: Ruflo`) the headers go out at once and a
+    // blank (JSON-safe) space keeps the connection alive until the reply is ready. If the upstream then fails, the
+    // connection is dropped (a clean fetch error on Ruflo's side) rather than sending a misleading 200 with an error body.
+    const keepAlive = isAuthenticated && req.headers["x-title"] === "Ruflo";
+    let ticker = null;
+    const stopTicker = () => {
+      if (ticker !== null) clearInterval(ticker);
+      ticker = null;
+    };
     const upstreamReq = http.request(
       { host: UPSTREAM_HOST, port: UPSTREAM_PORT, path, method, headers: { ...forwardHeaders, "Content-Length": body.length } },
       (upstreamRes) => {
-        res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
-        upstreamRes.pipe(res);
-        log(method, path, upstreamRes.statusCode || 502);
+        if (!keepAlive) {
+          res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
+          upstreamRes.pipe(res);
+          log(method, path, upstreamRes.statusCode || 502);
+          return;
+        }
+        const parts = [];
+        upstreamRes.on("data", (chunk) => parts.push(chunk));
+        upstreamRes.on("end", () => {
+          stopTicker();
+          const status = upstreamRes.statusCode || 502;
+          log(method, path, status);
+          if (status !== 200) {
+            res.destroy();
+            return;
+          }
+          res.end(Buffer.concat(parts));
+        });
+        upstreamRes.on("error", () => {
+          stopTicker();
+          res.destroy();
+        });
       },
     );
+    if (keepAlive) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.write(" ");
+      ticker = setInterval(() => res.write(" "), KEEPALIVE_MS);
+      ticker.unref?.();
+      // The client gave up (its own timeout or a shutdown): stop waiting for the model.
+      res.on("close", () => {
+        stopTicker();
+        upstreamReq.destroy();
+      });
+    }
     upstreamReq.on("error", () => {
+      if (keepAlive) {
+        stopTicker();
+        log(method, path, 502);
+        res.destroy();
+        return;
+      }
       res.writeHead(502, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: "Upstream Hermes API Server unreachable", type: "server_error" } }));
       log(method, path, 502);
     });

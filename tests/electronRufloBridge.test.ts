@@ -160,7 +160,9 @@ describe("running an agent through the bridge", () => {
     expect(execute.arguments.prompt).toBe("İncele: x");
     expect(execute.arguments.agentId).toBe(spawn.arguments.agentId);
     expect(execute.arguments.maxTokens).toBe(8192);
-    expect(Object.keys(execute.arguments).sort()).toEqual(["agentId", "maxTokens", "prompt"]);
+    // Ruflo's own default is 60 s per model call: the bridge always passes its own (slightly shorter) limit explicitly.
+    expect(execute.arguments.timeoutMs).toBe(DEFAULT_RUFLO_TIMINGS.executeMs - 5000);
+    expect(Object.keys(execute.arguments).sort()).toEqual(["agentId", "maxTokens", "prompt", "timeoutMs"]);
   });
 
   it("reuses the running child for later runs", async () => {

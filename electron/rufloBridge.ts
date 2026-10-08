@@ -294,7 +294,10 @@ export function createRufloBridge(deps: RufloDeps, timings: RufloTimings = DEFAU
     const model = modelOverride ?? modelForRole(models, agentType);
     const spawned = await callTool("agent_spawn", model === undefined ? { agentType, agentId } : { agentType, agentId, model }, timings.callMs);
     if (!spawned || spawned.success !== true) return childGone() ? "gone" : null;
-    const executed = await callTool("agent_execute", { agentId, prompt, maxTokens: 8192 }, timings.executeMs);
+    // Ruflo's own agent_execute gives a model call only 60 s unless `timeoutMs` is passed (measured 2026-10-08: council seats
+    // that needed 67-73 s were cut at 60 s and dropped from the vote). It is given a little less than our own limit, so the
+    // failure comes back as a clean tool error instead of this side giving up first.
+    const executed = await callTool("agent_execute", { agentId, prompt, maxTokens: 8192, timeoutMs: Math.max(1000, timings.executeMs - 5000) }, timings.executeMs);
     // Best-effort cleanup of the tracked agent record; its result never matters to the caller.
     void callTool("agent_terminate", { agentId }, timings.callMs);
     if (!executed || executed.success !== true || typeof executed.output !== "string") return childGone() ? "gone" : null;
