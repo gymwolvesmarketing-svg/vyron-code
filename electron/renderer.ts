@@ -148,6 +148,7 @@ const ICONS: Record<string, string[]> = {
   "chevron-right": ["p:M9 6l6 6-6 6"],
   panel: ["r:3,4,18,16,3", "p:M9 4v16"],
   search: ["c:11,11,7", "p:M20 20l-3.5-3.5"],
+  copy: ["r:9,9,11,11,2", "p:M5 15V6a2 2 0 012-2h9"],
   plus: ["p:M12 5v14M5 12h14"],
   "plus-circle": ["c:12,12,9", "p:M12 8v8M8 12h8"],
   sparkles: ["p:M12 3l1.8 4.7 4.7 1.8-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8L12 3z", "p:M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15z"],
@@ -421,6 +422,54 @@ function makeButton(className: string, label: string, onClick: () => void, iconN
   if (iconName) button.appendChild(makeIcon(iconName));
   if (label) button.appendChild(make("span", "btn-label", label));
   button.addEventListener("click", onClick);
+  return button;
+}
+
+/**
+ * Puts text on the clipboard from a user click, with a hidden textarea and the selection-copy command. The renderer
+ * deliberately never uses the asynchronous clipboard API and adds no bridge method: the text goes nowhere but into the
+ * user's own clipboard, from the page, on a click.
+ */
+function copyText(text: string): boolean {
+  const previous = document.activeElement;
+  try {
+    const holder = document.createElement("textarea");
+    holder.value = text;
+    holder.setAttribute("readonly", "");
+    holder.style.position = "fixed";
+    holder.style.top = "-1000px";
+    document.body.appendChild(holder);
+    holder.select();
+    const copied = typeof document.execCommand === "function" ? document.execCommand("copy") : false;
+    holder.remove();
+    if (previous instanceof HTMLElement) previous.focus();
+    return copied;
+  } catch {
+    return false;
+  }
+}
+
+/** An icon-only copy button: the icon turns into a check for a moment (or the title says it failed) after a click. */
+function makeCopyButton(label: string, getText: () => string): HTMLButtonElement {
+  const button = make("button", "copy-btn");
+  button.type = "button";
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.appendChild(makeIcon("copy"));
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  button.addEventListener("click", () => {
+    const ok = copyText(getText());
+    if (timer !== null) clearTimeout(timer);
+    button.classList.toggle("copied", ok);
+    button.title = ok ? "Kopyalandı" : "Kopyalanamadı";
+    button.replaceChildren(makeIcon(ok ? "check" : "copy"));
+    timer = setTimeout(() => {
+      button.classList.remove("copied");
+      button.title = label;
+      button.replaceChildren(makeIcon("copy"));
+      timer = null;
+    }, 1500);
+  });
   return button;
 }
 
@@ -1865,6 +1914,9 @@ function renderTurn(turn: Turn): HTMLElement {
     user.appendChild(chips);
   }
   wrap.appendChild(user);
+  const userTools = make("div", "msg-tools user-tools");
+  userTools.appendChild(makeCopyButton("Görevi kopyala", () => turn.prompt));
+  wrap.appendChild(userTools);
 
   if (turn.status === "running") {
     const working = make("div", "working");
@@ -1883,7 +1935,10 @@ function renderTurn(turn: Turn): HTMLElement {
   } else if (turn.text !== null) {
     const block = make("section", "assistant-block");
     block.setAttribute("aria-label", "Yanıt");
-    block.appendChild(make("div", "block-label", "Yanıt"));
+    const head = make("div", "block-head");
+    head.appendChild(make("div", "block-label", "Yanıt"));
+    head.appendChild(makeCopyButton("Yanıtı kopyala", () => turn.text ?? ""));
+    block.appendChild(head);
     appendResponse(block, turn.text);
     if (turn.truncated) block.appendChild(make("p", "truncated-note", "Yanıt kısaltıldı."));
     // A finished plan (Planner / Multi-Model Planner) can be handed to the Coder with one click.
@@ -1913,9 +1968,12 @@ function appendResponse(container: HTMLElement, text: string): void {
     if (block.kind === "paragraph") {
       container.appendChild(make("p", "", block.text));
     } else if (block.kind === "code") {
+      const wrapper = make("div", "code-block");
       const pre = make("pre");
       pre.appendChild(make("code", "", block.text));
-      container.appendChild(pre);
+      wrapper.appendChild(makeCopyButton("Kodu kopyala", () => block.text));
+      wrapper.appendChild(pre);
+      container.appendChild(wrapper);
     } else {
       const list = make(block.ordered ? "ol" : "ul");
       for (const item of block.items) list.appendChild(make("li", "", item));

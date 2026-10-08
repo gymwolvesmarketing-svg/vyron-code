@@ -257,6 +257,18 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible), textarea:focu
 .assistant-block li { margin: 2px 0; }
 .assistant-block pre { margin: 0 0 10px; padding: 12px 14px; overflow-x: auto; background: #0a0c12; border: 1px solid var(--border); border-radius: 10px; font: 12.5px/1.55 var(--mono); }
 .assistant-block code { font-family: var(--mono); }
+.block-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.block-head .block-label { margin-bottom: 0; }
+.msg-tools { display: flex; gap: 4px; }
+.user-tools { align-self: flex-end; margin-top: -8px; }
+.copy-btn { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; background: none; border: 1px solid transparent; border-radius: 7px; color: var(--muted); cursor: pointer; }
+.copy-btn:hover, .copy-btn:focus-visible { background: var(--hover); color: var(--text); border-color: var(--border); }
+.copy-btn.copied { color: var(--accent); }
+.copy-btn .ico { width: 15px; height: 15px; }
+.code-block { position: relative; margin: 0 0 10px; }
+.code-block:last-child { margin-bottom: 0; }
+.assistant-block .code-block pre { margin: 0; padding-right: 42px; }
+.code-block .copy-btn { position: absolute; top: 6px; right: 6px; background: var(--surface-2); border-color: var(--border); }
 .truncated-note { margin-top: 8px; color: var(--muted); font-size: 12.5px; }
 .turn-actions { display: flex; gap: 8px; margin-top: 12px; }
 .turn-error { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 11px 14px; background: rgba(240, 112, 122, 0.08); border: 1px solid rgba(240, 112, 122, 0.3); border-radius: 12px; }

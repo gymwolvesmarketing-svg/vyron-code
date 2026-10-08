@@ -599,6 +599,47 @@ describe("result workspace", () => {
     expect(block.textContent).toContain("<script>alert(2)</script>");
   });
 
+  it("every message and answer can be copied: the task, the whole answer, and each code block", async () => {
+    const h = await start();
+    const copied: string[] = [];
+    (h.doc as unknown as { execCommand: (command: string) => boolean }).execCommand = (command) => {
+      const holder = h.doc.querySelector<HTMLTextAreaElement>("textarea[readonly]");
+      if (command !== "copy" || !holder) return false;
+      copied.push(holder.value);
+      return true;
+    };
+    const answer = "Giriş\n\n```js\nconst a = 1;\n```\nSon";
+    h.behavior.sendResult = { state: "completed", text: answer, truncated: false };
+    await sendTask(h, "Kopyalanacak görev");
+    const task = h.doc.querySelector<HTMLElement>("#turns .user-tools .copy-btn")!;
+    const whole = h.doc.querySelector<HTMLElement>("#turns .block-head .copy-btn")!;
+    const code = h.doc.querySelector<HTMLElement>("#turns .code-block .copy-btn")!;
+    expect([task.title, whole.title, code.title]).toEqual(["Görevi kopyala", "Yanıtı kopyala", "Kodu kopyala"]);
+    h.click(task);
+    h.click(whole);
+    h.click(code);
+    expect(copied).toEqual(["Kopyalanacak görev", answer, "const a = 1;"]);
+    // The click confirms itself, and the scratch textarea never stays in the page.
+    expect(task.title).toBe("Kopyalandı");
+    expect(task.classList.contains("copied")).toBe(true);
+    expect(h.doc.querySelector("textarea[readonly]")).toBeNull();
+    // Copying must not send anything or change the composer.
+    expect(h.calls.send).toHaveLength(1);
+  });
+
+  it("says so when the copy command is refused or missing", async () => {
+    const h = await start();
+    await sendTask(h, "Soru");
+    const button = h.doc.querySelector<HTMLElement>("#turns .block-head .copy-btn")!;
+    h.click(button);
+    expect(button.title).toBe("Kopyalanamadı");
+    (h.doc as unknown as { execCommand: () => boolean }).execCommand = () => false;
+    h.click(button);
+    expect(button.title).toBe("Kopyalanamadı");
+    expect(button.classList.contains("copied")).toBe(false);
+    expect(h.doc.querySelector("textarea[readonly]")).toBeNull();
+  });
+
   it("shows the truncation note only when the answer was truncated", async () => {
     const h = await start();
     h.behavior.sendResult = { state: "completed", text: "kısaltılmış", truncated: true };
