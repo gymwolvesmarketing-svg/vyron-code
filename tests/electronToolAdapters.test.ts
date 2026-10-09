@@ -381,8 +381,11 @@ describe("deep-research Manager (kind chosen in the composer, no dialog)", () =>
   it("runs the chosen kind on the whole question with no native dialog", async () => {
     const fake = fakeResearch();
     const runner = createProductionToolRunner(() => null, browserOnly(), fake.research);
-    expect(await runner.deepResearch("  Türkiye spor giyim pazarı  ", "fast")).toEqual({ ok: true, text: "RAPOR fast" });
-    expect(await runner.deepResearch("ikinci soru", "max")).toEqual({ ok: true, text: "RAPOR max" });
+    const first = await runner.deepResearch("  Türkiye spor giyim pazarı  ", "fast");
+    const second = await runner.deepResearch("ikinci soru", "max");
+    // The answer is followed by the "saved to" note (a workspace folder is granted here).
+    expect(first.text.startsWith("RAPOR fast\n\n— Kaydedildi: arastirma/")).toBe(true);
+    expect(second.text.startsWith("RAPOR max\n\n— Kaydedildi: arastirma/")).toBe(true);
     expect(fake.calls).toEqual([{ query: "Türkiye spor giyim pazarı", depth: "fast" }, { query: "ikinci soru", depth: "max" }]);
     expect(state.dialogs).toHaveLength(0);
   });
@@ -399,5 +402,67 @@ describe("deep-research Manager (kind chosen in the composer, no dialog)", () =>
     state.root = null;
     const runner = createProductionToolRunner(() => null, browserOnly(), { run: async () => ({ ok: false, text: "Gemini anahtarı bulunamadı." }) });
     expect(await runner.deepResearch("soru", "fast")).toEqual({ ok: true, text: "Gemini anahtarı bulunamadı." });
+  });
+});
+
+describe("result archive through the production runner", () => {
+  const WHEN = new Date(2026, 9, 9, 12, 30, 45);
+  const browserOnly = (): BrowserDriver => ({
+    open: async () => ({ ok: true, text: "" }),
+    read: async () => ({ ok: true, text: "" }),
+    click: async () => ({ ok: true, text: "" }),
+    type: async () => ({ ok: true, text: "" }),
+    target: () => null,
+    close: () => undefined,
+  });
+  const research = (ok: boolean, text: string) => ({ run: async () => ({ ok, text }) });
+
+  it("writes into the workspace folder's fixed subfolder and tells where", () => {
+    const runner = createProductionToolRunner(() => null, browserOnly(), research(true, "x"));
+    const where = runner.archive("konsey", "Soru metni", "KARAR METNİ");
+    expect(where).toMatch(/^konsey\/\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.md \(klasör: ws\)$/);
+    const relative = where!.split(" ")[0]!;
+    const saved = fs.readFileSync(path.join(state.root as string, relative), "utf8");
+    expect(saved).toContain("## Cevap\n\nKARAR METNİ");
+    expect(saved).toContain("> Soru metni");
+    expect(state.dialogs).toHaveLength(0);
+  });
+
+  it("never overwrites: a second save in the same second gets a suffix", () => {
+    const runner = createProductionToolRunner(() => null, browserOnly(), research(true, "x"));
+    const first = runner.archive("planner", "q", "bir")!;
+    const second = runner.archive("planner", "q", "iki")!;
+    expect(second).not.toBe(first);
+    const dir = path.join(state.root as string, "planner");
+    expect(fs.readdirSync(dir)).toHaveLength(2);
+    expect(fs.readFileSync(path.join(state.root as string, first.split(" ")[0]!), "utf8")).toContain("bir");
+  });
+
+  it("without a granted folder it saves into the app's own data folder", () => {
+    state.root = null;
+    const runner = createProductionToolRunner(() => null, browserOnly(), research(true, "x"));
+    const where = runner.archive("arastirma", "q", "RAPOR")!;
+    expect(where.startsWith(path.join(state.userData, "kayitlar", "arastirma"))).toBe(true);
+    expect(fs.readFileSync(where, "utf8")).toContain("## Cevap\n\nRAPOR");
+  });
+
+  it("falls back to the data folder when the workspace subfolder cannot be written", () => {
+    // A FILE named "konsey" where the folder should go makes the workspace write impossible.
+    fs.writeFileSync(path.join(state.root as string, "konsey"), "dosya");
+    const runner = createProductionToolRunner(() => null, browserOnly(), research(true, "x"));
+    const where = runner.archive("konsey", "q", "KARAR")!;
+    expect(where.startsWith(path.join(state.userData, "kayitlar", "konsey"))).toBe(true);
+    expect(fs.readFileSync(path.join(state.root as string, "konsey"), "utf8")).toBe("dosya");
+  });
+
+  it("a finished research is saved and its answer ends with the note; a failed one is not saved", async () => {
+    const ok = createProductionToolRunner(() => null, browserOnly(), research(true, "RAPOR METNİ"));
+    const done = await ok.deepResearch("Konu", "search");
+    expect(done.text.startsWith("RAPOR METNİ\n\n— Kaydedildi: arastirma/")).toBe(true);
+    expect(fs.readdirSync(path.join(state.root as string, "arastirma"))).toHaveLength(1);
+    const bad = createProductionToolRunner(() => null, browserOnly(), research(false, "Gemini anahtarı bulunamadı."));
+    const failed = await bad.deepResearch("Konu", "fast");
+    expect(failed).toEqual({ ok: true, text: "Gemini anahtarı bulunamadı." });
+    expect(fs.readdirSync(path.join(state.root as string, "arastirma"))).toHaveLength(1);
   });
 });

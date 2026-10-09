@@ -18,6 +18,7 @@ import { createBrowserDriver, type BrowserDriver } from "./browserTool";
 import { createElectronBrowserPage } from "./browserWindow";
 import { createProductionDeepResearch } from "./deepResearchAdapter";
 import { MAX_RESEARCH_QUERY_CHARS, type DeepResearch, type ResearchDepth } from "./deepResearch";
+import { archiveDocument, archiveFileName, archiveFolder, archiveNote, archiveRelativePath, type ArchiveKind } from "./resultArchive";
 import { runToolLoop, type ToolLoopDeps, type ToolLoopResult, type ToolWorkspace } from "./toolLoop";
 import type { ApprovalChoice, ApprovalRequest, ChatMessage, ToolCall } from "./toolPolicy";
 
@@ -154,6 +155,13 @@ export interface ToolRunner {
    * did not run).
    */
   deepResearch(question: string, depth: ResearchDepth): Promise<{ readonly ok: true; readonly text: string }>;
+  /**
+   * Saves a finished long answer (Konsey, Planner, research) as a Markdown file: into the workspace folder's fixed subfolder
+   * when one is granted (through the same confined writer the tools use), otherwise into the app's own data folder. Returns
+   * what to tell the user ("konsey/2026-10-09_12-30-45.md (klasör: Tahminist)"), or null when nothing could be written; a
+   * failure to save never fails the task.
+   */
+  archive(kind: ArchiveKind, question: string, answer: string): string | null;
   /** Closes the agent browser window (app shutdown). */
   close(): void;
 }
@@ -231,7 +239,42 @@ export function createProductionToolRunner(
     if (text.length > MAX_RESEARCH_QUERY_CHARS) return { ok: true, text: "Araştırma sorusu çok uzun (en fazla " + String(MAX_RESEARCH_QUERY_CHARS) + " karakter). Kısaltıp yeniden gönder." };
     // The user already chose the kind in the composer's own research menu and pressed send; no second dialog.
     const outcome = await research.run(text, depth);
-    return { ok: true, text: outcome.text };
+    if (!outcome.ok) return { ok: true, text: outcome.text };
+    const where = archive("arastirma", text, outcome.text);
+    return { ok: true, text: outcome.text + (where ? archiveNote(where) : "") };
+  }
+
+  function archive(kind: ArchiveKind, question: string, answer: string, now: Date = new Date()): string | null {
+    const document = archiveDocument(kind, question, answer, now);
+    const root = getCurrentCanonicalRoot();
+    if (root) {
+      for (let attempt = 1; attempt <= 50; attempt += 1) {
+        const relative = archiveRelativePath(kind, now, attempt);
+        const target = resolveWritable(root, relative);
+        if (!target.ok) break;
+        if (target.existed) continue;
+        if (writeFile(root, relative, document).ok) return relative + " (klasör: " + (getCurrent().displayName ?? "çalışma klasörü") + ")";
+        break;
+      }
+    }
+    // No folder granted (or it could not be written): the app's own data folder, never overwriting a file.
+    try {
+      const folder = path.join(app.getPath("userData"), "kayitlar", archiveFolder(kind));
+      fs.mkdirSync(folder, { recursive: true });
+      for (let attempt = 1; attempt <= 50; attempt += 1) {
+        const file = path.join(folder, archiveFileName(now, attempt));
+        try {
+          fs.writeFileSync(file, document, { encoding: "utf8", flag: "wx" });
+          return file;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+          return null;
+        }
+      }
+    } catch {
+      return null;
+    }
+    return null;
   }
 
   function info(): WorkspaceInfo {
@@ -296,6 +339,7 @@ export function createProductionToolRunner(
       return info();
     },
     deepResearch,
+    archive: (kind, question, answer) => archive(kind, question, answer),
     close() {
       browser.close();
     },

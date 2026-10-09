@@ -45,6 +45,7 @@ import { getTaskSubmissionState, sendTask, clearTaskSubmission, setTaskAgentExec
 import { createProductionLocalAiManager } from "./localAiAdapters";
 import { createProductionRufloBridge } from "./rufloAdapters";
 import { isDeepResearchRole, researchKindOfRole } from "./rufloBridge";
+import { archiveKindForRole, archiveNote } from "./resultArchive";
 import { createProductionToolRunner } from "./toolAdapters";
 
 /**
@@ -175,9 +176,17 @@ const ruflo = createProductionRufloBridge({
   isPackaged: app.isPackaged,
 });
 // The deep-research Manager (fast / Max, picked in the composer) is answered by the tool runner against Gemini; every other role runs in Ruflo.
-setTaskAgentExecutor((agentType, prompt, project, models) =>
-  isDeepResearchRole(agentType) ? tools.deepResearch(prompt, researchKindOfRole(agentType)) : ruflo.run(agentType, prompt, project, models),
-);
+setTaskAgentExecutor(async (agentType, prompt, project, models) => {
+  if (isDeepResearchRole(agentType)) return tools.deepResearch(prompt, researchKindOfRole(agentType));
+  const result = await ruflo.run(agentType, prompt, project, models);
+  // Long, expensive answers (Konsey, Planner) are also written to a file so a crash or a history reset cannot lose them.
+  const kind = archiveKindForRole(agentType);
+  if (result.ok && kind) {
+    const where = tools.archive(kind, prompt, result.text);
+    if (where) return { ok: true, text: result.text + archiveNote(where) };
+  }
+  return result;
+});
 setAgentAsk((agentType, prompt, models) => ruflo.ask(agentType, prompt, models));
 // Approved tools: workspace folder from a native dialog, native approval dialogs, confined executors.
 const tools = createProductionToolRunner(() => mainWindow);
