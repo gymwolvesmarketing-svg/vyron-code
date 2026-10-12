@@ -47,7 +47,7 @@ beforeAll(async () => {
   });
   await new Promise<void>((resolve) => upstream.listen(upstreamPort, "127.0.0.1", resolve));
   proxy = spawn(process.execPath, [SCRIPT], {
-    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, HERMES_API_SERVER_KEY: KEY, HERMES_UPSTREAM_PORT: String(upstreamPort), HERMES_PROXY_PORT: String(proxyPort), HERMES_PROXY_KEEPALIVE_MS: "150" },
+    env: { NODE_ENV: "test", PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, HERMES_API_SERVER_KEY: KEY, HERMES_UPSTREAM_PORT: String(upstreamPort), HERMES_PROXY_PORT: String(proxyPort), HERMES_PROXY_KEEPALIVE_MS: "150" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   await new Promise<void>((resolve, reject) => {

@@ -35,7 +35,7 @@ export interface Harness {
   dom: JSDOM;
   win: Window & typeof globalThis;
   doc: Document;
-  calls: { getState: number; retry: number; copy: number; send: Array<{ draft: string }>; clear: number; devTools: number; memoryClears: number; picks: number; pickProjects: Array<string | null>; workspaceClears: number; permissionClears: number };
+  calls: { getState: number; retry: number; copy: number; send: Array<{ draft: string; agent?: string; models?: unknown }>; clear: number; devTools: number; memoryClears: number; picks: number; pickProjects: Array<string | null>; workspaceClears: number; permissionClears: number };
   behavior: {
     aiState: FakeAiState;
     retryState: FakeAiState;
@@ -71,7 +71,7 @@ export interface SetupOptions {
 
 export function setup(options: SetupOptions = {}): Harness {
   const errors: unknown[] = [];
-  const calls = { getState: 0, retry: 0, copy: 0, send: [] as Array<{ draft: string }>, clear: 0, devTools: 0, memoryClears: 0, picks: 0, pickProjects: [] as Array<string | null>, workspaceClears: 0, permissionClears: 0 };
+  const calls = { getState: 0, retry: 0, copy: 0, send: [] as Array<{ draft: string; agent?: string; models?: unknown }>, clear: 0, devTools: 0, memoryClears: 0, picks: 0, pickProjects: [] as Array<string | null>, workspaceClears: 0, permissionClears: 0 };
   const folders = new Map<string, string>();
   const behavior: Harness["behavior"] = {
     aiState: options.ai ?? { state: "ready" },

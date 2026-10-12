@@ -1941,9 +1941,9 @@ function renderTurn(turn: Turn): HTMLElement {
     block.appendChild(head);
     appendResponse(block, turn.text);
     if (turn.truncated) block.appendChild(make("p", "truncated-note", "Yanıt kısaltıldı."));
-    // A finished plan (Planner / Multi-Model Planner) can be handed to the Coder with one click.
+    // A finished plan (Planner / Multi-Model Planner) or a Konsey decision can be handed to the Coder with one click.
     const coder = ws.managers.find((m) => m.agent === "coder" && !m.custom);
-    if (coder && (turn.agent === "task-orchestrator" || turn.agent === "planner")) {
+    if (coder && (turn.agent === "task-orchestrator" || turn.agent === "planner" || turn.agent === "council")) {
       const actions = make("div", "turn-actions");
       actions.appendChild(makeButton("btn small", "Coder'a devret", () => handOffToCoder(coder.id, turn.text ?? "")));
       block.appendChild(actions);

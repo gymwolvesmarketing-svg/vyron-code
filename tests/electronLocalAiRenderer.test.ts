@@ -1550,6 +1550,21 @@ describe("managers run through Ruflo roles", () => {
     expect(h.calls.send[1]!.draft).toContain("Yanıt metni");
   });
 
+  it("a Konsey decision also offers 'Coder'a devret' and fills the composer unsent", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "Konsey"));
+    await sendTask(h, "Mimariyi seç");
+    const button = [...h.doc.querySelectorAll<HTMLElement>(".turn-actions button")].find((b) => b.textContent === "Coder'a devret");
+    expect(button).toBeTruthy();
+    h.click(button!);
+    const input = h.el("task-input") as HTMLTextAreaElement;
+    expect(input.value).toContain("Plan:");
+    expect(h.el("chips").textContent).toContain("Coder");
+    expect(h.calls.send).toHaveLength(1);
+  });
+
   it("a plain (non-planner) answer has no handoff button", async () => {
     const h = await start();
     await sendTask(h, "Merhaba");

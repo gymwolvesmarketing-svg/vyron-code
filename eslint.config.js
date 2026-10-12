@@ -5,6 +5,6 @@ const nextConfig = require("eslint-config-next");
 module.exports = [
   ...nextConfig,
   {
-    ignores: ["node_modules/**", ".next/**", "data/**", "*.tsbuildinfo"],
+    ignores: ["**/*.d.mts", "node_modules/**", ".next/**", "data/**", "*.tsbuildinfo"],
   },
 ];
