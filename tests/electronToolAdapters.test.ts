@@ -108,15 +108,15 @@ describe("permission store", () => {
 });
 
 describe("approval dialog and tool runner", () => {
-  it("asks natively with exactly three buttons (Reddet is default), runs on 'Bir kez', and asks again next time", async () => {
+  it("asks natively with four buttons for writes and commands (Reddet is default), runs on 'Bir kez', and asks again next time", async () => {
     const runner = createProductionToolRunner(() => null);
     state.responses = [0, 0];
     const first = scripted([WRITE, "Bitti"]);
     const result = await runner.run("g", first.ask);
     expect(state.dialogs).toHaveLength(1);
-    expect(state.dialogs[0]!.buttons).toEqual(["Bir kez izin ver", "Her zaman izin ver", "Reddet"]);
-    expect(state.dialogs[0]!.defaultId).toBe(2);
-    expect(state.dialogs[0]!.cancelId).toBe(2);
+    expect(state.dialogs[0]!.buttons).toEqual(["Bir kez izin ver", "Bu görevde hepsine izin ver", "Bu klasörde her zaman izin ver", "Reddet"]);
+    expect(state.dialogs[0]!.defaultId).toBe(3);
+    expect(state.dialogs[0]!.cancelId).toBe(3);
     expect(state.dialogs[0]!.message).toContain('"ws"');
     expect(state.dialogs[0]!.detail).toContain("Yeni dosya: a.txt");
     expect(JSON.stringify(state.dialogs)).not.toContain(base);
@@ -129,7 +129,7 @@ describe("approval dialog and tool runner", () => {
 
   it("refuses on 'Reddet', on closing the dialog, and when the dialog fails; nothing is written", async () => {
     const runner = createProductionToolRunner(() => null);
-    state.responses = [2];
+    state.responses = [3];
     let result = await runner.run("g", scripted([WRITE, "Bitti"]).ask);
     expect(fs.existsSync(path.join(state.root as string, "a.txt"))).toBe(false);
     expect(result.ok && result.text).toContain("✗ reddedildi: yazma a.txt");
@@ -142,9 +142,9 @@ describe("approval dialog and tool runner", () => {
     expect(result.ok && result.text).toContain("✗ reddedildi");
   });
 
-  it("'Her zaman izin ver' is remembered per folder for writes, and per exact text for commands, and can be reset", async () => {
+  it("'Bu klasörde her zaman izin ver' is remembered per folder for writes and for ALL commands, and can be reset", async () => {
     const runner = createProductionToolRunner(() => null);
-    state.responses = [1];
+    state.responses = [2];
     await runner.run("g", scripted([WRITE, "Bitti"]).ask);
     expect(runner.getWorkspace().alwaysCount).toBe(1);
     expect(fs.existsSync(path.join(base, "userdata", PERMISSIONS_FILE))).toBe(true);
@@ -152,27 +152,44 @@ describe("approval dialog and tool runner", () => {
     expect(state.dialogs).toHaveLength(1);
     expect(fs.existsSync(path.join(state.root as string, "b.txt"))).toBe(true);
 
-    state.responses = [1];
-    await runner.run("g", scripted(['{"tool":"run_command","command":"echo bir"}', "Bitti"]).ask);
-    expect(state.dialogs).toHaveLength(2);
-    await runner.run("g", scripted(['{"tool":"run_command","command":"echo bir"}', "Bitti"]).ask);
-    expect(state.dialogs).toHaveLength(2);
+    // A command with an operator is not read-only, so it asks; "always" then covers every command of this folder.
     state.responses = [2];
-    await runner.run("g", scripted(['{"tool":"run_command","command":"echo iki"}', "Bitti"]).ask);
-    expect(state.dialogs).toHaveLength(3);
+    await runner.run("g", scripted(['{"tool":"run_command","command":"echo bir & echo uno"}', "Bitti"]).ask);
+    expect(state.dialogs).toHaveLength(2);
+    await runner.run("g", scripted(['{"tool":"run_command","command":"echo bir & echo uno"}', "Bitti"]).ask);
+    expect(state.dialogs).toHaveLength(2);
+    await runner.run("g", scripted(['{"tool":"run_command","command":"echo iki & echo dos"}', "Bitti"]).ask);
+    expect(state.dialogs).toHaveLength(2);
 
     fs.mkdirSync(path.join(base, "ws2"));
     state.root = fs.realpathSync.native(path.join(base, "ws2"));
-    state.responses = [2];
+    state.responses = [3];
     await runner.run("g", scripted([WRITE, "Bitti"]).ask);
-    expect(state.dialogs).toHaveLength(4);
+    expect(state.dialogs).toHaveLength(3);
 
     expect(runner.getWorkspace().alwaysCount).toBe(2);
     expect(runner.clearPermissions().alwaysCount).toBe(0);
-    state.responses = [2];
+    state.responses = [3];
     state.root = fs.realpathSync.native(path.join(base, "ws"));
     await runner.run("g", scripted([WRITE, "Bitti"]).ask);
-    expect(state.dialogs).toHaveLength(5);
+    expect(state.dialogs).toHaveLength(4);
+  });
+
+  it("'Bu görevde hepsine izin ver' covers every write and command of that task run only, and is never remembered", async () => {
+    const runner = createProductionToolRunner(() => null);
+    state.responses = [1];
+    const second = '{"tool":"write_file","path":"b.txt","content":"2"}';
+    const third = '{"tool":"run_command","command":"echo bir & echo uno"}';
+    const result = await runner.run("g", scripted([WRITE, second, third, "Bitti"]).ask);
+    expect(state.dialogs).toHaveLength(1);
+    expect(fs.existsSync(path.join(state.root as string, "a.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(state.root as string, "b.txt"))).toBe(true);
+    expect(result.ok && result.text).toContain("✓ komut echo bir & echo uno");
+    expect(runner.getWorkspace().alwaysCount).toBe(0);
+    state.responses = [3];
+    await runner.run("g", scripted(['{"tool":"write_file","path":"c.txt","content":"3"}', "Bitti"]).ask);
+    expect(state.dialogs).toHaveLength(2);
+    expect(fs.existsSync(path.join(state.root as string, "c.txt"))).toBe(false);
   });
 
   it("reads and lists without any dialog, and never asks for something the policy refuses", async () => {

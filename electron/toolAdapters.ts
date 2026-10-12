@@ -142,7 +142,7 @@ export interface WorkspaceInfo {
 }
 
 export interface ToolRunner {
-  run(task: string, ask: (messages: readonly ChatMessage[]) => Promise<string | null>): Promise<ToolLoopResult>;
+  run(task: string, ask: (messages: readonly ChatMessage[]) => Promise<string | null>, onProgress?: (line: string) => void): Promise<ToolLoopResult>;
   /** With a project id, switches to that project's remembered folder (or to none). */
   getWorkspace(projectId?: unknown): WorkspaceInfo;
   /** With a project id, remembers the picked folder for that project. */
@@ -185,20 +185,23 @@ export function createProductionToolRunner(
   async function approve(request: ApprovalRequest): Promise<ApprovalChoice> {
     if (store.has(request.key)) return "always";
     const window = getWindow();
+    // File writes and commands also offer "for the rest of this task"; every other kind keeps the three buttons.
+    const buttons = request.offerTask ? ["Bir kez izin ver", "Bu görevde hepsine izin ver", "Bu klasörde her zaman izin ver", "Reddet"] : ["Bir kez izin ver", "Her zaman izin ver", "Reddet"];
     const options: Electron.MessageBoxOptions = {
       type: "question",
       title: request.title,
       message: request.message,
       detail: request.detail,
-      buttons: ["Bir kez izin ver", "Her zaman izin ver", "Reddet"],
-      defaultId: 2,
-      cancelId: 2,
+      buttons,
+      defaultId: buttons.length - 1,
+      cancelId: buttons.length - 1,
       noLink: true,
     };
     try {
       const result = window ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
       if (result.response === 0) return "once";
-      if (result.response === 1) {
+      if (request.offerTask && result.response === 1) return "task";
+      if (result.response === (request.offerTask ? 2 : 1)) {
         store.add(request.key);
         return "always";
       }
@@ -283,9 +286,10 @@ export function createProductionToolRunner(
   }
 
   return {
-    run(task, ask) {
+    run(task, ask, onProgress) {
       const deps: ToolLoopDeps = {
         ask,
+        onProgress,
         workspace: currentWorkspace,
         approve,
         execute,

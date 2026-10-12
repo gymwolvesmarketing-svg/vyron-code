@@ -27,6 +27,8 @@ interface HermesTaskSubmissionState {
   readonly state: HermesTaskSubmissionAmbientState;
   readonly text: string | null;
   readonly truncated: boolean;
+  /** Short lines of the steps a running tool task has finished (only while sending). */
+  readonly progress?: readonly string[];
 }
 
 interface HermesTaskRequest {
@@ -260,6 +262,8 @@ interface Turn {
   truncated: boolean;
   errorText: string | null;
   cleared: boolean;
+  /** The latest steps of a running tool task (read / written / run), polled from the main process while the turn runs. */
+  progress?: string[];
 }
 
 interface MenuInstance {
@@ -359,12 +363,17 @@ function loadTurns(): void {
 }
 
 const HISTORY_ROOM_CHARS = 9_000;
+const HISTORY_ROOM_TOOLS_CHARS = 4_000;
 const HISTORY_PROMPT_CHARS = 1_500;
 const HISTORY_ANSWER_CHARS = 2_500;
+const HISTORY_ANSWER_TOOLS_CHARS = 1_200;
 
 /** The earlier conversation of this task, newest last, bounded so the whole request stays within the draft limit. */
 function historyPreamble(taskId: string, turn: Turn, composedLength: number): string {
-  const room = Math.min(HISTORY_ROOM_CHARS, VyronModel.MAX_DRAFT_LENGTH - composedLength - 300);
+  // A CTO chain turn already carries everything it needs (brief, decision, task list or results): earlier turns would only repeat it.
+  if (VyronModel.chainPromptTitle(turn.prompt) !== null) return "";
+  // A tool task also carries the tool protocol and the folder overview, so its history is kept shorter (fewer input tokens per step).
+  const room = Math.min(turn.tools ? HISTORY_ROOM_TOOLS_CHARS : HISTORY_ROOM_CHARS, VyronModel.MAX_DRAFT_LENGTH - composedLength - 300);
   if (room < 600) return "";
   const earlier: Turn[] = [];
   for (const t of turnsByTask.get(taskId) ?? []) {
@@ -376,7 +385,7 @@ function historyPreamble(taskId: string, turn: Turn, composedLength: number): st
   let used = 0;
   for (let i = earlier.length - 1; i >= 0; i -= 1) {
     const t = earlier[i]!;
-    const entry = "Kullanıcı: " + clip(t.prompt, HISTORY_PROMPT_CHARS) + "\nYanıt: " + clip(t.text ?? "", HISTORY_ANSWER_CHARS);
+    const entry = "Kullanıcı: " + clip(t.prompt, HISTORY_PROMPT_CHARS) + "\nYanıt: " + clip(t.text ?? "", turn.tools ? HISTORY_ANSWER_TOOLS_CHARS : HISTORY_ANSWER_CHARS);
     if (used + entry.length > room) break;
     entries.unshift(entry);
     used += entry.length + 2;
@@ -1911,7 +1920,15 @@ function renderTurn(turn: Turn): HTMLElement {
 
   const user = make("div", "user-block");
   user.appendChild(make("div", "block-label", "Görev"));
-  user.appendChild(make("div", "user-text", turn.prompt));
+  // The CTO chain's own prompts are long and carry the whole context: show a short title, keep the full text one click away.
+  const chainTitle = VyronModel.chainPromptTitle(turn.prompt);
+  user.appendChild(make("div", "user-text", chainTitle ?? turn.prompt));
+  if (chainTitle !== null) {
+    const full = make("details", "user-full");
+    full.appendChild(make("summary", "", "Tam metni göster"));
+    full.appendChild(make("div", "user-text", turn.prompt));
+    user.appendChild(full);
+  }
   if (turn.labels.length > 0) {
     const chips = make("div", "turn-chips");
     for (const label of turn.labels) chips.appendChild(make("span", "turn-chip", label));
@@ -1928,6 +1945,10 @@ function renderTurn(turn: Turn): HTMLElement {
     working.appendChild(makeIcon("spinner"));
     working.appendChild(make("span", "", turn.agent === "deep-research-search" ? SEARCH_WORKING_TEXT : isResearchRole(turn.agent) ? RESEARCH_WORKING_TEXT : WORKING_TEXT));
     wrap.appendChild(working);
+    const live = make("ul", "working-progress");
+    live.setAttribute("aria-live", "polite");
+    fillProgress(live, turn.progress ?? []);
+    wrap.appendChild(live);
   } else if (turn.status === "error") {
     const box = make("div", "turn-error");
     box.setAttribute("role", "alert");
@@ -1954,6 +1975,12 @@ function renderTurn(turn: Turn): HTMLElement {
     }
     const ctoActions = renderCtoActions(turn);
     if (ctoActions) block.appendChild(ctoActions);
+    // A tool task that stopped half way (step limit, or the model stopped answering) continues with one click.
+    if (turn.tools && turn.text.indexOf("iş yarım kaldı") >= 0) {
+      const resume = make("div", "turn-actions");
+      resume.appendChild(makeButton("btn small", "Devam et", () => continueTurn(turn)));
+      block.appendChild(resume);
+    }
     wrap.appendChild(block);
   }
   return wrap;
@@ -2096,6 +2123,19 @@ async function sendBriefToCouncil(taskId: string, source: Turn, brief: string): 
   await runTurn(taskId, evaluation);
 }
 
+const CONTINUE_TEXT =
+  "Kaldığın yerden devam et. Önce çalışma klasörünü listele ve önceki yanıttaki araç günlüğüne bak; zaten yazılmış dosyaları tekrar yazma, yalnızca eksik kalan işleri tamamla. Bitirince yapılanları kısaca raporla.";
+
+/** "Devam et": sends the continue request to the same Manager in the same task (the click is the user's decision to go on). */
+function continueTurn(turn: Turn): void {
+  if (sendInFlight) return;
+  const manager = turn.agent ? ws.managers.find((m) => m.agent === turn.agent && !m.custom) : null;
+  if (manager) setManager(manager.id);
+  must<HTMLTextAreaElement>("task-input").value = CONTINUE_TEXT;
+  updateComposer();
+  void sendCurrent();
+}
+
 /** Selects the Coder and puts the plan into the composer as a task; the user reads it and sends it (Enter). */
 function handOffToCoder(coderId: string, plan: string): void {
   if (sendInFlight) return;
@@ -2173,6 +2213,29 @@ async function sendCurrent(): Promise<void> {
   await runTurn(task.id, turn);
 }
 
+const PROGRESS_POLL_MS = 1_500;
+const PROGRESS_LINES_SHOWN = 8;
+
+function fillProgress(list: HTMLElement, lines: readonly string[]): void {
+  clearNode(list);
+  for (const line of lines.slice(-PROGRESS_LINES_SHOWN)) list.appendChild(make("li", "", line));
+}
+
+/** While a task runs, shows the steps the tool loop has finished so far; only that one list is updated (no full re-render). */
+async function pollProgress(turn: Turn): Promise<void> {
+  const api = window.vyronDesktop;
+  if (!api || turn.status !== "running") return;
+  try {
+    const state = await api.hermes.getTaskSubmissionState();
+    if (turn.status !== "running" || state.state !== "sending" || !Array.isArray(state.progress)) return;
+    turn.progress = state.progress.filter((l): l is string => typeof l === "string").slice(-PROGRESS_LINES_SHOWN);
+    const list = document.querySelector<HTMLElement>(`[data-turn-id="${turn.id}"] .working-progress`);
+    if (list) fillProgress(list, turn.progress);
+  } catch {
+    // A failed poll only means no live steps this time.
+  }
+}
+
 async function runTurn(taskId: string, turn: Turn): Promise<void> {
   sendInFlight = true;
   turn.status = "running";
@@ -2180,6 +2243,8 @@ async function runTurn(taskId: string, turn: Turn): Promise<void> {
   refreshIfActive(taskId);
   const api = window.vyronDesktop;
   let result: HermesTaskSubmissionState | null = null;
+  turn.progress = [];
+  const progressTimer = window.setInterval(() => void pollProgress(turn), PROGRESS_POLL_MS);
   if (api) {
     try {
       result = await api.hermes.sendTask(taskRequest(turn, taskId));
@@ -2187,6 +2252,7 @@ async function runTurn(taskId: string, turn: Turn): Promise<void> {
       result = null;
     }
   }
+  window.clearInterval(progressTimer);
   sendInFlight = false;
   if (result && result.state === "completed" && typeof result.text === "string") {
     turn.status = "done";

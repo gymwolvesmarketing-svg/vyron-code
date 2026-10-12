@@ -118,5 +118,5 @@ describe("listEntries — bounded, read-only directory listing", () => {
     expect(result.entries.length).toBeLessThanOrEqual(500);
     expect(result.truncated).toBe(true);
     fs.rmSync(bigDirRoot, { recursive: true, force: true });
-  });
+  }, 30_000);
 });

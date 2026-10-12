@@ -908,9 +908,12 @@ const VyronModel = (() => {
     return body.length > max ? body.slice(0, max - 1) + "…" : body;
   }
 
+  const COUNCIL_TASK_HEAD = "Aşağıdaki proje özeti için uygulanabilir bir teknik karar ver";
+  const REVIEW_HEAD = "Coder aşağıdaki görevleri yaptı.";
+
   /** The question put to the Konsey: decide on the approved brief (kept inside the draft limit). */
   function composeCouncilTask(brief: string): string {
-    const head = "Aşağıdaki proje özeti için uygulanabilir bir teknik karar ver: mimari, aşamalar, riskler ve ilk adımlar. Belirsiz noktaları açıkça işaretle.\n\nProje özeti:\n";
+    const head = COUNCIL_TASK_HEAD + ": mimari, aşamalar, riskler ve ilk adımlar. Belirsiz noktaları açıkça işaretle.\n\nProje özeti:\n";
     return head + clipTo(brief, MAX_DRAFT_LENGTH - head.length);
   }
 
@@ -975,8 +978,21 @@ const VyronModel = (() => {
   /** The Reviewer's task: look at what the Coder reported for every task. */
   function composeReviewPrompt(titles: readonly string[], results: ReadonlyArray<string | null>): string {
     const parts = titles.map((title, i) => String(i + 1) + ". " + title + "\nCoder'ın bildirdiği sonuç: " + clipTo(results[i] ?? "(sonuç yok)", TASK_RESULT_CHARS));
-    const head = "Coder aşağıdaki görevleri yaptı. Sonuçları incele: hatalar, eksikler ve riskler neler? Gerekirse çalışma klasöründeki dosyaları oku. Düzeltilmesi gerekenleri madde madde yaz.\n\n";
+    const head = REVIEW_HEAD + " Sonuçları incele: hatalar, eksikler ve riskler neler? Gerekirse çalışma klasöründeki dosyaları oku. Düzeltilmesi gerekenleri madde madde yaz.\n\n";
     return head + clipTo(parts.join("\n\n"), MAX_DRAFT_LENGTH - head.length);
+  }
+
+  /**
+   * A short title for the turns the CTO chain creates (their prompts are long, machine-written and carry the whole context), or null for a
+   * prompt the user typed. The chat shows the title and keeps the full text one click away; the chain turns also skip the earlier-conversation preamble.
+   */
+  function chainPromptTitle(prompt: string): string | null {
+    if (prompt.startsWith(EVAL_PREFIX)) return "CTO: Konsey kararını değerlendiriyor";
+    if (prompt.startsWith(TASKLIST_PREFIX)) return "CTO: onaylanan kararı görev listesine bölüyor";
+    if (TASK_PROMPT_PATTERN.test(prompt)) return (prompt.split("\n")[0] ?? "").trim();
+    if (prompt.startsWith(COUNCIL_TASK_HEAD)) return "Konsey: proje özeti için karar veriyor";
+    if (prompt.startsWith(REVIEW_HEAD)) return "Reviewer: Coder'ın sonuçlarını inceliyor";
+    return null;
   }
 
   type CtoTaskState = "pending" | "running" | "done" | "error";
@@ -1255,6 +1271,7 @@ const VyronModel = (() => {
     isEvaluationPrompt,
     ctoStages,
     ctoTaskPlan,
+    chainPromptTitle,
     composeTaskListRequest,
     extractTasks,
     composeTaskPrompt,

@@ -191,7 +191,7 @@ setTaskAgentExecutor(async (agentType, prompt, project, models) => {
 setAgentAsk((agentType, prompt, models) => ruflo.ask(agentType, prompt, models));
 // Approved tools: workspace folder from a native dialog, native approval dialogs, confined executors.
 const tools = createProductionToolRunner(() => mainWindow);
-setToolRunner((task, ask) => tools.run(task, ask));
+setToolRunner((task, ask, onProgress) => tools.run(task, ask, onProgress));
 
 /** Stops only what this app started: the Ruflo runtime and the local AI services. */
 function shutdownServices(): Promise<unknown> {

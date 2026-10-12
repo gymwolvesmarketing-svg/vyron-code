@@ -558,6 +558,19 @@ describe("CTO progress stages", () => {
   });
 });
 
+describe("chain prompt titles", () => {
+  const m = model as any;
+  it("gives every CTO chain prompt a short title and leaves user-typed prompts alone", () => {
+    expect(m.chainPromptTitle(m.composeCouncilTask("Hedef"))).toBe("Konsey: proje özeti için karar veriyor");
+    expect(m.chainPromptTitle(m.composeEvaluation("karar"))).toBe("CTO: Konsey kararını değerlendiriyor");
+    expect(m.chainPromptTitle(m.composeTaskListRequest("karar"))).toBe("CTO: onaylanan kararı görev listesine bölüyor");
+    expect(m.chainPromptTitle(m.composeTaskPrompt(2, ["A", "B"], "karar"))).toBe("[Görev 2/2] B");
+    expect(m.chainPromptTitle(m.composeReviewPrompt(["A"], ["bitti"]))).toBe("Reviewer: Coder'ın sonuçlarını inceliyor");
+    expect(m.chainPromptTitle("Kargo takip sitesi yapalım")).toBeNull();
+    expect(m.chainPromptTitle("Aşağıdaki hatayı düzelt")).toBeNull();
+  });
+});
+
 describe("CTO task plan", () => {
   const m = model as any;
   const t = (over: any) => ({ prompt: "p", agent: null, labels: ["SubAgent: CTO"], status: "done", text: "x", ...over });

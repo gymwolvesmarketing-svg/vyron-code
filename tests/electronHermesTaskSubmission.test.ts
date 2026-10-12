@@ -518,6 +518,28 @@ describe("sendTask - approved tools (tools: true)", () => {
     expect((options.headers as Record<string, string>).Authorization).toBe("Bearer " + PLACEHOLDER_CREDENTIAL);
   });
 
+  it("shows the steps a running tool task has finished (bounded lines) only while sending, and not afterwards", async () => {
+    await authorizeAndConfigure();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    setToolRunner(async (_task, _ask, onProgress) => {
+      onProgress?.("✓ okuma a.txt");
+      onProgress?.("x".repeat(500));
+      await gate;
+      return { ok: true as const, text: "bitti" };
+    });
+    const pending = sendTask({ draft: VALID_DRAFT, tools: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const during = getTaskSubmissionState();
+    expect(during.state).toBe("sending");
+    expect(during.progress?.[0]).toBe("✓ okuma a.txt");
+    expect(during.progress?.[1]?.length).toBeLessThanOrEqual(200);
+    release();
+    const done = await pending;
+    expect(done).toEqual({ state: "completed", text: "bitti", truncated: false });
+    expect(getTaskSubmissionState()).toEqual({ state: "completed", text: "bitti", truncated: false });
+  });
+
   it("a failed model step is reported to the loop as null, never as an exception", async () => {
     await authorizeAndConfigure();
     setToolRunner(async (_task, ask) => {
@@ -695,5 +717,16 @@ describe("tasks with tools use the tools model for every role", () => {
     setAgentAsk(null);
     setTaskAgentExecutor(null);
     setToolRunner(null);
+  });
+});
+
+describe("request time limit", () => {
+  it("lets a slow model step finish: the limit is at least 5 minutes (Kimi K3 measured 65 s per tool step and ~4.5 min per Konsey round)", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const source = fs.readFileSync(path.join(__dirname, "..", "electron", "hermesTaskSubmission.ts"), "utf8");
+    const found = source.match(/const SEND_TIMEOUT_MS = ([\d_]+);/);
+    expect(found).not.toBeNull();
+    expect(Number((found![1] ?? "0").replace(/_/g, ""))).toBeGreaterThanOrEqual(300_000);
   });
 });

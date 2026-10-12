@@ -42,6 +42,7 @@ export interface Harness {
     copyResult: { copied: boolean } | "throw";
     sendResult: FakeTaskResult;
     sendQueue: FakeTaskResult[];
+    livePoll: { state: string; text: null; truncated: boolean; progress?: string[] } | null;
     sendGate: Promise<void> | null;
     sendThrows: boolean;
     memoryClearResult: boolean;
@@ -80,6 +81,7 @@ export function setup(options: SetupOptions = {}): Harness {
     copyResult: { copied: true },
     sendResult: { state: "completed", text: "Yanıt metni", truncated: false },
     sendQueue: [],
+    livePoll: null,
     sendGate: null,
     sendThrows: false,
     memoryClearResult: true,
@@ -149,7 +151,7 @@ export function setup(options: SetupOptions = {}): Harness {
             },
           },
           hermes: {
-            getTaskSubmissionState: async () => ({ state: "idle", text: null, truncated: false }),
+            getTaskSubmissionState: async () => behavior.livePoll ?? { state: "idle", text: null, truncated: false },
             sendTask: async (request: { draft: string }) => {
               calls.send.push(request);
               if (behavior.sendGate) await behavior.sendGate;

@@ -425,3 +425,11 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible), textarea:focu
 .cto-task.cto-done .cto-task-state { color: rgb(80, 200, 120); }
 .cto-task.cto-running .cto-task-state { color: rgb(129, 140, 248); }
 .cto-task.cto-error .cto-task-state { color: rgb(230, 80, 80); }
+
+/* Live steps of a running tool task (what was read, written or run so far). */
+.working-progress { list-style: none; margin: 6px 0 0 28px; padding: 0; font-size: 12px; opacity: 0.8; display: flex; flex-direction: column; gap: 2px; }
+.working-progress:empty { display: none; }
+
+/* The CTO chain long prompts: the full text sits in a collapsed block under the short title. */
+.user-full { margin-top: 6px; font-size: 12px; opacity: 0.85; }
+.user-full summary { cursor: pointer; }

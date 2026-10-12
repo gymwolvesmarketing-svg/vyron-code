@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   MAX_CALLS_PER_REPLY,
   MAX_TOOL_CALLS,
+  MAX_ACTION_NUDGES,
   MAX_COMMAND_CHARS,
   MAX_LOG_LINES,
   MAX_PATH_CHARS,
@@ -12,6 +13,7 @@ import {
   MAX_TOOL_STEPS,
   MAX_TRANSCRIPT_CHARS,
   MAX_WRITE_CHARS,
+  TOOL_NUDGE,
   TOOL_PROTOCOL,
   TOOL_REMINDER,
   TOOL_REMINDER_FINAL,
@@ -20,6 +22,8 @@ import {
   boundOutput,
   flattenTranscript,
   isCatastrophicCommand,
+  isEmptyOrAnnouncement,
+  isReadOnlyCommand,
   needsApproval,
   parseToolCall,
   parseToolCalls,
@@ -100,9 +104,19 @@ describe("tool protocol and parsing", () => {
       { tool: "list_dir", path: "." },
       { tool: "read_file", path: "a" },
       { tool: "write_file", path: "a", content: "" },
-      { tool: "run_command", command: "dir" },
+      { tool: "run_command", command: "npm test" },
+      { tool: "run_command", command: "git status" },
     ];
-    expect(calls.map(needsApproval)).toEqual([false, false, true, true]);
+    expect(calls.map(needsApproval)).toEqual([false, false, true, true, false]);
+  });
+
+  it("isReadOnlyCommand lets pure reads through and never anything that can write, chain or leave the folder", () => {
+    for (const ok of ["git status", "git log --oneline -n 5", "git diff --stat", "ls", "dir", "pwd", "cat package.json", "type docs\a.md", "node --version", "docker -v", "npm -v", "head -n 20 README.md", "echo merhaba"]) {
+      expect(isReadOnlyCommand(ok), ok).toBe(true);
+    }
+    for (const bad of ["", "npm test", "node build.js", "git push", "git commit -m x", "git log --output=x.txt", "git -c core.pager=x log", "git branch -D x", "echo a > b.txt", "cat a | sh", "cat a && rm b", "echo $(whoami)", "echo %PATH%", "cat ../x", "type C:\Windows\win.ini", "cat /etc/passwd", "cat ~/.ssh/id_rsa", "dir; calc", "curl -s https://x.io", "rm -rf build", "del a.txt"]) {
+      expect(isReadOnlyCommand(bad), bad).toBe(false);
+    }
   });
 });
 
@@ -117,9 +131,12 @@ describe("approval wording and safety helpers", () => {
     expect(fresh.detail).toContain("Yeni dosya: n.txt");
     const run = approvalRequest({ tool: "run_command", command: "npm test" }, "ws1", "Proje", null)!;
     expect(run.detail).toContain("npm test");
-    expect(run.key).toBe("run|ws1|npm test");
+    expect(run.key).toBe("run|ws1");
+    expect(run.offerTask).toBe(true);
+    expect(write.offerTask).toBe(true);
     expect(approvalRequest({ tool: "read_file", path: "a" }, "ws1", "P", null)).toBeNull();
-    expect(run.key).not.toBe(approvalRequest({ tool: "run_command", command: "npm test " + "&& calc" }, "ws1", "Proje", null)!.key);
+    // "Bu klasörde her zaman izin ver" covers every command of the folder (the catastrophic ones are refused regardless).
+    expect(run.key).toBe(approvalRequest({ tool: "run_command", command: "npm test " + "&& calc" }, "ws1", "Proje", null)!.key);
     expect(run.key).not.toBe(approvalRequest({ tool: "run_command", command: "npm test" }, "ws2", "Proje", null)!.key);
   });
 
@@ -315,18 +332,29 @@ describe("runToolLoop", () => {
   it("asks before every write and command, executes only after approval, and reports a refusal to the model", async () => {
     const choices: ApprovalChoice[] = ["once", "deny", "always"];
     const { deps, approvals, executed, seen } = makeDeps(
-      ['{"tool":"write_file","path":"a.txt","content":"1"}', '{"tool":"run_command","command":"dir"}', '{"tool":"write_file","path":"b.txt","content":"2"}', "SON"],
+      ['{"tool":"write_file","path":"a.txt","content":"1"}', '{"tool":"run_command","command":"npm test"}', '{"tool":"write_file","path":"b.txt","content":"2"}', "SON"],
       { approve: async (request) => (approvals.push(request), choices.shift() ?? "deny") },
     );
     const result = await runToolLoop(deps, "g");
-    expect(approvals.map((a) => a.key)).toEqual(["write|ws1", "run|ws1|dir", "write|ws1"]);
+    expect(approvals.map((a) => a.key)).toEqual(["write|ws1", "run|ws1", "write|ws1"]);
     expect(executed.map((c) => c.tool)).toEqual(["write_file", "write_file"]);
     expect(seen[2]!.at(-1)!.content).toContain("kullanıcı bu işlemi reddetti");
-    expect(result.ok && result.text).toContain("✗ reddedildi: komut dir");
+    expect(result.ok && result.text).toContain("✗ reddedildi: komut npm test");
+  });
+
+  it("'task' covers every later write and command of this run but never a page action, and a read-only command is not asked at all", async () => {
+    const asked: string[] = [];
+    const { deps, executed } = makeDeps(
+      ['{"tool":"write_file","path":"a.txt","content":"1"}', '{"tool":"run_command","command":"npm test"}', '{"tool":"write_file","path":"b.txt","content":"2"}', '{"tool":"run_command","command":"git status"}', "SON"],
+      { approve: async (request) => (asked.push(request.key), "task") },
+    );
+    await runToolLoop(deps, "g");
+    expect(asked).toEqual(["write|ws1"]);
+    expect(executed.map((c) => c.tool)).toEqual(["write_file", "run_command", "write_file", "run_command"]);
   });
 
   it("does not run a tool when the approval helper cannot describe it (safe default = deny)", async () => {
-    const { deps, executed } = makeDeps(['{"tool":"run_command","command":"dir"}', "SON"], { approve: async () => "deny" });
+    const { deps, executed } = makeDeps(['{"tool":"run_command","command":"npm test"}', "SON"], { approve: async () => "deny" });
     await runToolLoop(deps, "g");
     expect(executed).toHaveLength(0);
   });
@@ -355,7 +383,8 @@ describe("runToolLoop", () => {
     expect(result.ok && result.text).toContain("Özet: yeterince baktım");
     const stubborn = makeDeps([...endless, '{"tool":"list_dir","path":"."}']);
     const second = await runToolLoop(stubborn.deps, "g");
-    expect(second.ok && second.text).toContain("iş tamamlanamadı");
+    expect(second.ok && second.text).toContain("iş yarım kaldı");
+    expect(second.ok && second.text).toContain("Devam et");
     expect(stubborn.executed).toHaveLength(MAX_TOOL_STEPS);
   });
 
@@ -365,6 +394,56 @@ describe("runToolLoop", () => {
     const { deps } = makeDeps(['{"tool":"read_file","path":"x"}', "SON"], { execute: async () => ({ ok: false, text: "yok" }) });
     const result = await runToolLoop(deps, "g");
     expect(result.ok && result.text).toContain("! başarısız: okuma x");
+  });
+});
+
+describe("live progress", () => {
+  it("reports one line per finished step and per nudge while the loop runs", async () => {
+    const lines: string[] = [];
+    const { deps } = makeDeps(['{"tool":"read_file","path":"a.txt"}', "Şimdi dosyaları yazıyorum.", '{"tool":"list_dir","path":"."}', "Bitti: iki adım yapıldı."]);
+    await runToolLoop({ ...deps, onProgress: (line) => lines.push(line) }, "g");
+    expect(lines).toEqual(["✓ okuma a.txt", "↻ model işi anlattı ya da boş döndü, araç isteği için dürtüldü", "✓ listeleme ."]);
+  });
+});
+
+describe("a reply that only announces the next action, or is empty, after tools ran", () => {
+  it("nudges an announcement ('...yazıyorum.') instead of ending the task, then follows the JSON the model finally writes", async () => {
+    const { deps, seen, executed } = makeDeps([
+      '{"tool":"list_dir","path":"."}',
+      "Devam ediyorum: eksik kısım iskelet. İlk olarak iskelet dosyalarını yazıyorum.",
+      '{"tool":"write_file","path":"apps/a.txt","content":"X"}',
+      "apps/a.txt oluşturuldu ve doğrulandı.",
+    ]);
+    const result = await runToolLoop(deps, "P0");
+    expect(seen[2]!.at(-1)!.content).toBe(TOOL_NUDGE);
+    expect(executed.map((c) => c.tool)).toEqual(["list_dir", "write_file"]);
+    expect(result.ok && result.text).toContain("oluşturuldu ve doğrulandı");
+    expect(result.ok && result.text).toContain("✓ yazma apps/a.txt");
+  });
+
+  it("nudges an empty reply (the model spent its whole budget thinking)", async () => {
+    const { deps, seen } = makeDeps(['{"tool":"list_dir","path":"."}', "", "Klasör boş, rapor: yapılacak bir şey yok."]);
+    const result = await runToolLoop(deps, "g");
+    expect(seen[2]!.at(-1)!.content).toBe(TOOL_NUDGE);
+    expect(seen[2]!.at(-2)!.content).toBe("(boş yanıt)");
+    expect(result.ok && result.text).toContain("rapor: yapılacak bir şey yok");
+  });
+
+  it("nudges at most MAX_ACTION_NUDGES times, then the reply stands (no endless loop)", async () => {
+    const stubborn = Array(10).fill("Şimdi dosyaları yazıyorum.") as string[];
+    const { deps, seen } = makeDeps(['{"tool":"list_dir","path":"."}', ...stubborn]);
+    const result = await runToolLoop(deps, "g");
+    expect(seen).toHaveLength(1 + 1 + MAX_ACTION_NUDGES);
+    expect(result.ok && result.text.startsWith("Şimdi dosyaları yazıyorum.")).toBe(true);
+  });
+
+  it("a normal final summary after tools is not nudged, and isEmptyOrAnnouncement is conservative", async () => {
+    const { deps, seen } = makeDeps(['{"tool":"list_dir","path":"."}', "Klasörde iki dosya var: a.txt ve b.txt."]);
+    await runToolLoop(deps, "g");
+    expect(seen).toHaveLength(2);
+    expect(isEmptyOrAnnouncement("Klasörde iki dosya var.")).toBe(false);
+    expect(isEmptyOrAnnouncement("Dosyayı şimdi oluşturuyorum")).toBe(true);
+    expect(isEmptyOrAnnouncement("  \n ")).toBe(true);
   });
 });
 
@@ -443,11 +522,12 @@ describe("static properties", () => {
     expect(code).toContain('["/d", "/s", "/c"');
     expect(code).not.toMatch(/env:\s*process\.env|shell:\s*true|execSync/);
   });
-  it("the approval dialog is native and offers exactly the three choices", () => {
+  it("the approval dialog is native, with Reddet as default: four choices for writes and commands, three for everything else", () => {
     const code = fs.readFileSync(path.join(dir, "toolAdapters.ts"), "utf8");
-    expect(code).toContain('buttons: ["Bir kez izin ver", "Her zaman izin ver", "Reddet"]');
-    expect(code).toContain("defaultId: 2");
-    expect(code).toContain("cancelId: 2");
+    expect(code).toContain('["Bir kez izin ver", "Bu görevde hepsine izin ver", "Bu klasörde her zaman izin ver", "Reddet"]');
+    expect(code).toContain('["Bir kez izin ver", "Her zaman izin ver", "Reddet"]');
+    expect(code).toContain("defaultId: buttons.length - 1");
+    expect(code).toContain("cancelId: buttons.length - 1");
     expect(code).toContain("dialog.showMessageBox");
   });
 });
@@ -502,8 +582,10 @@ describe("workspace overview (the model starts from the real project)", () => {
     expect(none.seen[0]![0]!.content).not.toContain("OZET");
   });
 
-  it("allows a real build session: 30 steps, larger outputs and transcript", () => {
-    expect(MAX_TOOL_STEPS).toBe(30);
+  it("allows a real build session: 150 steps (a P0 scaffold hit the old 30-step ceiling after ~73 actions), larger outputs and transcript", () => {
+    expect(MAX_TOOL_STEPS).toBe(150);
+    expect(MAX_TOOL_CALLS).toBe(600);
+    expect(MAX_LOG_LINES).toBe(100);
     expect(MAX_TOOL_OUTPUT_CHARS).toBe(60_000);
     expect(MAX_TRANSCRIPT_CHARS).toBe(350_000);
     expect(TOOL_PROTOCOL).toContain("Var olan kodu okumadan üzerine yazma");

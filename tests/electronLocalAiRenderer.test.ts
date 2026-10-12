@@ -1439,10 +1439,10 @@ describe("removed review flow and static page contract", () => {
     }
   });
 
-  it("the renderer talks to the main process through exactly the fixed bridge methods (no more than eight)", () => {
+  it("the renderer talks to the main process through exactly the fixed bridge methods (no more than nine)", () => {
     const calls = new Set([...rendererSource.matchAll(/api\.(localAi|hermes|app)\.(\w+)\(/g)].map((m) => `${m[1]}.${m[2]}`));
     expect(calls).toEqual(
-      new Set(["localAi.getLocalAiState", "localAi.retryLocalAiStartup", "localAi.copyLocalAiDiagnostics", "hermes.sendTask", "hermes.clearTaskSubmission", "app.toggleDevTools", "app.clearAgentMemory"]),
+      new Set(["localAi.getLocalAiState", "localAi.retryLocalAiStartup", "localAi.copyLocalAiDiagnostics", "hermes.sendTask", "hermes.getTaskSubmissionState", "hermes.clearTaskSubmission", "app.toggleDevTools", "app.clearAgentMemory"]),
     );
   });
 
@@ -1562,6 +1562,22 @@ describe("managers run through Ruflo roles", () => {
     expect(h.calls.send[1]!.draft).toContain("Yanıt metni");
   });
 
+  it("a running tool task shows the steps polled from the main process, updating only the live list", async () => {
+    const h = await start();
+    let release: () => void = () => undefined;
+    h.behavior.sendGate = new Promise<void>((resolve) => { release = resolve; });
+    h.behavior.livePoll = { state: "sending", text: null, truncated: false, progress: ["✓ okuma a.txt", "✓ yazma b.txt"] };
+    h.type("Uzun görev");
+    h.click(h.el("send-btn"));
+    await new Promise((resolve) => setTimeout(resolve, 1700));
+    const lines = [...h.doc.querySelectorAll(".working-progress li")].map((li) => li.textContent);
+    expect(lines).toEqual(["✓ okuma a.txt", "✓ yazma b.txt"]);
+    h.behavior.livePoll = null;
+    release();
+    await h.flush();
+    expect(h.doc.querySelector(".working-progress")).toBeNull();
+  });
+
   it("a Konsey decision also offers 'Coder'a devret' and fills the composer unsent", async () => {
     const h = await start();
     h.click(h.el("plus-btn"));
@@ -1669,6 +1685,31 @@ describe("managers run through Ruflo roles", () => {
     expect(h.calls.send[6]!.draft).toContain("Şema kuruldu");
     expect(h.calls.send[6]!.draft).toContain("API yazıldı");
     expect(h.doc.querySelector(".cto-stage[data-stage=review]")?.className).toContain("cto-done");
+  });
+
+  it("CTO chain turns show a short title with the full text collapsed, and carry no earlier-conversation preamble", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "CTO"));
+    h.behavior.sendQueue = [
+      { state: "completed", text: "[[PROJE-ÖZETİ]]Hedef X[[/PROJE-ÖZETİ]]", truncated: false },
+      { state: "completed", text: "KONSEY KARARI", truncated: false },
+      { state: "completed", text: "Değerlendirme", truncated: false },
+    ];
+    await sendTask(h, "Proje X");
+    h.click([...h.doc.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Konseye ver")!);
+    await h.flush();
+    await h.flush();
+    const titles = [...h.doc.querySelectorAll(".user-block > .user-text")].map((n) => n.textContent);
+    expect(titles).toContain("Konsey: proje özeti için karar veriyor");
+    expect(titles).toContain("CTO: Konsey kararını değerlendiriyor");
+    expect(h.doc.querySelectorAll(".user-full summary")).toHaveLength(2);
+    expect(h.doc.querySelector(".user-full .user-text")?.textContent).toContain("Hedef X");
+    // The chain turns hold the whole context themselves, so the earlier turns are not repeated in front of them.
+    expect(h.calls.send[1]!.draft.startsWith("Aşağıdaki proje özeti")).toBe(true);
+    expect(h.calls.send[1]!.draft).not.toContain("Önceki konuşma");
+    expect(h.calls.send[2]!.draft).not.toContain("Önceki konuşma");
   });
 
   it("CTO: an answer without a brief has no 'Konseye ver'; a failed Konsey stops the chain", async () => {
@@ -1898,6 +1939,32 @@ describe("workspace folder = project: tools are on, the folder follows the proje
     await h.flush();
     await sendTask(h, "Yöneticiyle yaz");
     expect(h.calls.send[2]).toEqual({ draft: "Yöneticiyle yaz", agent: "reviewer", project: "aetheris", tools: true, models: MODELS });
+  });
+
+  it("a tool task that stopped half way offers 'Devam et', which re-sends a continue request to the same Manager with tools; a finished task offers none", async () => {
+    const h = await start();
+    h.click(h.el("new-task-btn"));
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "Coder"));
+    h.click(h.doc.querySelector<HTMLElement>(AETHERIS_ADD));
+    h.click(h.el("workspace-btn"));
+    await h.flush();
+    h.behavior.sendQueue = [
+      { state: "completed", text: "Adım sınırına ulaşıldı; iş yarım kaldı. Yapılanlar aşağıda.\n\n— Araç günlüğü:\n✓ yazma a.py", truncated: false },
+      { state: "completed", text: "Kalan işler tamamlandı.", truncated: false },
+    ];
+    await sendTask(h, "P0 iskeletini yaz");
+    expect(h.calls.send[0]).toMatchObject({ agent: "coder", tools: true });
+    const resume = [...h.doc.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Devam et");
+    expect(resume).toBeTruthy();
+    h.click(resume!);
+    await h.flush();
+    expect(h.calls.send).toHaveLength(2);
+    expect(h.calls.send[1]).toMatchObject({ agent: "coder", tools: true });
+    expect(h.calls.send[1]!.draft).toContain("Kaldığın yerden devam et");
+    // Only the half-done turn has the button; the finished one that followed has none.
+    expect([...h.doc.querySelectorAll<HTMLElement>("button")].filter((b) => b.textContent === "Devam et")).toHaveLength(1);
   });
 
   it("the Konsey never runs the tool loop, even in a project with a folder: its four seats must really deliberate", async () => {

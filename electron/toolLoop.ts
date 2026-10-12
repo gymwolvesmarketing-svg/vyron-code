@@ -7,6 +7,7 @@
  * actions run per task, and the answer ends with a log of what was really done or refused.
  */
 import {
+  MAX_ACTION_NUDGES,
   MAX_CALLS_PER_REPLY,
   MAX_TOOL_CALLS,
   MAX_TOOL_OUTPUT_CHARS,
@@ -14,9 +15,12 @@ import {
   approvalRequest,
   boundOutput,
   describeCall,
+  TOOL_NUDGE,
   TOOL_REMINDER,
   TOOL_REMINDER_FINAL,
   firstToolMessage,
+  isEmptyOrAnnouncement,
+  logLine,
   needsApproval,
   parseToolCalls,
   toolLogFooter,
@@ -48,6 +52,8 @@ export interface ToolLoopDeps {
   overview?(): string | null;
   /** For a click / type: the site that is open and the element's label, taken BEFORE the action; null = no page is open. */
   browserTarget?(call: ToolCall): BrowserTarget | null;
+  /** One short line per finished step (and per nudge), so the user can watch a long task while it runs. */
+  onProgress?(line: string): void;
 }
 
 export type ToolLoopResult = { readonly ok: true; readonly text: string } | { readonly ok: false };
@@ -57,6 +63,9 @@ export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<Too
   const log: LogEntry[] = [];
   let reminders = 0;
   let executed = 0;
+  let nudges = 0;
+  // "Bu görevde hepsine izin ver": file writes and commands of THIS task run are no longer asked (never kept beyond the task).
+  const session = { allowTask: false };
 
   for (let step = 0; step < MAX_TOOL_STEPS; step += 1) {
     const reply = await deps.ask(trimTranscript(messages));
@@ -69,6 +78,16 @@ export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<Too
         messages = messages.concat([
           { role: "assistant", content: reply },
           { role: "user", content: reminders === 1 ? TOOL_REMINDER : TOOL_REMINDER_FINAL },
+        ]);
+        continue;
+      }
+      // After tools ran, an empty reply or one that only announces the next action is not a final answer: nudge, a few times at most.
+      if (log.length > 0 && nudges < MAX_ACTION_NUDGES && isEmptyOrAnnouncement(reply)) {
+        nudges += 1;
+        deps.onProgress?.("↻ model işi anlattı ya da boş döndü, araç isteği için dürtüldü");
+        messages = messages.concat([
+          { role: "assistant", content: reply.trim().length === 0 ? "(boş yanıt)" : reply },
+          { role: "user", content: TOOL_NUDGE },
         ]);
         continue;
       }
@@ -87,7 +106,9 @@ export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<Too
         parts.push("Araç çağrısı sınırına ulaşıldı; bu istek çalıştırılmadı.");
       } else {
         executed += 1;
-        parts.push(await handle(deps, request.call, log, perResult));
+        const before = log.length;
+        parts.push(await handle(deps, request.call, log, perResult, session));
+        for (const entry of log.slice(before)) deps.onProgress?.(logLine(entry));
       }
     }
     const feedback = requests.length === 1 ? (parts[0] ?? "") : parts.map((part, index) => "[" + String(index + 1) + "/" + String(parts.length) + "] " + part).join("\n\n");
@@ -101,7 +122,7 @@ export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<Too
   messages = messages.concat({ role: "user", content: "Adım sınırına ulaşıldı. Araç kullanmadan, şimdiye kadarki işi özetleyen nihai yanıtı düz metin olarak yaz." });
   const closing = await deps.ask(trimTranscript(messages));
   if (closing === null) return interrupted(log);
-  const text = parseToolCalls(closing).length === 0 ? closing : "Adım sınırına ulaşıldı; iş tamamlanamadı.";
+  const text = parseToolCalls(closing).length === 0 ? closing : "Adım sınırına ulaşıldı; iş yarım kaldı. Yapılanlar aşağıda; 'Devam et' ile kaldığın yerden sürdürebilirsin.";
   return { ok: true, text: text + toolLogFooter(log) };
 }
 
@@ -111,10 +132,10 @@ export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<Too
  */
 function interrupted(log: LogEntry[]): ToolLoopResult {
   if (log.length === 0) return { ok: false };
-  return { ok: true, text: "Model yanıt vermeyi bıraktı; iş yarım kaldı. Şimdiye kadar yapılanlar aşağıda; aynı görevi tekrar göndererek kaldığın yerden devam edebilirsin." + toolLogFooter(log) };
+  return { ok: true, text: "Model yanıt vermeyi bıraktı; iş yarım kaldı. Şimdiye kadar yapılanlar aşağıda; 'Devam et' ile kaldığın yerden sürdürebilirsin." + toolLogFooter(log) };
 }
 
-async function handle(deps: ToolLoopDeps, call: ToolCall, log: LogEntry[], maxOutput: number = MAX_TOOL_OUTPUT_CHARS): Promise<string> {
+async function handle(deps: ToolLoopDeps, call: ToolCall, log: LogEntry[], maxOutput: number = MAX_TOOL_OUTPUT_CHARS, session: { allowTask: boolean } = { allowTask: false }): Promise<string> {
   const workspace = deps.workspace();
   if (workspace === null) {
     log.push({ outcome: "failed", text: describeCall(call) + " — çalışma klasörü seçili değil" });
@@ -125,10 +146,12 @@ async function handle(deps: ToolLoopDeps, call: ToolCall, log: LogEntry[], maxOu
   const pageAction = call.tool === "browser_click" || call.tool === "browser_type";
   const target = pageAction ? (deps.browserTarget?.(call) ?? null) : null;
   const label = target ? target.label : null;
-  if (needsApproval(call) && !(pageAction && target === null)) {
+  const coveredByTask = session.allowTask && (call.tool === "write_file" || call.tool === "run_command");
+  if (needsApproval(call) && !coveredByTask && !(pageAction && target === null)) {
     const existed = call.tool === "write_file" ? deps.fileExists(call.path) : null;
     const request = approvalRequest(call, workspace.key, workspace.folderName, existed, target);
     const choice: ApprovalChoice = request === null ? "deny" : await deps.approve(request);
+    if (choice === "task") session.allowTask = true;
     if (choice === "deny") {
       log.push({ outcome: "denied", text: describeCall(call, label) });
       return "Araç sonucu: kullanıcı bu işlemi reddetti. Sonraki adımın JSON'unu yaz ya da düz metinle yanıtla.";

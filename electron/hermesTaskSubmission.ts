@@ -38,6 +38,7 @@ import { flattenTranscript, type ChatMessage } from "./toolPolicy";
 export type ToolRunnerFn = (
   task: string,
   ask: (messages: readonly ChatMessage[]) => Promise<string | null>,
+  onProgress?: (line: string) => void,
 ) => Promise<{ readonly ok: true; readonly text: string } | { readonly ok: false }>;
 
 /** One raw Ruflo agent turn (no memory, larger prompt allowance) used by tool runs with a Manager. */
@@ -77,10 +78,10 @@ export function setTaskAgentExecutor(executor: TaskAgentExecutor | null): void {
 const MAX_DRAFT_LENGTH = 100_000;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
 
-/** A new, independently disclosed bound for this module's one request — generous enough for a
- * real agent turn (which can be far slower than the fixed `/health` probe's own 10s bound in
- * electron/hermesApiServer.ts), still finite. */
-const SEND_TIMEOUT_MS = 60_000;
+/** The bound for one model request (and for each step of a tool-loop task). Measured: Kimi K3 thinks 65 s on a tool step and up to
+ * ~4.5 min in a Konsey round, so the old 60 s cut working answers off ("Model yanıt vermeyi bıraktı"). 10 minutes matches Ruflo's
+ * own limit; it is still finite. */
+const SEND_TIMEOUT_MS = 600_000;
 
 /** Bounded renderer-facing response size — independent of whatever token/usage accounting the
  * server itself reports, which this module never forwards. */
@@ -124,11 +125,23 @@ function resetToIdle(): void {
   ambientState = "idle";
 }
 
+/** The last few steps of a running tool task (bounded short lines of what was read, written or run); shown to the user while the task runs. */
+const MAX_PROGRESS_LINES = 40;
+const MAX_PROGRESS_LINE_CHARS = 200;
+let progressLines: string[] = [];
+
+function reportProgress(line: string): void {
+  if (typeof line !== "string" || line.length === 0) return;
+  progressLines.push(line.length > MAX_PROGRESS_LINE_CHARS ? line.slice(0, MAX_PROGRESS_LINE_CHARS - 1) + "…" : line);
+  if (progressLines.length > MAX_PROGRESS_LINES) progressLines = progressLines.slice(-MAX_PROGRESS_LINES);
+}
+
 function safeState(state: AmbientState): HermesTaskSubmissionState {
   return {
     state,
     text: state === "completed" ? lastCompletedText : null,
     truncated: state === "completed" ? lastCompletedTruncated : false,
+    ...(state === "sending" && progressLines.length > 0 ? { progress: progressLines.slice() } : {}),
   };
 }
 
@@ -225,7 +238,8 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
           clearTimeout(stepTimer);
         }
       };
-      const outcome = await toolRunner(draft, ask);
+      progressLines = [];
+      const outcome = await toolRunner(draft, ask, reportProgress);
       text = outcome.ok ? outcome.text : null;
       clearTimeout(timer);
       if (generation !== generationAtStart) return getTaskSubmissionState();

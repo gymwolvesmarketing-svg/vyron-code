@@ -45,6 +45,8 @@ interface HermesTaskSubmissionState {
   readonly state: HermesTaskSubmissionAmbientState;
   readonly text: string | null;
   readonly truncated: boolean;
+  /** Short lines of the steps a running tool task has finished (only while sending). */
+  readonly progress?: readonly string[];
 }
 
 interface HermesTaskRequest {

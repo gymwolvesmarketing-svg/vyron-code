@@ -22,10 +22,10 @@ export type ToolCall =
   | { readonly tool: "browser_type"; readonly index: number; readonly text: string; readonly submit: boolean }
   | { readonly tool: "deep_research"; readonly query: string; readonly depth: "fast" | "max" };
 
-export const MAX_TOOL_STEPS = 30;
+export const MAX_TOOL_STEPS = 150;
 /** Tool requests taken from one reply (models often write several at once), and the ceiling for a whole task. */
 export const MAX_CALLS_PER_REPLY = 8;
-export const MAX_TOOL_CALLS = 120;
+export const MAX_TOOL_CALLS = 600;
 export const MAX_PATH_CHARS = 260;
 export const MAX_WRITE_CHARS = 2_000_000;
 export const MAX_COMMAND_CHARS = 1_000;
@@ -34,7 +34,7 @@ export const MAX_TOOL_OUTPUT_CHARS = 60_000;
 // prompt reliably; ChatGPT Web starts rejecting (413) around 250,000. Kept well under that so a long tool run does not
 // keep dropping early tool results (which made the model re-request files it had already read).
 export const MAX_TRANSCRIPT_CHARS = 350_000;
-export const MAX_LOG_LINES = 20;
+export const MAX_LOG_LINES = 100;
 export const MAX_BROWSER_URL_CHARS = 2_000;
 /** Interactive page elements listed (and addressable by index) after each page read. */
 export const MAX_BROWSER_ELEMENTS = 150;
@@ -42,18 +42,46 @@ export const MAX_BROWSER_TYPE_CHARS = 5_000;
 /** Longest question accepted for a Gemini deep-research run (mirrors electron/deepResearch.ts MAX_RESEARCH_QUERY_CHARS). */
 export const MAX_RESEARCH_QUERY = 4_000;
 
-export type ApprovalChoice = "once" | "always" | "deny";
+export type ApprovalChoice = "once" | "task" | "always" | "deny";
 
 export interface ApprovalRequest {
   readonly title: string;
   readonly message: string;
   readonly detail: string;
-  /** Stable key for "always allow": scoped to the workspace and the kind (and, for commands, the exact text). */
+  /** Stable key for "always allow": scoped to the workspace and the kind (for commands: every command of the folder). */
   readonly key: string;
+  /** File writes and commands also offer "allow everything of this kind for the rest of this task". */
+  readonly offerTask?: boolean;
+}
+
+/**
+ * Commands that only look at things need no approval: a fixed set of read verbs (and a few pure-read git subcommands, or "<tool> --version"),
+ * with no shell operators, substitution, redirection, environment references, absolute paths, "~" or "..", so they cannot write anything
+ * or read outside the workspace folder. Everything else asks (or is covered by "allow for this task / for this folder").
+ */
+const SHELL_OPERATORS = /[&|;<>`$^%(){}\r\n]/;
+const OUTSIDE_PATH = /^([A-Za-z]:|[\\/]|~)|\.\./;
+const READ_VERBS = new Set(["ls", "dir", "pwd", "cat", "type", "head", "tail", "wc", "echo", "where", "which", "hostname", "whoami", "date", "tree"]);
+const GIT_READ = new Set(["status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "shortlog", "describe"]);
+const GIT_FORBIDDEN_ARG = /output|ext-diff|textconv|exec|^-c$/i;
+export function isReadOnlyCommand(command: string): boolean {
+  const text = command.trim();
+  if (text.length === 0 || text.length > 300 || SHELL_OPERATORS.test(text)) return false;
+  const words = text.split(/\s+/);
+  const verb = (words[0] ?? "").toLowerCase();
+  const args = words.slice(1);
+  if (args.some((arg) => OUTSIDE_PATH.test(arg))) return false;
+  if (args.length === 1 && /^(--version|-v|-V|version)$/.test(args[0] ?? "") && /^[a-z0-9._-]+$/i.test(verb)) return true;
+  if (verb === "git") {
+    const sub = (args[0] ?? "").toLowerCase();
+    return GIT_READ.has(sub) && !args.slice(1).some((arg) => GIT_FORBIDDEN_ARG.test(arg));
+  }
+  return READ_VERBS.has(verb);
 }
 
 /** Everything that changes something (a file, a process, a page, a navigation) is approved by the user; reading is not. */
 export function needsApproval(call: ToolCall): boolean {
+  if (call.tool === "run_command" && isReadOnlyCommand(call.command)) return false;
   return (
     call.tool === "write_file" ||
     call.tool === "run_command" ||
@@ -194,6 +222,22 @@ export const TOOL_REMINDER =
 export const TOOL_REMINDER_FINAL =
   "Araç köprüsü bu konuşmada GERÇEKTEN çalışıyor: yazdığın JSON'u Vyron Code çalıştırır ve sonucu bir sonraki mesajda sana verir. Bu bir sohbet değil, gerçek bir çalışma klasörü. 'Erişimim yok' ya da 'taranmış gibi davranamam' deme. " +
   'Şimdi YALNIZCA tek bir JSON yaz; klasörü görmek için ilk adım: {"tool":"list_dir","path":"."}';
+
+/**
+ * After tools have already run, a plain reply is normally the final answer. Two kinds of reply are not: an EMPTY one (the model
+ * spent its whole output budget thinking: measured with Kimi K3 at 4096 tokens) and one that only ANNOUNCES the next action
+ * ("İlk olarak iskelet dosyalarını yazıyorum.") without the JSON request, which would silently end the task half done.
+ * Such a reply is answered with TOOL_NUDGE, at most MAX_ACTION_NUDGES times per task; after that it stands.
+ */
+export const MAX_ACTION_NUDGES = 3;
+const ANNOUNCES_ACTION = /(yazıyorum|oluşturuyorum|başlıyorum|ekliyorum|çalıştırıyorum|hazırlıyorum|uyguluyorum|geçiyorum|okuyorum|düzeltiyorum|güncelliyorum|devam ediyorum)[\s.:!…]*$/i;
+export function isEmptyOrAnnouncement(reply: string): boolean {
+  const body = reply.trim();
+  return body.length === 0 || ANNOUNCES_ACTION.test(body);
+}
+export const TOOL_NUDGE =
+  "Son yanıtın ya boştu ya da bir işi yapacağını söyleyip durdu; ama Vyron Code yalnızca JSON araç isteklerini çalıştırır. Şimdi YALNIZCA sıradaki adımın JSON'unu yaz (kısa düşün, uzun akıl yürütme). " +
+  "İş gerçekten tamamen bittiyse, ne yaptığını özetleyen düz metin yaz ve 'yapıyorum' ile bitirme.";
 
 /** The first message of a tool run: the protocol followed by the user's task. */
 /** `overview` is a bounded, read-only listing of the workspace folder that the main process took itself (no model involved). */
@@ -391,16 +435,21 @@ export function approvalRequest(
     return {
       title: "Vyron Code — dosya yazma izni",
       message: "Yapay zeka \"" + folderName + "\" klasöründe bir dosya yazmak istiyor.",
-      detail: (existed ? "Var olan dosyanın ÜZERİNE YAZILACAK: " : "Yeni dosya: ") + call.path + "\n" + size + "\n\n\"Her zaman izin ver\", bu klasördeki tüm dosya yazmalarına izin verir.",
+      detail: (existed ? "Var olan dosyanın ÜZERİNE YAZILACAK: " : "Yeni dosya: ") + call.path + "\n" + size + "\n\n\"Bu görevde hepsine izin ver\", bu görev bitene kadar tüm dosya yazmalarına izin verir. \"Bu klasörde her zaman izin ver\", bu klasördeki tüm dosya yazmalarına kalıcı izin verir.",
       key: "write|" + workspaceKey,
+      offerTask: true,
     };
   }
   if (call.tool === "run_command") {
     return {
       title: "Vyron Code — komut çalıştırma izni",
       message: "Yapay zeka \"" + folderName + "\" klasöründe bir komut çalıştırmak istiyor.",
-      detail: call.command + "\n\n\"Her zaman izin ver\", yalnızca bu klasörde bu tam komuta izin verir.",
-      key: "run|" + workspaceKey + "|" + call.command,
+      detail:
+        call.command +
+        "\n\n\"Bu görevde hepsine izin ver\", bu görev bitene kadar her komuta izin verir. \"Bu klasörde her zaman izin ver\", bu klasördeki her komuta kalıcı izin verir. " +
+        "Disk biçimlendirme gibi yıkıcı komutlar her durumda reddedilir; izinleri ayarlardan sıfırlayabilirsin.",
+      key: "run|" + workspaceKey,
+      offerTask: true,
     };
   }
   if (call.tool === "deep_research") {
