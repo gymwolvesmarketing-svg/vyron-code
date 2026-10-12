@@ -19,7 +19,16 @@ html, body {
   background: var(--bg);
   color: var(--text);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 13px;
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+/* Keyboard focus must stay visible against the dark background — VYRON_CODE_V01_P0_
+   WORKSPACE_SHELL_REDESIGN_AUTHORIZATION's "preserve keyboard-accessible controls and
+   readable focus state" requirement. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 button {

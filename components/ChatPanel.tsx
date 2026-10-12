@@ -1,7 +1,6 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { api } from "@/lib/apiClient";
-import { SessionList } from "./SessionList";
 import type { RawTimelineEvent } from "./TaskTimeline";
 import {
   parsePendingRequestEvent,
@@ -45,15 +44,24 @@ const PHASE_LABEL: Record<Phase, string> = {
   error: "Error",
 };
 
-export function ChatPanel({
-  projectId,
-  onTimelineEvent,
-  onSessionChange,
-}: {
+export type ChatPanelHandle = {
+  startNewChat: () => void;
+  selectConversation: (localSessionId: string) => void;
+};
+
+// Conversation selection/list now lives in the persistent sidebar (Sidebar.tsx), not inside
+// this panel — VYRON_CODE_V01_P0_WORKSPACE_SHELL_REDESIGN_AUTHORIZATION's chat-first IA puts
+// "+ New chat" and the conversation rail in the left nav. This component keeps every existing
+// session-lifecycle/event-handling/AC#9 approval-clarify state and behavior exactly as it was —
+// only (a) the SessionList sub-render was removed, (b) `startNewChat`/`selectConversation` are
+// now exposed via a ref so the sidebar can call them, and (c) the internal `sessionListRefresh`
+// counter was replaced by an `onActivity` callback so the parent's sidebar list can re-fetch.
+export const ChatPanel = forwardRef<ChatPanelHandle, {
   projectId: string;
   onTimelineEvent?: (evt: RawTimelineEvent) => void;
   onSessionChange?: (sessionId: string | null) => void;
-}) {
+  onActivity?: () => void;
+}>(function ChatPanel({ projectId, onTimelineEvent, onSessionChange, onActivity }, ref) {
   const [localSessionId, setLocalSessionId] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -62,7 +70,6 @@ export function ChatPanel({
   const [interrupting, setInterrupting] = useState(false);
   const [waitingSince, setWaitingSince] = useState<number | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
-  const [sessionListRefresh, setSessionListRefresh] = useState(0);
   const [pendingRequest, setPendingRequest] = useState<PendingRequest | null>(null);
   const [respondingRequestId, setRespondingRequestId] = useState<string | null>(null);
   const [clarifyAnswerText, setClarifyAnswerText] = useState("");
@@ -141,7 +148,7 @@ export function ChatPanel({
         setPendingRequest(null);
         setRespondingRequestId(null);
         setRespondError(null);
-        setSessionListRefresh((n) => n + 1);
+        onActivity?.();
         return;
       }
       case "turn.error": {
@@ -152,7 +159,7 @@ export function ChatPanel({
         setRespondingRequestId(null);
         setRespondError(null);
         appendMessage({ id: `${Date.now()}-err`, kind: "error", text: String(p.message ?? p.error ?? "The model turn failed.") });
-        setSessionListRefresh((n) => n + 1);
+        onActivity?.();
         return;
       }
       default:
@@ -178,7 +185,7 @@ export function ChatPanel({
       onSessionChange?.(session_id);
       openEventSource(session_id);
       setPhase("active");
-      setSessionListRefresh((n) => n + 1);
+      onActivity?.();
     } catch (e: any) {
       setPhase("error");
       setErrorMessage(e.message || "Could not start a session.");
@@ -199,6 +206,8 @@ export function ChatPanel({
     openEventSource(id);
     setPhase("active");
   }
+
+  useImperativeHandle(ref, () => ({ startNewChat, selectConversation }));
 
   async function respondToPendingRequest(response: { choice?: string; answerText?: string }) {
     if (!pendingRequest || !localSessionId) return;
@@ -235,7 +244,7 @@ export function ChatPanel({
       await api.submitPrompt(localSessionId, text);
       setWaitingSince(Date.now());
       setElapsedSec(0);
-      setSessionListRefresh((n) => n + 1);
+      onActivity?.();
     } catch (e: any) {
       setPhase("error");
       setErrorMessage(e.message || "Could not send the prompt.");
@@ -250,7 +259,7 @@ export function ChatPanel({
       setPhase("interrupted");
       setWaitingSince(null);
       appendMessage({ id: `${Date.now()}-int`, kind: "system", text: "Interrupted." });
-      setSessionListRefresh((n) => n + 1);
+      onActivity?.();
     } catch (e: any) {
       appendMessage({ id: `${Date.now()}-intfail`, kind: "error", text: `Interrupt failed: ${e.message || "unknown error"}` });
     } finally {
@@ -269,105 +278,102 @@ export function ChatPanel({
   const canInterrupt = BUSY_PHASES.includes(phase) && !interrupting;
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", height: "100%" }}>
-      <div style={{ borderRight: "1px solid var(--panel-border)", overflowY: "auto", padding: 4 }}>
-        <SessionList
-          projectId={projectId}
-          activeLocalSessionId={localSessionId}
-          refreshToken={sessionListRefresh}
-          onNewChat={startNewChat}
-          onSelect={selectConversation}
-        />
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--panel-border)", display: "flex", gap: 10, alignItems: "center" }}>
+        <span className="badge">Chat / Cowork</span>
+        <span style={{ color: phase === "error" ? "var(--danger)" : phase === "active" || phase === "completed" ? "var(--ok)" : "var(--text-dim)" }}>
+          {PHASE_LABEL[phase]}
+          {phase === "waiting_for_provider" && ` — ${elapsedSec}s`}
+        </span>
+        {canInterrupt && (
+          <button onClick={interrupt} disabled={interrupting} style={{ marginLeft: "auto" }} aria-label="Interrupt the current turn">
+            {interrupting ? "Interrupting…" : "■ Stop"}
+          </button>
+        )}
+        {errorMessage && <span style={{ color: "var(--danger)", fontSize: 11 }}>{errorMessage}</span>}
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-        <div style={{ padding: 8, borderBottom: "1px solid var(--panel-border)", display: "flex", gap: 8, alignItems: "center" }}>
-          <span className="badge">Chat / Cowork</span>
-          <span style={{ color: phase === "error" ? "var(--danger)" : phase === "active" || phase === "completed" ? "var(--ok)" : "var(--text-dim)" }}>
-            {PHASE_LABEL[phase]}
-            {phase === "waiting_for_provider" && ` — ${elapsedSec}s`}
-          </span>
-          {canInterrupt && (
-            <button onClick={interrupt} disabled={interrupting} style={{ marginLeft: "auto" }} aria-label="Interrupt the current turn">
-              {interrupting ? "Interrupting…" : "■ Stop"}
-            </button>
-          )}
-          {errorMessage && <span style={{ color: "var(--danger)", fontSize: 11 }}>{errorMessage}</span>}
-        </div>
-
-        <div style={{ flex: 1, overflowY: "auto", padding: 8 }}>
-          {phase === "idle" && messages.length === 0 && (
-            <div style={{ color: "var(--text-dim)" }}>
-              No active conversation. Click <strong>+ New chat</strong> to start one, or pick a previous conversation from the list.
-            </div>
-          )}
-          {messages.map((item) => (
-            <div
-              key={item.id}
-              style={{
-                marginBottom: 6,
-                whiteSpace: "pre-wrap",
-                color: MESSAGE_COLOR[item.kind],
-                fontFamily: item.kind === "system" || item.kind === "error" ? "ui-monospace, monospace" : "inherit",
-                fontSize: item.kind === "system" || item.kind === "error" ? 11 : 13,
-              }}
-            >
-              {item.kind === "user" ? `› ${item.text}` : item.text}
-            </div>
-          ))}
-        </div>
-
-        {pendingRequest && (
-          <div
-            role="alert"
-            style={{ padding: 8, borderTop: "1px solid var(--panel-border)", background: "var(--panel-bg-raised, rgba(255,255,255,0.03))" }}
-          >
-            <div className="badge">{pendingRequest.kind === "approval" ? "Approval requested" : "Clarification requested"}</div>
-            <div style={{ marginTop: 4, whiteSpace: "pre-wrap", fontSize: 12 }}>{pendingRequest.message}</div>
-
-            {pendingRequest.kind === "approval" ? (
-              <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                {pendingRequest.choices.map((choice) => (
-                  <button
-                    key={choice}
-                    onClick={() => respondToPendingRequest({ choice })}
-                    disabled={respondingRequestId === pendingRequest.requestId}
-                    aria-label={`Respond ${choice} to the approval request`}
-                  >
-                    {respondingRequestId === pendingRequest.requestId ? "Sending…" : choice}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                <input
-                  style={{ flex: 1 }}
-                  value={clarifyAnswerText}
-                  disabled={respondingRequestId === pendingRequest.requestId}
-                  placeholder="Your answer…"
-                  onChange={(e) => setClarifyAnswerText(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && respondToPendingRequest({ answerText: clarifyAnswerText })}
-                  aria-label="Clarification answer"
-                />
-                <button
-                  onClick={() => respondToPendingRequest({ answerText: clarifyAnswerText })}
-                  disabled={respondingRequestId === pendingRequest.requestId || !clarifyAnswerText.trim()}
-                >
-                  {respondingRequestId === pendingRequest.requestId ? "Sending…" : "Submit"}
-                </button>
-              </div>
-            )}
-
-            {respondError && <div style={{ color: "var(--danger)", fontSize: 11, marginTop: 4 }}>{respondError}</div>}
+      <div style={{ flex: 1, overflowY: "auto", padding: 14 }}>
+        {phase === "idle" && messages.length === 0 && (
+          <div style={{ color: "var(--text-dim)", lineHeight: 1.6 }}>
+            No active conversation. Use <strong>+ New chat</strong> in the sidebar to start one, or pick a previous conversation from the
+            list there.
           </div>
         )}
+        {messages.map((item) => (
+          <div
+            key={item.id}
+            style={{
+              marginBottom: 8,
+              whiteSpace: "pre-wrap",
+              color: MESSAGE_COLOR[item.kind],
+              fontFamily: item.kind === "system" || item.kind === "error" ? "ui-monospace, monospace" : "inherit",
+              fontSize: item.kind === "system" || item.kind === "error" ? 11 : 13.5,
+              lineHeight: 1.6,
+            }}
+          >
+            {item.kind === "user" ? `› ${item.text}` : item.text}
+          </div>
+        ))}
+      </div>
 
-        <div style={{ display: "flex", gap: 6, padding: 8, borderTop: "1px solid var(--panel-border)" }}>
+      {pendingRequest && (
+        <div
+          role="alert"
+          style={{ padding: 10, borderTop: "1px solid var(--panel-border)", background: "var(--panel-bg-raised, rgba(255,255,255,0.03))" }}
+        >
+          <div className="badge">{pendingRequest.kind === "approval" ? "Approval requested" : "Clarification requested"}</div>
+          <div style={{ marginTop: 4, whiteSpace: "pre-wrap", fontSize: 12 }}>{pendingRequest.message}</div>
+
+          {pendingRequest.kind === "approval" ? (
+            <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+              {pendingRequest.choices.map((choice) => (
+                <button
+                  key={choice}
+                  onClick={() => respondToPendingRequest({ choice })}
+                  disabled={respondingRequestId === pendingRequest.requestId}
+                  aria-label={`Respond ${choice} to the approval request`}
+                >
+                  {respondingRequestId === pendingRequest.requestId ? "Sending…" : choice}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+              <input
+                style={{ flex: 1 }}
+                value={clarifyAnswerText}
+                disabled={respondingRequestId === pendingRequest.requestId}
+                placeholder="Your answer…"
+                onChange={(e) => setClarifyAnswerText(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && respondToPendingRequest({ answerText: clarifyAnswerText })}
+                aria-label="Clarification answer"
+              />
+              <button
+                onClick={() => respondToPendingRequest({ answerText: clarifyAnswerText })}
+                disabled={respondingRequestId === pendingRequest.requestId || !clarifyAnswerText.trim()}
+              >
+                {respondingRequestId === pendingRequest.requestId ? "Sending…" : "Submit"}
+              </button>
+            </div>
+          )}
+
+          {respondError && <div style={{ color: "var(--danger)", fontSize: 11, marginTop: 4 }}>{respondError}</div>}
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, padding: 10, borderTop: "1px solid var(--panel-border)" }}>
+        {!localSessionId && (
+          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+            No active Hermes session — start or select a conversation in the sidebar to enable sending.
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 6 }}>
           <input
             style={{ flex: 1 }}
             value={input}
             disabled={!canSend}
-            placeholder={localSessionId ? "Prompt Hermes…" : "Start a chat first"}
+            placeholder={localSessionId ? "Describe a task or ask a question…" : "Start a chat first"}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && send()}
             aria-label="Prompt input"
@@ -379,4 +385,4 @@ export function ChatPanel({
       </div>
     </div>
   );
-}
+});

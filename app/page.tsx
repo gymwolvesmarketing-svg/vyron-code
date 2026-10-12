@@ -1,32 +1,26 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, describeContextError, type Project } from "@/lib/apiClient";
-import { ProjectPicker } from "@/components/ProjectPicker";
+import { resolveMainView, shouldShowContextRail, type MainView } from "@/lib/workspaceShell";
+import { TopBar } from "@/components/TopBar";
+import { Sidebar } from "@/components/Sidebar";
+import { WelcomeHome } from "@/components/WelcomeHome";
 import { FileTree } from "@/components/FileTree";
 import { FileViewer } from "@/components/FileViewer";
 import { SearchPanel } from "@/components/SearchPanel";
-import { ChatPanel } from "@/components/ChatPanel";
+import { ChatPanel, type ChatPanelHandle } from "@/components/ChatPanel";
 import { GitPanel } from "@/components/GitPanel";
 import { ContextInspector } from "@/components/ContextInspector";
-import { DisabledCapabilities } from "@/components/DisabledCapabilities";
+import { PlannedCapabilities } from "@/components/PlannedCapabilities";
 import { TaskTimeline, type RawTimelineEvent } from "@/components/TaskTimeline";
 import { SystemStatus } from "@/components/SystemStatus";
 
 const MAX_TIMELINE_EVENTS = 200;
-// Below this viewport width the fixed 3-column desktop grid no longer fits comfortably —
-// switch to a single-panel-at-a-time tabbed layout instead of letting the page scroll
-// horizontally (VYRON_CODE_V01_LOCAL_RUNTIME_HARDENING_IMPLEMENTATION_AUTHORIZATION, section E).
+// Below this viewport width the sidebar becomes an off-canvas drawer instead of a fixed
+// column, so the main surface never has to squeeze into an unusably narrow strip
+// (VYRON_CODE_V01_LOCAL_RUNTIME_HARDENING_IMPLEMENTATION_AUTHORIZATION's original rationale,
+// carried forward unchanged into the redesigned shell).
 const NARROW_BREAKPOINT_PX = 900;
-
-type NarrowTab = "explorer" | "search" | "editor" | "chat" | "context" | "git";
-const NARROW_TABS: { id: NarrowTab; label: string }[] = [
-  { id: "explorer", label: "Explorer" },
-  { id: "search", label: "Search" },
-  { id: "editor", label: "Editor" },
-  { id: "chat", label: "Chat" },
-  { id: "context", label: "Context" },
-  { id: "git", label: "Git" },
-];
 
 function useIsNarrow(): boolean {
   const [narrow, setNarrow] = useState(false);
@@ -43,41 +37,52 @@ export default function Home() {
   const [project, setProject] = useState<Project | null>(null);
   const [openPath, setOpenPath] = useState<string | null>(null);
   const [targetLine, setTargetLine] = useState<number | null>(null);
-  const [leftTab, setLeftTab] = useState<"explorer" | "search">("explorer");
+  const [mainView, setMainView] = useState<MainView>("chat");
   const [timelineEvents, setTimelineEvents] = useState<RawTimelineEvent[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [sessionListRefresh, setSessionListRefresh] = useState(0);
   const [contextRefreshToken, setContextRefreshToken] = useState(0);
   const [contextNotice, setContextNotice] = useState<string | null>(null);
-  const [narrowTab, setNarrowTab] = useState<NarrowTab>("explorer");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const narrow = useIsNarrow();
+  const chatPanelRef = useRef<ChatPanelHandle>(null);
 
-  if (!project) return <ProjectPicker onSelect={selectProject} />;
+  const hasProject = !!project;
+  const resolvedView = resolveMainView(mainView, hasProject);
 
-  // Switching the active project (including going back to the picker) must reset every
-  // piece of state scoped to the previous project's conversation — otherwise the Context
-  // Inspector/Selector could keep showing a conversation (and its context items) that
-  // belongs to a DIFFERENT project than the one now open, even though the server itself
-  // still enforces per-session/per-project scoping correctly on every request.
-  function selectProject(next: Project | null) {
+  // Switching the active project — including now switching directly from one open project to
+  // another via the sidebar's Projects list, a capability this redesign adds — must reset
+  // every piece of state scoped to the previous project's conversation/view, otherwise (e.g.)
+  // the Context Inspector or an open file could keep referencing a DIFFERENT project than the
+  // one now active, even though the server itself still enforces per-session/per-project
+  // scoping correctly on every request regardless.
+  function selectProject(next: Project) {
     setProject(next);
     setOpenPath(null);
     setTargetLine(null);
+    setMainView("chat");
     setTimelineEvents([]);
     setActiveSessionId(null);
     setContextRefreshToken((n) => n + 1);
     setContextNotice(null);
+    setSidebarOpen(false);
+  }
+
+  function setMainViewAndCloseDrawer(view: MainView) {
+    setMainView(view);
+    setSidebarOpen(false);
   }
 
   function openFile(path: string) {
     setOpenPath(path);
     setTargetLine(null);
-    setNarrowTab("editor");
+    setMainViewAndCloseDrawer("file");
   }
 
   function openSearchResult(path: string, line: number) {
     setOpenPath(path);
     setTargetLine(line);
-    setNarrowTab("editor");
+    setMainViewAndCloseDrawer("file");
   }
 
   function recordTimelineEvent(evt: RawTimelineEvent) {
@@ -107,135 +112,136 @@ export default function Home() {
     return addFileSnippetToContext(path, line, line);
   }
 
-  const explorerPanel = (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={{ padding: 8, borderBottom: "1px solid var(--panel-border)" }}>
-        <button onClick={() => selectProject(null)} style={{ marginBottom: 6 }}>
-          ← projects
-        </button>
-        <div style={{ fontWeight: 600 }}>{project.displayName}</div>
-        <div className="badge" title={project.canonicalRoot}>
-          Navigator (read-only)
-        </div>
-        <div style={{ fontSize: 10, color: "var(--text-dim)", marginTop: 4, wordBreak: "break-all" }}>{project.canonicalRoot}</div>
-      </div>
-      {!narrow && (
-        <div style={{ display: "flex", borderBottom: "1px solid var(--panel-border)" }}>
-          <button
-            onClick={() => setLeftTab("explorer")}
-            style={{ flex: 1, border: "none", borderBottom: leftTab === "explorer" ? "2px solid var(--accent)" : "2px solid transparent", borderRadius: 0 }}
-          >
-            Explorer
-          </button>
-          <button
-            onClick={() => setLeftTab("search")}
-            style={{ flex: 1, border: "none", borderBottom: leftTab === "search" ? "2px solid var(--accent)" : "2px solid transparent", borderRadius: 0 }}
-          >
-            Search
-          </button>
-        </div>
-      )}
-      <div style={{ flex: 1, overflowY: "auto" }}>
-        {(narrow ? narrowTab === "explorer" : leftTab === "explorer") ? (
-          <div style={{ padding: 8 }}>
-            <FileTree projectId={project.id} onOpenFile={openFile} selectedPath={openPath} />
+  const showContextRail = resolvedView === "chat" && hasProject && shouldShowContextRail(activeSessionId);
+
+  let mainContent: React.ReactNode;
+  if (resolvedView === "chat") {
+    mainContent = hasProject ? (
+      <ChatPanel
+        key={project!.id}
+        ref={chatPanelRef}
+        projectId={project!.id}
+        onTimelineEvent={recordTimelineEvent}
+        onSessionChange={setActiveSessionId}
+        onActivity={() => setSessionListRefresh((n) => n + 1)}
+      />
+    ) : (
+      <WelcomeHome />
+    );
+  } else if (resolvedView === "explorer") {
+    mainContent = (
+      <div key={project!.id} style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--panel-border)" }}>
+          <div style={{ fontWeight: 600 }}>{project!.displayName}</div>
+          <div className="badge" style={{ marginTop: 4 }}>
+            Explorer (read-only)
           </div>
-        ) : (
-          <SearchPanel projectId={project.id} onOpenResult={openSearchResult} onAddToContext={addSearchResultToContext} />
-        )}
+          <div style={{ fontSize: 10, color: "var(--text-dim)", marginTop: 4, wordBreak: "break-all" }}>{project!.canonicalRoot}</div>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: 8 }}>
+          <FileTree projectId={project!.id} onOpenFile={openFile} selectedPath={openPath} />
+        </div>
       </div>
-    </div>
-  );
+    );
+  } else if (resolvedView === "search") {
+    mainContent = (
+      <div key={project!.id} style={{ height: "100%" }}>
+        <SearchPanel projectId={project!.id} onOpenResult={openSearchResult} onAddToContext={addSearchResultToContext} />
+      </div>
+    );
+  } else if (resolvedView === "file") {
+    mainContent = (
+      <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--panel-border)", display: "flex", alignItems: "center", gap: 10 }}>
+          <button onClick={() => setMainViewAndCloseDrawer("explorer")}>← Explorer</button>
+          <span style={{ fontSize: 12, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {openPath}
+          </span>
+        </div>
+        <div style={{ flex: 1, overflow: "hidden" }}>
+          <FileViewer projectId={project!.id} path={openPath} targetLine={targetLine} onAddToContext={addFileSnippetToContext} />
+        </div>
+      </div>
+    );
+  } else if (resolvedView === "git") {
+    mainContent = (
+      <div key={project!.id} style={{ height: "100%", overflowY: "auto" }}>
+        <GitPanel projectId={project!.id} sessionId={activeSessionId} onContextChanged={bumpContextRefresh} />
+      </div>
+    );
+  } else if (resolvedView === "activity") {
+    mainContent = <TaskTimeline events={timelineEvents} />;
+  } else {
+    mainContent = <PlannedCapabilities />;
+  }
 
-  const searchPanel = <SearchPanel projectId={project.id} onOpenResult={openSearchResult} onAddToContext={addSearchResultToContext} />;
-
-  const editorPanel = <FileViewer projectId={project.id} path={openPath} targetLine={targetLine} onAddToContext={addFileSnippetToContext} />;
-
-  const chatPanel = <ChatPanel projectId={project.id} onTimelineEvent={recordTimelineEvent} onSessionChange={setActiveSessionId} />;
-
-  const contextAndTimelinePanel = (
-    <>
+  const contextRail = showContextRail ? (
+    <div style={{ width: 300, flex: "0 0 auto", borderLeft: "1px solid var(--panel-border)", overflowY: "auto" }}>
       {contextNotice && (
         <div style={{ padding: 8, fontSize: 11, color: "var(--danger)", borderBottom: "1px solid var(--panel-border)" }}>{contextNotice}</div>
       )}
       <ContextInspector
         key={activeSessionId ?? "none"}
-        projectId={project.id}
+        projectId={project!.id}
         sessionId={activeSessionId}
-        canonicalRoot={project.canonicalRoot}
+        canonicalRoot={project!.canonicalRoot}
         refreshToken={contextRefreshToken}
       />
-      <div style={{ borderTop: "1px solid var(--panel-border)" }}>
-        <TaskTimeline events={timelineEvents} />
-      </div>
-    </>
-  );
-
-  const disabledCapabilitiesPanel = <DisabledCapabilities projectId={project.id} />;
-
-  const gitPanel = <GitPanel key={project.id} projectId={project.id} sessionId={activeSessionId} onContextChanged={bumpContextRefresh} />;
-
-  const contextTabPanel = (
-    <div style={{ height: "100%", overflowY: "auto" }}>
-      {contextAndTimelinePanel}
-      <div style={{ borderTop: "1px solid var(--panel-border)" }}>{disabledCapabilitiesPanel}</div>
     </div>
-  );
+  ) : null;
 
-  if (narrow) {
-    const NARROW_PANELS: Record<NarrowTab, React.ReactNode> = {
-      explorer: explorerPanel,
-      search: searchPanel,
-      editor: editorPanel,
-      chat: chatPanel,
-      context: contextTabPanel,
-      git: <div style={{ height: "100%", overflowY: "auto" }}>{gitPanel}</div>,
-    };
-    return (
-      <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-        <SystemStatus />
-        <div role="tablist" aria-label="Panels" style={{ display: "flex", overflowX: "auto", borderBottom: "1px solid var(--panel-border)" }}>
-          {NARROW_TABS.map((tab) => (
-            <button
-              key={tab.id}
-              role="tab"
-              aria-selected={narrowTab === tab.id}
-              onClick={() => setNarrowTab(tab.id)}
-              style={{
-                flex: "0 0 auto",
-                padding: "8px 12px",
-                border: "none",
-                borderBottom: narrowTab === tab.id ? "2px solid var(--accent)" : "2px solid transparent",
-                borderRadius: 0,
-                whiteSpace: "nowrap",
-              }}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-        <div style={{ flex: 1, overflow: "hidden" }} role="tabpanel">
-          {NARROW_PANELS[narrowTab]}
-        </div>
-      </div>
-    );
-  }
+  const sidebar = (
+    <Sidebar
+      project={project}
+      activeLocalSessionId={activeSessionId}
+      sessionListRefresh={sessionListRefresh}
+      mainView={resolvedView}
+      onNewChat={() => {
+        chatPanelRef.current?.startNewChat();
+        setMainViewAndCloseDrawer("chat");
+      }}
+      onSelectConversation={(id) => {
+        chatPanelRef.current?.selectConversation(id);
+        setMainViewAndCloseDrawer("chat");
+      }}
+      onSelectProject={selectProject}
+      onSetMainView={setMainViewAndCloseDrawer}
+    />
+  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+      <TopBar
+        projectName={project?.displayName ?? null}
+        hasSession={!!activeSessionId}
+        onToggleSidebar={narrow ? () => setSidebarOpen((v) => !v) : undefined}
+      />
       <SystemStatus />
-      <div style={{ flex: 1, display: "grid", gridTemplateColumns: "240px 1fr 360px", overflow: "hidden" }}>
-        <div style={{ borderRight: "1px solid var(--panel-border)", overflowY: "auto" }}>{explorerPanel}</div>
+      <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
+        {narrow ? (
+          sidebarOpen && (
+            <div
+              style={{
+                position: "absolute",
+                inset: "0 auto 0 0",
+                width: 280,
+                zIndex: 5,
+                background: "var(--bg)",
+                borderRight: "1px solid var(--panel-border)",
+                overflowY: "auto",
+                boxShadow: "2px 0 12px rgba(0,0,0,0.4)",
+              }}
+            >
+              {sidebar}
+            </div>
+          )
+        ) : (
+          <div style={{ width: 280, flex: "0 0 auto", borderRight: "1px solid var(--panel-border)", overflowY: "auto" }}>{sidebar}</div>
+        )}
 
-        <div style={{ display: "grid", gridTemplateRows: "1fr 1fr", borderRight: "1px solid var(--panel-border)" }}>
-          <div style={{ borderBottom: "1px solid var(--panel-border)", overflow: "hidden" }}>{editorPanel}</div>
-          <div style={{ overflow: "hidden" }}>{chatPanel}</div>
-        </div>
-
-        <div style={{ overflowY: "auto" }}>
-          {contextAndTimelinePanel}
-          <div style={{ borderTop: "1px solid var(--panel-border)" }}>{gitPanel}</div>
-          <div style={{ borderTop: "1px solid var(--panel-border)" }}>{disabledCapabilitiesPanel}</div>
+        <div style={{ flex: 1, minWidth: 0, display: "flex", overflow: "hidden" }}>
+          <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>{mainContent}</div>
+          {contextRail}
         </div>
       </div>
     </div>

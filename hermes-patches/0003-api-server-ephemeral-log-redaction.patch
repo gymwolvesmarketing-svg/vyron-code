@@ -1,0 +1,136 @@
+From: Vyron Code D-11 local hardening (VYRON_CODE_D11_FINAL_EPHEMERAL_DIAGNOSTICS_PATCH, incremental)
+Applies to: NousResearch/hermes-agent, installed local copy, version 0.21.0.
+
+OPTIONAL, NOT APPLIED BY THIS TOOLING. This environment's permission system refuses every real
+write to Hermes's installed source, so this patch was never applied here - only generated and
+dry-run verified (`git apply --check`) against the real installed files. The user applies it
+themselves.
+
+CONTEXT: patch 0001 (`agent._persist_disabled = True`) is confirmed present and correct. Patch
+0002 was intended to close two further gaps in the same installed source - a request-dump file
+(`agent/agent_runtime_helpers.py::dump_api_request_debug`) and three log lines that carry prompt/
+error content (`agent/turn_context.py`, `agent/turn_recovery.py`) - but a direct read-back of the
+installed source shows NONE of patch 0002's four hunks are present, including the
+`agent_runtime_helpers.py` one. This patch (0003) covers only the two files explicitly requested
+this round - `agent/turn_context.py` and `agent/turn_recovery.py` - using the exact hunks from
+0002 for those two files, with the placeholder text changed to the fixed strings specified for
+this round. The `agent/agent_runtime_helpers.py` hunk from patch 0002 is untouched here and still
+needs to be applied separately (0002 itself is unchanged and already dry-run-verified) - it is
+not duplicated into this file, since scope was explicitly limited to `turn_context.py` and
+`turn_recovery.py` only.
+
+WHAT IT DOES (three hunks, two files):
+
+  1. `agent/turn_context.py` - the per-turn `logger.info("conversation turn: ... msg=%r", ...)`
+     line that runs on every turn (success or failure) and, until now, always included an 80-char
+     preview of the user's actual message text. When the calling agent has
+     `_persist_disabled = True`, the preview is replaced with the fixed placeholder
+     `[ephemeral task content suppressed]`; the rest of the line (session/model/provider/
+     platform/history length) is unchanged, so operational log lines for ordinary,
+     non-ephemeral agents are completely unaffected.
+
+  2. `agent/turn_recovery.py`, non-retryable-client-error path (~line 703) - the
+     `logger.error("... Non-retryable client error: %s", ...)` line, which logs the raw provider
+     exception (`api_error`) - a value that can, for some provider failure modes, itself echo
+     back request content. When `_persist_disabled` is set, this is replaced with the fixed
+     placeholder `[ephemeral API error detail suppressed]`; the rest of the line (the
+     `agent.log_prefix` tag) is unchanged.
+
+  3. `agent/turn_recovery.py`, retry-attempt warning (~line 871) - the
+     `logger.warning("API call failed ... summary=%s", ...)` line, which logs `_error_summary`
+     (a summarized form of the same provider error/response text). When `_persist_disabled` is
+     set, this is replaced with the same fixed placeholder `[ephemeral API error detail
+     suppressed]`; retry count, exception type, and `agent._client_log_context()` (provider/
+     model/thread context) are unchanged, so error-rate monitoring for ordinary agents keeps
+     working exactly as before.
+
+WHAT THIS DELIBERATELY DOES NOT TOUCH:
+
+  - `agent/agent_runtime_helpers.py::dump_api_request_debug` - covered by patch 0002, not
+    duplicated here.
+  - The `[session_id]` tag every Hermes log line carries (via the logging session-context filter
+    set up in `set_session_context()`), used by `hermes logs` to group lines per run. It is
+    generic logging infrastructure that applies to every platform and every agent, not something
+    tied to a specific log line's content, and it is an opaque correlator, not task content -
+    de-scoping it keeps this patch to the narrowest change that actually stops task/response/
+    error *content* from landing on disk.
+  - Any non-`api_server` platform, or any `api_server` agent that does NOT have
+    `_persist_disabled = True` set (every guard is conditional on that exact flag).
+
+HOW TO APPLY (PowerShell, run as the same user who owns the Hermes installation):
+  1. Back up first:
+       $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+       Copy-Item "$env:LOCALAPPDATA\hermes\hermes-agent\agent\turn_context.py" "$env:LOCALAPPDATA\hermes\hermes-agent\agent\turn_context.py.vyron-pre-0003-patch-$ts.bak"
+       Copy-Item "$env:LOCALAPPDATA\hermes\hermes-agent\agent\turn_recovery.py" "$env:LOCALAPPDATA\hermes\hermes-agent\agent\turn_recovery.py.vyron-pre-0003-patch-$ts.bak"
+  2. From this repository root:
+       git apply --directory="$env:LOCALAPPDATA\hermes\hermes-agent" hermes-patches/0003-api-server-ephemeral-log-redaction.patch
+     (or, if PowerShell's own path handling causes `git apply` to complain, `cd` directly into
+     `$env:LOCALAPPDATA\hermes\hermes-agent` first - which is itself a git repository - and run
+     `git apply "D:\Vyron Code\hermes-patches\0003-api-server-ephemeral-log-redaction.patch"`
+     from there instead, with no `--directory` flag.)
+  3. Restart Hermes: stop any running `hermes gateway run`, then start it again.
+
+VERIFY IT ACTUALLY APPLIED (do this - a silent `git apply` failure is easy to miss):
+       Select-String -Path "$env:LOCALAPPDATA\hermes\hermes-agent\agent\turn_context.py" -Pattern "VYRON_LOCAL_PATCH"
+       Select-String -Path "$env:LOCALAPPDATA\hermes\hermes-agent\agent\turn_recovery.py" -Pattern "VYRON_LOCAL_PATCH"
+     Each command should print at least one matching line. If either prints nothing, the patch
+     did not apply and Hermes is still running the unpatched source.
+
+HOW TO ROLL BACK:
+  Restore the two `.bak` files created in step 1 over their originals, then restart Hermes.
+
+--- a/agent/turn_context.py
++++ b/agent/turn_context.py
+@@ -821,10 +821,17 @@
+
+     _preview_text = summarize_user_message_for_log(user_message)
+     _msg_preview = _preview_text[:80] + ("..." if len(_preview_text) > 80 else "")
++    # VYRON_LOCAL_PATCH: task-persistence-disabled agents must never have prompt content land
++    # in this durable per-turn log line (e.g. Vyron Code's D-11 API Server connection). The
++    # rest of the line (session/model/provider/platform/history length) is unchanged.
++    _log_msg_preview = (
++        "[ephemeral task content suppressed]" if getattr(agent, "_persist_disabled", False)
++        else _msg_preview.replace("\n", " ")
++    )
+     logger.info(
+         "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
+         agent.session_id or "none", agent.model, agent.provider or "unknown",
+         agent.platform or "unknown", len(conversation_history or []),
+-        _msg_preview.replace("\n", " "),
++        _log_msg_preview,
+     )
+
+
+--- a/agent/turn_recovery.py
++++ b/agent/turn_recovery.py
+@@ -700,6 +700,12 @@
+             "      • Self-signed local endpoint (llama.cpp, LM Studio, vLLM)? Use http://",
+             "        for localhost, or add the server's cert to your trust store.",
+         )
+-    logger.error("%sNon-retryable client error: %s", agent.log_prefix, api_error)
++    # VYRON_LOCAL_PATCH: redact the raw provider error text for persistence-disabled agents -
++    # some provider failure modes echo request content back in the error body.
++    _logged_api_error = (
++        "[ephemeral API error detail suppressed]" if getattr(agent, "_persist_disabled", False)
++        else api_error
++    )
++    logger.error("%sNon-retryable client error: %s", agent.log_prefix, _logged_api_error)
+     # Skip persistence on likely context-overflow (400 + large session): persisting the
+     # failed message grows the session and repeats the failure.
+@@ -867,9 +873,15 @@
+     error_type = type(api_error).__name__
+     error_msg = str(api_error).lower()
+     _error_summary = agent._summarize_api_error(api_error)
++    # VYRON_LOCAL_PATCH: redact the error summary for persistence-disabled agents; retry count,
++    # error type, and client/provider/model context are unaffected.
++    _logged_error_summary = (
++        "[ephemeral API error detail suppressed]" if getattr(agent, "_persist_disabled", False)
++        else _error_summary
++    )
+     logger.warning(
+         "API call failed (attempt %s/%s) error_type=%s %s summary=%s",
+-        retry_count, max_retries, error_type, agent._client_log_context(), _error_summary,
++        retry_count, max_retries, error_type, agent._client_log_context(), _logged_error_summary,
+     )
+
+     _provider = getattr(agent, "provider", "unknown")

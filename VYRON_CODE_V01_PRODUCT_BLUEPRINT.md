@@ -64,8 +64,15 @@ v0.1 is strictly **read-only** end to end — no filesystem write, no Git write,
 - **Context inspector** — a standing panel showing exactly what context is currently selected/attached, with provenance (file, line range, or diff hunk) for each item — the UI-level enforcement of the context-sharing rules below.
 - **PROJECT_STATE read view / scoped memory read view** — read-only rendering of Bridge's `GET /v1/context/project-state` and a scoped memory read, via a new `vyron_code` Bridge client identity (see API/Data Model doc) holding only read scopes; no propose/commit affordance in v0.1.
 - **Git panel** — `git status`/`log`/`diff` read-only; no stage/commit/push UI in v0.1 (shown disabled with a "coming in v0.4" affordance, not hidden).
-- **Terminal panel** — present in the UI shell as a disabled placeholder only; no execution capability exists in v0.1's backend at all (not just gated — not implemented).
-- **Multi-model action slot** — the "MULTİ-MODEL DEĞERLENDİR" entry point and its context-preview UI exist in v0.1 so the product shape is visible, but `START_MULTIMODEL` is disabled with an explicit "requires v0.2 deliberation-service auth hardening" message — no call to deliberation-service exists in v0.1's backend.
+- **Terminal and Multi-model deliberation** — see the "Terminal/Multi-model visibility — v0.1 UI decision" note immediately below; neither has any execution/deliberation capability in v0.1's backend, and as of `VYRON_CODE_V01_P0_WORKSPACE_SHELL_REDESIGN_AUTHORIZATION` neither appears as an interactive control in the default workspace at all.
+
+### Terminal/Multi-model visibility — v0.1 UI decision (revised by `VYRON_CODE_V01_P0_WORKSPACE_SHELL_REDESIGN_AUTHORIZATION`)
+
+- **Previous intent**: future product shape should remain legible through visibly-disabled Terminal and Multi-model surfaces in the default workspace.
+- **Revised v0.1 decision**: Terminal and Multi-model must not appear as disabled interactive controls in the default workspace shell.
+- **Reason**: visible disabled execution controls made the read-only v0.1 product look like an incomplete developer dashboard, obscured the chat/workspace priority, and created a misleading impression that these capabilities were closer to available than they are.
+- **Preserved future-shape disclosure**: Terminal and Multi-model may be described only in a non-interactive "More / Planned capabilities" surface (`components/PlannedCapabilities.tsx`) — plain text, no button, form, or text area of any kind.
+- **v0.1 current state (unchanged by this revision)**: no terminal capability, no file-write capability, no Git-write capability, no multimodel-start capability, and now also no interactive button/form/text-area/command-control for any of these anywhere in the default workspace.
 
 Explicitly NOT in v0.1 (per the user's own scope narrowing, recorded here for traceability): RAG, multi-project simultaneous sessions, any real deliberation call, file/Git/terminal write of any kind, containerization, any multi-user/remote-access mode, voice/orb presence UI.
 

@@ -36,3 +36,7 @@ win-unpacked/
 *.exe
 *.blockmap
 latest.yml
+
+# Local tooling / outputs
+.claude/
+Claude outputs/

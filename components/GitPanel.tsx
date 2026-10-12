@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api, describeContextError, type GitCommit, type GitDiffResponse, type GitStatusResponse } from "@/lib/apiClient";
+import { gitChangedFilesSummary } from "@/lib/workspaceShell";
 
 const LOG_PAGE_SIZE = 30;
 
@@ -24,6 +25,7 @@ export function GitPanel({
   const [logError, setLogError] = useState<string | null>(null);
   const [showLog, setShowLog] = useState(false);
   const [contextNotice, setContextNotice] = useState<string | null>(null);
+  const [showFileList, setShowFileList] = useState(false);
 
   function loadStatus() {
     setStatusError(null);
@@ -135,10 +137,18 @@ export function GitPanel({
 
       {status.truncated && <div style={{ color: "var(--text-dim)", fontSize: 10 }}>Status output truncated.</div>}
 
-      {status.files.length === 0 ? (
-        <div style={{ color: "var(--text-dim)", fontSize: 11 }}>Working tree clean.</div>
-      ) : (
-        <ul style={{ listStyle: "none", margin: 0, padding: 0 }} aria-label="Changed files">
+      {/* Summary-first: the raw per-file list is real information, but dumping it by default
+          is exactly the "overwhelming raw path dump" the workspace-shell redesign called out —
+          it's one click away instead. */}
+      <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{gitChangedFilesSummary(status.files.length)}</div>
+      {status.files.length > 0 && (
+        <button onClick={() => setShowFileList((v) => !v)} aria-expanded={showFileList} style={{ marginTop: 4 }}>
+          {showFileList ? "Hide changed files" : "Show changed files"}
+        </button>
+      )}
+
+      {showFileList && status.files.length > 0 && (
+        <ul style={{ listStyle: "none", margin: "6px 0 0", padding: 0 }} aria-label="Changed files">
           {status.files.map((f) => (
             <li key={f.path}>
               <button

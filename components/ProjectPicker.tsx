@@ -2,11 +2,28 @@
 import { useEffect, useState } from "react";
 import { api, describeAddProjectError, type Project } from "@/lib/apiClient";
 
-export function ProjectPicker({ onSelect }: { onSelect: (project: Project) => void }) {
+// Compact, sidebar-embeddable project list + inline "add project" form —
+// VYRON_CODE_V01_P0_WORKSPACE_SHELL_REDESIGN_AUTHORIZATION replaced the old full-page,
+// path-input-only launcher with this smaller explicit action embedded in the persistent
+// left nav. Selecting a project never creates a Hermes session by itself (that still only
+// ever happens via ChatPanel's own explicit "+ New chat").
+export function ProjectPicker({
+  activeProjectId,
+  onSelect,
+}: {
+  activeProjectId?: string | null;
+  onSelect: (project: Project) => void;
+}) {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [pathInput, setPathInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  // null = the user hasn't explicitly opened/closed the form yet, so it defaults open once the
+  // list is known to be empty (a brand-new instance shouldn't be a dead end); true/false = the
+  // user's own explicit choice, which always wins from then on. Derived at render time — no
+  // effect needed to "auto-open", which avoids a synchronous setState-in-effect entirely.
+  const [formOpenOverride, setFormOpenOverride] = useState<boolean | null>(null);
+  const formOpen = formOpenOverride ?? projects?.length === 0;
 
   function refresh() {
     api.listProjects().then((r) => setProjects(r.projects));
@@ -21,6 +38,7 @@ export function ProjectPicker({ onSelect }: { onSelect: (project: Project) => vo
     try {
       const { project } = await api.addProject(pathInput.trim());
       setPathInput("");
+      setFormOpenOverride(false);
       refresh();
       onSelect(project);
     } catch (e: any) {
@@ -31,24 +49,36 @@ export function ProjectPicker({ onSelect }: { onSelect: (project: Project) => vo
   }
 
   return (
-    <div style={{ maxWidth: 480, margin: "80px auto", padding: 16 }}>
-      <h1 style={{ fontSize: 18 }}>Vyron Code <span className="badge">v0.1 read-only</span></h1>
-      <div style={{ display: "flex", gap: 6, margin: "16px 0" }}>
-        <input
-          style={{ flex: 1 }}
-          placeholder="C:\path\to\project"
-          value={pathInput}
-          onChange={(e) => setPathInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addProject()}
-          aria-label="Project folder path"
-        />
-        <button onClick={addProject} disabled={adding || !pathInput.trim()}>
-          {adding ? "Adding…" : "Add project"}
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 4px 6px" }}>
+        <span className="badge">Projects</span>
+        <button onClick={() => setFormOpenOverride(!formOpen)} aria-expanded={formOpen} style={{ fontSize: 11, padding: "2px 8px" }}>
+          {formOpen ? "Cancel" : "+ Add project"}
         </button>
       </div>
-      {error && <div style={{ color: "var(--danger)", marginBottom: 12 }}>{error}</div>}
-      {projects === null && <div style={{ color: "var(--text-dim)" }}>Loading…</div>}
-      {projects?.length === 0 && <div style={{ color: "var(--text-dim)" }}>No projects yet — add one above.</div>}
+
+      {formOpen && (
+        <div style={{ display: "flex", gap: 6, padding: "0 4px 8px" }}>
+          <input
+            style={{ flex: 1, fontSize: 11 }}
+            placeholder="C:\path\to\project"
+            value={pathInput}
+            onChange={(e) => setPathInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addProject()}
+            aria-label="Project folder path"
+            autoFocus
+          />
+          <button onClick={addProject} disabled={adding || !pathInput.trim()} style={{ fontSize: 11 }}>
+            {adding ? "Adding…" : "Add"}
+          </button>
+        </div>
+      )}
+      {error && <div style={{ color: "var(--danger)", fontSize: 11, padding: "0 4px 8px" }}>{error}</div>}
+
+      {projects === null && <div style={{ color: "var(--text-dim)", fontSize: 11, padding: "0 4px" }}>Loading…</div>}
+      {projects?.length === 0 && !formOpen && (
+        <div style={{ color: "var(--text-dim)", fontSize: 11, padding: "0 4px" }}>No projects yet — add one above.</div>
+      )}
       {projects?.map((p) => (
         <div
           key={p.id}
@@ -56,10 +86,20 @@ export function ProjectPicker({ onSelect }: { onSelect: (project: Project) => vo
           tabIndex={0}
           onClick={() => onSelect(p)}
           onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onSelect(p)}
-          style={{ padding: 8, border: "1px solid var(--panel-border)", borderRadius: 4, marginBottom: 6, cursor: "pointer" }}
+          aria-current={p.id === activeProjectId}
+          style={{
+            padding: "6px 8px",
+            borderRadius: 4,
+            marginBottom: 4,
+            cursor: "pointer",
+            border: "1px solid " + (p.id === activeProjectId ? "var(--accent)" : "transparent"),
+            background: p.id === activeProjectId ? "rgba(91,140,255,0.08)" : "transparent",
+          }}
         >
-          <div>{p.displayName}</div>
-          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{p.canonicalRoot}</div>
+          <div style={{ fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.displayName}</div>
+          <div style={{ fontSize: 10, color: "var(--text-dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {p.canonicalRoot}
+          </div>
         </div>
       ))}
     </div>
