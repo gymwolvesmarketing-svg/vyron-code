@@ -56,7 +56,7 @@ describe("seed content", () => {
   it("seeds the required projects, managers, connectors, skills and quick starts", () => {
     const state = model.defaultState();
     expect(state.projects.map((p: any) => p.name)).toEqual(["new-project", "AETHERIS", "HANGIKARGOO"]);
-    expect(state.managers.map((m: any) => m.name)).toEqual(["Genel", "Vyron Helper", "Coder", "Multi-Model Planner", "Konsey", "Derin Araştırma", "Reviewer"]);
+    expect(state.managers.map((m: any) => m.name)).toEqual(["Genel", "CTO", "Vyron Helper", "Coder", "Multi-Model Planner", "Konsey", "Derin Araştırma", "Reviewer"]);
     expect(state.connectors.map((c: any) => c.name)).toEqual(["GitHub", "Supabase", "Vercel", "Stripe", "Slack", "Gmail", "Notion"]);
     expect(state.connectors.every((c: any) => c.status === "disconnected")).toBe(true);
     expect(model.SKILLS.map((s) => s.name)).toEqual(["Confirmed Data Analysis", "Create Image", "Design Then Build", "Find Skills", "Frontend Design", "Skill Creator"]);
@@ -324,7 +324,7 @@ describe("built-in managers survive older saves", () => {
     old.managers = old.managers.filter((m: any) => m.id !== "coder");
     old.managers.push({ id: "m-ozel", name: "Özel", description: "x", tag: "Özel", custom: true, agent: "tester" });
     const loaded = model.sanitizeState(old);
-    expect(loaded.managers.map((m: any) => m.name)).toEqual(["Genel", "Vyron Helper", "Coder", "Multi-Model Planner", "Konsey", "Derin Araştırma", "Reviewer", "Özel"]);
+    expect(loaded.managers.map((m: any) => m.name)).toEqual(["Genel", "CTO", "Vyron Helper", "Coder", "Multi-Model Planner", "Konsey", "Derin Araştırma", "Reviewer", "Özel"]);
     expect(loaded.managers.find((m: any) => m.id === "coder").agent).toBe("coder");
   });
 });
@@ -500,5 +500,30 @@ describe("skills with instructions and starter chips (pure model)", () => {
       connectorNames: [],
     });
     expect(text).toBe(["Kullanılacak yetenekler: A.", "Yetenek talimatı (A): şunu yap", "", "Görev"].join(String.fromCharCode(10)));
+  });
+});
+
+describe("CTO Manager text helpers", () => {
+  const m = model as any;
+  it("extractBrief returns the text between the markers, tolerates a missing closing marker and rejects empty briefs", () => {
+    expect(m.extractBrief("a [[PROJE-ÖZETİ]] Amaç X [[/PROJE-ÖZETİ]] b")).toBe("Amaç X");
+    expect(m.extractBrief("a [[PROJE-ÖZETİ]] Amaç Y")).toBe("Amaç Y");
+    expect(m.extractBrief("[[PROJE-ÖZETİ]]   [[/PROJE-ÖZETİ]]")).toBeNull();
+    expect(m.extractBrief("işaret yok")).toBeNull();
+  });
+  it("the Konsey task and the evaluation stay within the draft limit and carry the content", () => {
+    const long = "x".repeat(m.MAX_DRAFT_LENGTH + 500);
+    expect(m.composeCouncilTask(long).length).toBeLessThanOrEqual(m.MAX_DRAFT_LENGTH);
+    expect(m.composeEvaluation(long).length).toBeLessThanOrEqual(m.MAX_DRAFT_LENGTH);
+    expect(m.composeCouncilTask("Hedef")).toContain("Hedef");
+    expect(m.isEvaluationPrompt(m.composeEvaluation("karar"))).toBe(true);
+    expect(m.isEvaluationPrompt("karar")).toBe(false);
+  });
+  it("composePrompt adds the CTO rules only for the CTO and forbids self-approval", () => {
+    const base = { draft: "Merhaba", workMode: "local", planMode: "standard", terminalMode: "off", skillNames: [], skillInstructions: [], connectorNames: [] };
+    const cto = m.composePrompt({ ...base, managerName: "CTO" });
+    expect(cto).toContain("Rol: CTO.");
+    expect(cto).toContain("onayı olmadan");
+    expect(m.composePrompt({ ...base, managerName: "Genel" })).not.toContain("CTO");
   });
 });

@@ -250,7 +250,7 @@ describe("navigation between workspace views", () => {
     expect(h.el("panel-projects").hidden).toBe(true);
     expect(h.el("tab-managers").getAttribute("aria-selected")).toBe("true");
     const managers = Array.from(h.doc.querySelectorAll("#manager-list .manager-name")).map((n) => n.textContent);
-    expect(managers).toEqual(["Genel", "Vyron Helper", "Coder", "Multi-Model Planner", "Konsey", "Derin Araştırma", "Reviewer"]);
+    expect(managers).toEqual(["Genel", "CTO", "Vyron Helper", "Coder", "Multi-Model Planner", "Konsey", "Derin Araştırma", "Reviewer"]);
     h.click(h.el("tab-projects"));
     expect(h.el("panel-projects").hidden).toBe(false);
   });
@@ -816,6 +816,7 @@ describe("+ menu, SubAgent, Plan and Terminal", () => {
     expect(h.menuLabels().slice(4)).toEqual([
       "SubAgent kullanma",
       "Genel" + "Varsayılan",
+      "CTO" + "Yönetici",
       "Vyron Helper" + "Yardımcı",
       "Coder" + "Kod",
       "Multi-Model Planner" + "Paralel",
@@ -1563,6 +1564,64 @@ describe("managers run through Ruflo roles", () => {
     expect(input.value).toContain("Plan:");
     expect(h.el("chips").textContent).toContain("Coder");
     expect(h.calls.send).toHaveLength(1);
+  });
+
+  it("CTO: brief -> 'Konseye ver' -> Konsey decides -> CTO evaluates -> user approves -> Coder gets the decision, nothing is sent without a click", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "CTO"));
+    h.behavior.sendQueue = [
+      { state: "completed", text: "Soru yok.\n[[PROJE-ÖZETİ]]Amaç: kargo takip sitesi[[/PROJE-ÖZETİ]]\nKonseye verebilirsin.", truncated: false },
+      { state: "completed", text: "KONSEY KARARI: Next.js + Postgres", truncated: false },
+      { state: "completed", text: "Karar makul, risk: tek geliştirici. Onaylıyor musun?", truncated: false },
+    ];
+    await sendTask(h, "Kargo takip sitesi yapalım");
+    expect(h.calls.send).toHaveLength(1);
+    expect(h.calls.send[0]!.agent).toBeUndefined();
+    expect(h.calls.send[0]!.draft).toContain("Rol: CTO.");
+    expect(h.calls.send[0]!.draft).toContain("[[PROJE-ÖZETİ]]");
+
+    const give = [...h.doc.querySelectorAll<HTMLElement>(".turn-actions button")].find((b) => b.textContent === "Konseye ver");
+    expect(give).toBeTruthy();
+    h.click(give!);
+    await h.flush();
+    await h.flush();
+    expect(h.calls.send).toHaveLength(3);
+    expect(h.calls.send[1]!.agent).toBe("council");
+    expect(h.calls.send[1]!.draft).toContain("Amaç: kargo takip sitesi");
+    expect(h.calls.send[2]!.agent).toBeUndefined();
+    expect(h.calls.send[2]!.draft).toContain("[Konsey kararının CTO değerlendirmesi]");
+    expect(h.calls.send[2]!.draft).toContain("KONSEY KARARI: Next.js + Postgres");
+
+    const approve = [...h.doc.querySelectorAll<HTMLElement>(".turn-actions button")].find((b) => b.textContent === "Onayla ve Coder'a devret");
+    expect(approve).toBeTruthy();
+    expect([...h.doc.querySelectorAll<HTMLElement>(".turn-actions button")].some((b) => b.textContent === "Düzeltme iste")).toBe(true);
+    h.click(approve!);
+    const input = h.el("task-input") as HTMLTextAreaElement;
+    expect(input.value).toContain("KONSEY KARARI: Next.js + Postgres");
+    expect(h.el("chips").textContent).toContain("Coder");
+    expect(h.calls.send).toHaveLength(3);
+  });
+
+  it("CTO: an answer without a brief has no 'Konseye ver'; a failed Konsey stops the chain", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "CTO"));
+    await sendTask(h, "Merhaba");
+    expect([...h.doc.querySelectorAll<HTMLElement>(".turn-actions button")].some((b) => b.textContent === "Konseye ver")).toBe(false);
+    h.behavior.sendQueue = [
+      { state: "completed", text: "[[PROJE-ÖZETİ]]Hedef X[[/PROJE-ÖZETİ]]", truncated: false },
+      { state: "safe_failure", text: null, truncated: false },
+    ];
+    await sendTask(h, "Özet yaz");
+    const give = [...h.doc.querySelectorAll<HTMLElement>(".turn-actions button")].find((b) => b.textContent === "Konseye ver");
+    h.click(give!);
+    await h.flush();
+    await h.flush();
+    expect(h.calls.send.filter((c) => c.agent === "council")).toHaveLength(1);
+    expect(h.calls.send.some((c) => c.draft.includes("CTO değerlendirmesi"))).toBe(false);
   });
 
   it("a plain (non-planner) answer has no handoff button", async () => {

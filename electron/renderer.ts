@@ -1948,9 +1948,70 @@ function renderTurn(turn: Turn): HTMLElement {
       actions.appendChild(makeButton("btn small", "Coder'a devret", () => handOffToCoder(coder.id, turn.text ?? "")));
       block.appendChild(actions);
     }
+    const ctoActions = renderCtoActions(turn);
+    if (ctoActions) block.appendChild(ctoActions);
     wrap.appendChild(block);
   }
   return wrap;
+}
+
+// ---------------------------------------------------------------------------------------------
+// CTO Manager: brief -> Konsey -> CTO evaluation -> user approval -> Coder. Every step that decides is a button the user presses.
+// ---------------------------------------------------------------------------------------------
+
+function renderCtoActions(turn: Turn): HTMLElement | null {
+  const taskId = ws.activeTaskId;
+  if (!taskId || turn.text === null || turn.agent !== null) return null;
+  const actions = make("div", "turn-actions");
+  const brief = turn.labels.indexOf("SubAgent: " + VyronModel.CTO_NAME) >= 0 ? VyronModel.extractBrief(turn.text) : null;
+  if (brief !== null) actions.appendChild(makeButton("btn small", "Konseye ver", () => void sendBriefToCouncil(taskId, turn, brief)));
+  if (VyronModel.isEvaluationPrompt(turn.prompt)) {
+    const decision = lastCouncilDecision(taskId, turn);
+    const coder = ws.managers.find((m) => m.agent === "coder" && !m.custom);
+    if (decision !== null && coder) actions.appendChild(makeButton("btn small", "Onayla ve Coder'a devret", () => handOffToCoder(coder.id, decision)));
+    actions.appendChild(makeButton("btn small", "Düzeltme iste", askCtoForCorrection));
+  }
+  return actions.childElementCount > 0 ? actions : null;
+}
+
+/** The newest finished Konsey answer that comes before the given turn. */
+function lastCouncilDecision(taskId: string, before: Turn): string | null {
+  let found: string | null = null;
+  for (const t of turnsByTask.get(taskId) ?? []) {
+    if (t === before) break;
+    if (t.agent === "council" && t.status === "done" && t.text !== null && !t.cleared) found = t.text;
+  }
+  return found;
+}
+
+function askCtoForCorrection(): void {
+  if (sendInFlight) return;
+  setManager("cto");
+  const input = must<HTMLTextAreaElement>("task-input");
+  input.value = "Düzeltme: ";
+  updateComposer();
+  focusSoon(input);
+}
+
+function pushChainTurn(taskId: string, source: Turn, prompt: string, composed: string, agent: string | null, label: string): Turn {
+  const turn: Turn = { id: newTurnId(), prompt, composed, labels: ["SubAgent: " + label], agent, project: source.project, tools: false, status: "running", text: null, truncated: false, errorText: null, cleared: false };
+  const turns = turnsByTask.get(taskId) ?? [];
+  turns.push(turn);
+  turnsByTask.set(taskId, turns);
+  return turn;
+}
+
+/** "Konseye ver": the Konsey decides on the brief, then the CTO evaluates the decision and asks the user for approval. */
+async function sendBriefToCouncil(taskId: string, source: Turn, brief: string): Promise<void> {
+  if (sendInFlight) return;
+  const councilPrompt = VyronModel.composeCouncilTask(brief);
+  const council = pushChainTurn(taskId, source, councilPrompt, councilPrompt, "council", "Konsey");
+  await runTurn(taskId, council);
+  if (council.status !== "done" || council.text === null) return;
+  const evalPrompt = VyronModel.composeEvaluation(council.text);
+  const composed = VyronModel.composePrompt({ draft: evalPrompt, workMode: "local", planMode: "standard", terminalMode: "off", managerName: VyronModel.CTO_NAME, skillNames: [], skillInstructions: [], connectorNames: [] });
+  const evaluation = pushChainTurn(taskId, source, evalPrompt, composed, null, VyronModel.CTO_NAME);
+  await runTurn(taskId, evaluation);
 }
 
 /** Selects the Coder and puts the plan into the composer as a task; the user reads it and sends it (Enter). */

@@ -41,6 +41,7 @@ export interface Harness {
     retryState: FakeAiState;
     copyResult: { copied: boolean } | "throw";
     sendResult: FakeTaskResult;
+    sendQueue: FakeTaskResult[];
     sendGate: Promise<void> | null;
     sendThrows: boolean;
     memoryClearResult: boolean;
@@ -78,6 +79,7 @@ export function setup(options: SetupOptions = {}): Harness {
     retryState: { state: "starting", stage: "checking" },
     copyResult: { copied: true },
     sendResult: { state: "completed", text: "Yanıt metni", truncated: false },
+    sendQueue: [],
     sendGate: null,
     sendThrows: false,
     memoryClearResult: true,
@@ -152,7 +154,7 @@ export function setup(options: SetupOptions = {}): Harness {
               calls.send.push(request);
               if (behavior.sendGate) await behavior.sendGate;
               if (behavior.sendThrows) throw new Error("boom");
-              return behavior.sendResult;
+              return behavior.sendQueue.shift() ?? behavior.sendResult;
             },
             clearTaskSubmission: async () => {
               calls.clear += 1;

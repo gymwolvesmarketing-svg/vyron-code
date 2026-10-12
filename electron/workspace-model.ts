@@ -375,6 +375,7 @@ const VyronModel = (() => {
   function seedManagers(): WsManager[] {
     return [
       { id: "genel", name: "Genel", description: "Her tür görev için genel amaçlı yardımcı. Görevler doğrudan yerel AI'ya gider.", tag: "Varsayılan", custom: false, agent: null },
+      { id: "cto", name: "CTO", description: "Projeni sana bağlı çalışan teknik direktör gibi yürütür: konuyu seninle netleştirir, proje özetini Konsey'e verir, kararı değerlendirip onayını ister ve onaydan sonra işi Coder'a devreder.", tag: "Yönetici", custom: false, agent: null },
       { id: "vyron-helper", name: "Vyron Helper", description: "Vyron Code kullanımı ve iş akışları konusunda araştırıp yardım eder.", tag: "Yardımcı", custom: false, agent: "researcher" },
       { id: "coder", name: "Coder", description: "Kod yazar, düzenler ve hata ayıklar. Kod modeli grubunu kullanır.", tag: "Kod", custom: false, agent: "coder" },
       { id: "multi-model-planner", name: "Multi-Model Planner", description: "Büyük işleri en fazla üç bağımsız parçaya böler, ajanlarla paralel yürütür ve sonuçları birleştirir.", tag: "Paralel", custom: false, agent: "task-orchestrator" },
@@ -880,6 +881,51 @@ const VyronModel = (() => {
     return head + (body.length > room ? body.slice(0, room - 1) + "…" : body);
   }
 
+  // ---- CTO Manager: the user talks the project through, the CTO writes a brief, the Konsey decides, the CTO evaluates, the user approves ----
+  const CTO_NAME = "CTO";
+  const BRIEF_OPEN = "[[PROJE-ÖZETİ]]";
+  const BRIEF_CLOSE = "[[/PROJE-ÖZETİ]]";
+  /** The prompt prefix that marks the CTO's evaluation of a Konsey decision (persisted with the turn, so the buttons survive a restart). */
+  const EVAL_PREFIX = "[Konsey kararının CTO değerlendirmesi]";
+
+  const CTO_RULES =
+    "Sen kullanıcının teknik direktörüsün (CTO) ve ona bağlı çalışırsın. Önce projeyi anla: eksik bilgi varsa en fazla üç net soru sor, sonra ilerle. " +
+    "Proje yeterince netleşince şu iki işaretin arasına bir proje özeti yaz: " + BRIEF_OPEN + " amaç, kapsam, kısıtlar, teknoloji, başarı ölçütleri, açık sorular " + BRIEF_CLOSE + ". " +
+    "Özetten sonra kullanıcıya özeti okumasını, gerekirse düzeltmesini ve hazır olunca 'Konseye ver' düğmesine basmasını söyle. " +
+    "Kullanıcının onayı olmadan hiçbir kararı onaylanmış sayma, işi başlatılmış gösterme.";
+
+  /** The brief between the two markers, or null when the answer has none (or an empty one). */
+  function extractBrief(text: string): string | null {
+    const start = text.indexOf(BRIEF_OPEN);
+    if (start < 0) return null;
+    const end = text.indexOf(BRIEF_CLOSE, start + BRIEF_OPEN.length);
+    const body = (end < 0 ? text.slice(start + BRIEF_OPEN.length) : text.slice(start + BRIEF_OPEN.length, end)).trim();
+    return body.length > 0 ? body : null;
+  }
+
+  function clipTo(text: string, max: number): string {
+    const body = text.trim();
+    return body.length > max ? body.slice(0, max - 1) + "…" : body;
+  }
+
+  /** The question put to the Konsey: decide on the approved brief (kept inside the draft limit). */
+  function composeCouncilTask(brief: string): string {
+    const head = "Aşağıdaki proje özeti için uygulanabilir bir teknik karar ver: mimari, aşamalar, riskler ve ilk adımlar. Belirsiz noktaları açıkça işaretle.\n\nProje özeti:\n";
+    return head + clipTo(brief, MAX_DRAFT_LENGTH - head.length);
+  }
+
+  /** The CTO's own turn after the Konsey answered: judge the decision and ask the user for approval or corrections. */
+  function composeEvaluation(decision: string): string {
+    const head =
+      EVAL_PREFIX + "\nKonsey proje özeti için aşağıdaki kararı verdi. CTO olarak değerlendir: kararı kısaca özetle, riskleri ve katılmadığın ya da eksik bulduğun noktaları söyle, " +
+      "sonra kullanıcıdan açıkça onay ya da düzeltme iste. Kendi başına onaylama.\n\nKonsey kararı:\n";
+    return head + clipTo(decision, MAX_DRAFT_LENGTH - head.length);
+  }
+
+  function isEvaluationPrompt(prompt: string): boolean {
+    return prompt.startsWith(EVAL_PREFIX);
+  }
+
   function draftProblem(text: string): WsDraftProblem {
     if (text.trim().length === 0) return "empty";
     if (text.length > MAX_DRAFT_LENGTH) return "too_long";
@@ -903,6 +949,7 @@ const VyronModel = (() => {
     const plan = PLAN_MODES.find((m) => m.id === input.planMode);
     const terminal = TERMINAL_MODES.find((m) => m.id === input.terminalMode);
     if (input.managerName) lines.push("Rol: " + input.managerName + ".");
+    if (input.managerName === CTO_NAME) lines.push(CTO_RULES);
     if (input.skillNames.length > 0) lines.push("Kullanılacak yetenekler: " + input.skillNames.join(", ") + ".");
     for (const instruction of input.skillInstructions ?? []) lines.push(instruction);
     if (input.connectorNames.length > 0) lines.push("Bağlam olarak seçilen bağlayıcılar: " + input.connectorNames.join(", ") + ".");
@@ -1032,6 +1079,11 @@ const VyronModel = (() => {
     titleFromPrompt,
     draftProblem,
     composeHandoff,
+    composeCouncilTask,
+    composeEvaluation,
+    extractBrief,
+    isEvaluationPrompt,
+    CTO_NAME,
     composePrompt,
     formatFileSize,
     parseResponse,
