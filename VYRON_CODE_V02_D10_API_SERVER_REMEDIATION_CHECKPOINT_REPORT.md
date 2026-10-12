@@ -1,0 +1,114 @@
+VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_CHECKPOINT_REPORT
+
+- Authorization scope: VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_CHECKPOINT_AUTHORIZATION — create exactly one narrow local Git checkpoint commit for the completed D-10 Hermes API Server remediation; no new feature work authorized.
+- Repository root: D:\Vyron Code
+- Branch before commit: master
+- Branch after commit: master
+- HEAD before commit: 92d0ae72f7c8ad962df65a491365bef77c16e213 "feat(desktop): add explicit Hermes session creation" — matched the expected baseline exactly.
+- HEAD after commit: 8221fc9 "fix(desktop): verify Hermes API Server connection"
+- Remotes: none, before and after.
+- Electron process state: no Electron/helper process found (checked via tasklist) before or after this work; none was launched, stopped, or inspected.
+- Existing staged files before work: none — `git status` before this task showed every remediation file unstaged/untracked.
+- Pre-existing unrelated worktree changes preserved: yes — every unrelated modified/deleted/untracked file (app/*, components/*, VYRON_CODE_V01_*.md and other pre-existing report files, .claude/, "Claude outputs/", dist-electron/, lib/workspaceShell.ts, tests/workspaceShell.test.ts, tsconfig.json, etc.) remains exactly as found, still unstaged/untracked after the commit — confirmed by post-commit `git status --short`.
+- D-08F/D-09/D-10 work preserved or retired: D-08B authorization boundary, D-08E endpoint setup, and D-09 task composer preserved (re-scoped where required); the original D-08C/D-10 WebSocket connectivity and session-lifecycle capability is retired in this commit (files deleted).
+- Proposed staging allowlist: electron/hermesApiServer.ts (new), electron/hermesAuthorization.ts, electron/hermesConnection.ts (deleted), electron/hermesEndpoint.ts, electron/hermesEndpointSetup.ts, electron/hermesSession.ts (deleted), electron/main.ts, electron/preload.ts, electron/renderer.html, electron/renderer.ts, electron/shared-ipc-contract.ts, electron/ws.d.ts (deleted), tests/electronHermesApiServer.test.ts (new), tests/electronHermesConnection.test.ts (deleted), tests/electronHermesEndpoint.test.ts, tests/electronHermesEndpointSetup.test.ts, tests/electronHermesSession.test.ts (deleted), tests/electronSecurityScaffold.test.ts. Every proposed file's full current diff was inspected individually before staging and confirmed exclusively D-10 remediation-scoped (comment re-scoping, ws:→http: policy changes, IPC surface reduction, sub-panel replacement, or full file deletion of the retired capability) — no mixed-scope hunk was found in any candidate.
+- Files staged: exactly the eighteen files in the allowlist above — confirmed identical via `git diff --cached --stat` before commit and `git show --stat HEAD` after.
+- Files excluded: tsconfig.json (staged-looking "M" but `git diff` showed zero content difference — a line-ending-only touch, not part of this remediation); VYRON_CODE_V01_PRODUCT_BLUEPRINT.md, app/globals.css, app/page.tsx, components/ChatPanel.tsx, components/DisabledCapabilities.tsx, components/FileTree.tsx, components/GitPanel.tsx, components/ProjectPicker.tsx (unrelated pre-existing P0 web-app redesign work); every untracked VYRON_CODE_*.md/HERMES_*.md/VYRON_PRO_*.md report from prior phases (unrelated, pre-existing); VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_REPORT.md (this remediation's own prior deliverable report — required to remain untracked/unstaged); .claude/, "Claude outputs/" (unrelated tooling/output dirs); components/PlannedCapabilities.tsx, components/Sidebar.tsx, components/TopBar.tsx, components/WelcomeHome.tsx (unrelated untracked P0 web-app components); dist-electron/ (build output artifact, never committed); lib/workspaceShell.ts, tests/workspaceShell.test.ts (unrelated P0 web-app work).
+- Files deleted in commit: electron/hermesConnection.ts, electron/hermesSession.ts, electron/ws.d.ts, tests/electronHermesConnection.test.ts, tests/electronHermesSession.test.ts.
+- Reports/media/generated artifacts staged: none.
+- Original unsupported WebSocket route disposition: fully retired in this commit — the dashboard-internal `/api/ws?token=<credential>` JSON-RPC session-lifecycle pathway (electron/hermesConnection.ts, electron/hermesSession.ts, electron/ws.d.ts) is deleted from the repository.
+- WebSocket/ws/wss/api-ws/query-token remaining: none in committed code — verified by source grep across every staged file; the only remaining occurrences of these tokens are inside comment-stripped doc-comment prose explaining what was retired, never executable code (independently confirmed by the committed scaffold test suite's own comment-stripped regression assertions, all passing).
+- Session/session-ID/history/resume remaining: none — `getSessionState`/`createSession`/`closeSession`/`session.create`/`session.activate`/`session.close`/`session_id` do not appear in any committed real code.
+- API Server official health-probe evidence: official Hermes Agent (NousResearch) documentation and gateway/platforms/api_server.py source (verified in the prior discovery/implementation phases, relied upon unchanged here) establish `GET /health` as an intentionally unauthenticated liveness route on the OpenAI-compatible API Server surface, distinct from the internal dashboard `/api/ws`.
+- API Server endpoint policy: `http:` scheme only; loopback-only or explicit-approved-host policy; explicit non-zero port required; pathname restricted to `""`, `"/"`, or `"/v1"`; no userinfo, query string, or fragment permitted (electron/hermesEndpoint.ts's `validateEndpointCandidate`).
+- Endpoint input schemes: `http:` only — `ws:`, `wss:`, `https:`, and `file:` are all rejected as `policy_rejected` (regression-tested).
+- Allowed endpoint hosts: `127.0.0.1`, `localhost`, `::1`, `[::1]` under `loopback-only` policy; a caller-supplied approved-hosts list under `explicit-approved-host` policy (production never supplies a non-empty one, so that branch is fail-closed today).
+- Explicit non-zero port required: yes — an absent or `"0"` port is rejected as `invalid_configuration`.
+- Allowed endpoint paths: exactly `""`, `"/"`, `"/v1"` (`ALLOWED_PATHNAMES`); any other pathname (e.g. `/api/ws`, `/health`, `/v1/chat/completions`) is rejected as `policy_rejected`.
+- Userinfo/query/fragment policy: all three unconditionally rejected as `policy_rejected`, regardless of host/path policy.
+- DNS/network during configuration: none — `validateEndpointCandidate`/`resolveTrustedEndpoint` are pure, synchronous, WHATWG-`URL`-parsing-only functions; no DNS/TCP/HTTP action occurs during endpoint configuration.
+- Fixed probe method: `GET`.
+- Fixed probe path: `/health` (root-level), always at the endpoint's own `.origin`, discarding any configured `/v1` path for this one probe.
+- Probe body/query/redirect/cookie policy: no body, no query string, `redirect: "error"` (a redirect is treated as a failure, never followed), no cookie/`credentials` option of any kind.
+- Probe Authorization header behavior: never constructed or attached — confirmed by source grep (only a quoted `"Authorization"` header-name literal or `Bearer` string would indicate real construction; neither appears) and by a dedicated regression test, consistent with `/health`'s documented unauthenticated status.
+- Credential main-process boundary: unchanged from D-08B — `electron/hermesAuthorization.ts`'s `getCurrentCredential()` remains main-process-memory-only; its one current caller is `electron/hermesApiServer.ts`, which reads it only as a precondition gate, never attaching it to the probe request.
+- Credential renderer exposure: none — `getCurrentCredential` is absent from preload.ts, renderer.ts, and shared-ipc-contract.ts (grep-confirmed on the committed files).
+- Credential URL/query/fragment exposure: none — the retired `connectUrl.searchParams.set("token", credential)` construction no longer exists anywhere in the repository.
+- Credential persistence: none — process-memory-only, cleared on `clearAuthorization()`/app exit.
+- Endpoint renderer exposure: none — `getConfiguredEndpoint`/`HermesTrustedEndpoint` remain absent from preload.ts, renderer.ts, and shared-ipc-contract.ts.
+- Endpoint persistence: none — process-memory-only, cleared on `clearEndpointConfiguration()`/app exit.
+- Raw HTTP response/header/body renderer exposure: none — `verifyApiServerConnection()` reduces the fetch response to one of the fixed `HermesApiServerAmbientState` strings only; `response.status`/`.headers`/`.json()`/`.text()` are never read or forwarded (grep-confirmed absent from electron/hermesApiServer.ts).
+- Verification state model: `HermesApiServerAmbientState` = `"not_authorized" | "endpoint_not_configured" | "ready_to_verify" | "verifying" | "reachable" | "unavailable" | "safe_failure"` (electron/shared-ipc-contract.ts). No `unauthorized` state exists in this build — `/health` never returns an authorization-shaped outcome per its documented contract, so this state was correctly never introduced.
+- Verification IPC methods: `hermes:getApiServerVerificationState`, `hermes:verifyApiServerConnection`, `hermes:clearApiServerVerification`, delegating to electron/hermesApiServer.ts's three same-named functions.
+- Renderer verification method arguments: zero for all three (`.length === 0`, asserted directly in tests/electronHermesApiServer.test.ts and the preload regression test).
+- Main-process HTTP owner: electron/hermesApiServer.ts exclusively — the sole file in electron/ permitted to call `fetch()` per the scaffold test's own explicit allowlist; confirmed via grep that no other electron/*.ts file contains a `fetch(` call.
+- Network scope: exactly one possible outbound HTTP call per explicit `verifyApiServerConnection()` invocation, bounded by a 10-second `AbortController` timeout.
+- Network before explicit verification: none — no request occurs on state reads, authorization, endpoint configuration, or app startup.
+- Auto-verify/retry/polling/reconnect: none — `initHermesState()` calls only the safe `getApiServerVerificationState()` read at startup, never `verifyApiServerConnection()`; no timer/interval/reconnect loop exists anywhere in the committed code.
+- Verification preconditions: both authorization and a resolved trusted endpoint are re-checked immediately before every real network use, never merely trusted from a prior read.
+- Duplicate/in-flight verification protection: a `verifyInFlight` boolean bounds the module to one outstanding request; a duplicate call returns `{ state: "verifying" }` without starting a second request.
+- Authorization-clear behavior: `hermes:clearAuthorization`'s IPC handler unconditionally calls `clearApiServerVerification()` after `clearHermesAuthorization()`, enforced at the handler itself.
+- Endpoint-clear behavior: `hermes:clearEndpointConfiguration`'s IPC handler unconditionally calls `clearApiServerVerification()` after `clearEndpointConfiguration()`, same enforcement.
+- App-exit behavior: `app.on("before-quit", ...)` unconditionally calls `clearApiServerVerification()`.
+- Stale-operation race protection: a monotonic `generation` counter is bumped on every reset and checked after every `fetch()` resolution/rejection — a verify superseded by an intervening clear can never commit a stale result.
+- Prompt/chat/response capability: none.
+- Session capability: none.
+- Context/file/search/Git transfer capability: none — electron/hermesApiServer.ts has no relationship to the task composer or any workspace module.
+- Workspace/path/cwd/project transfer: none.
+- Provider/model/multimodel capability: none.
+- Event-stream/interrupt capability: none.
+- Terminal/shell/child_process capability: none — the one grep hit across candidate files was a pre-existing main.ts doc comment describing Node's own `child_process.fork()` as the mechanism `powerMonitor`-style IPC channels use, purely explanatory prose, not real usage.
+- File-write/Git-write capability: none.
+- Generic IPC/raw ipcRenderer/EventEmitter: none — preload.ts still exposes only the fixed, explicit method set; `ipcRenderer` appears only in preload.ts.
+- Renderer classic-script require/exports: unchanged — electron/renderer.ts still has zero top-level import/export statements.
+- Renderer privileged-API exposure: none beyond the three zero-argument verification methods; `window.vyronDesktop.hermes` exposes exactly ten methods total.
+- Electron lifecycle changed: no structural change — only the specific cleanup call inside `before-quit` was updated to `clearApiServerVerification()`.
+- Electron security settings changed: no.
+- contextIsolation: true. nodeIntegration: false. sandbox: true. webSecurity: true. webviewTag: false. — all unchanged.
+- Absolute-path/parent-path exposure: none introduced — the only `__dirname` usage in the diff is main.ts's pre-existing, main-process-only `path.join(__dirname, "preload.js"/"renderer.html")`.
+- Workspace/endpoint/credential persistence: none for any of the three.
+- Files changed: electron/hermesAuthorization.ts, electron/hermesEndpoint.ts, electron/hermesEndpointSetup.ts, electron/main.ts, electron/preload.ts, electron/renderer.html, electron/renderer.ts, electron/shared-ipc-contract.ts, tests/electronHermesEndpoint.test.ts, tests/electronHermesEndpointSetup.test.ts, tests/electronSecurityScaffold.test.ts.
+- Files added: electron/hermesApiServer.ts, tests/electronHermesApiServer.test.ts.
+- Files deleted: electron/hermesConnection.ts, electron/hermesSession.ts, electron/ws.d.ts, tests/electronHermesConnection.test.ts, tests/electronHermesSession.test.ts.
+- Tests added/updated: tests/electronHermesApiServer.test.ts (24 new tests) fully replaces the deleted connection/session test files; tests/electronHermesEndpoint.test.ts and tests/electronHermesEndpointSetup.test.ts updated for the http:/pathname-allowlist/port-required policy; tests/electronSecurityScaffold.test.ts comprehensively rewritten for the retired capability and its replacement.
+- Lint: clean (`npm run lint`, zero errors, re-run immediately before staging).
+- Web TypeScript: clean (`npx tsc --noEmit`, zero errors, re-run immediately before staging).
+- Electron TypeScript: clean (`npx tsc -p tsconfig.electron.json --noEmit`, zero errors, re-run immediately before staging).
+- Production build: succeeds (`npm run build`, re-run immediately before staging).
+- Full test suite: 596/596 passing (23 test files), re-run with `--testTimeout=20000` immediately before staging to eliminate a known, pre-existing, unrelated timing-sensitive flake in tests/electronWorkspaceExplorer.test.ts under parallel worker load.
+- Electron build: succeeds (`npm run build:electron`, re-run immediately before staging); a stale pre-existing `dist-electron/electron/hermesConnection.js`/`hermesSession.js` build-output pair from before this checkpoint's own earlier implementation session was found and cleaned via a full `dist-electron` rebuild in that prior session — reconfirmed absent here.
+- Changed-file secret scan: one benign false positive — the `sk-[a-zA-Z0-9]{10,}` heuristic pattern matches the English phrase "risk-acknowledgement" (as in "risk-acknowledgement checkbox") in tests/electronSecurityScaffold.test.ts; manually inspected and confirmed to be ordinary test-description prose, not a credential of any kind. No other hit of any kind (API key, password, AWS key, private-key block) in any candidate file.
+- Candidate-source secret scan: same result as above — clean apart from the one confirmed false positive.
+- Staged-file secret scan: re-run against the final staged set post-`git add`; identical result (one confirmed false positive, otherwise clean).
+- Credential/API-key/endpoint/HTTP leak scans: clean — see the corresponding capability/exposure lines above.
+- Credential/API-key/endpoint persistence scans: clean — see "Credential persistence"/"Endpoint persistence" above.
+- API-key URL/query/fragment absence: clean — no `searchParams.set`/query-string credential construction exists in any committed file.
+- WebSocket/session/query-token absence: clean — see corresponding lines above.
+- HTTP method/path/body/query/redirect/cookie scope: clean — exactly one `fetch(` call site, `GET`, `/health`, no body/query, `redirect: "error"`, no cookies.
+- Fixed GET /health-only: clean — confirmed the single fetch target is always `${endpoint.url.origin}/health`, never the configured `/v1` path.
+- Network-before-explicit-verification absence: clean.
+- Auto-verify/retry/polling/reconnect absence: clean.
+- Workspace/task/context/file/search/Git transfer absence: clean.
+- Prompt/chat/event/provider/multimodel absence: clean.
+- Generic IPC/raw ipcRenderer absence: clean.
+- Renderer privileged-API exposure: clean (see above).
+- Renderer classic-script scan: clean — zero top-level import/export in electron/renderer.ts.
+- Electron security/preload regression: clean — HARDENED_WEB_PREFERENCES and preload's contextBridge-only surface structurally unchanged, still fully covered by passing scaffold tests.
+- Absolute-path/parent-path leak scan: clean (see above).
+- Persistence absence: clean (see above).
+- Shell/terminal/Git-write absence: clean.
+- Raw control-byte/NUL scan: clean — verified via a byte-level Python scan across every candidate source file (no control byte outside tab/LF/CR).
+- git diff --check: clean (exit 0) — only pre-existing LF→CRLF line-ending normalization notices on Windows, no trailing-whitespace or conflict-marker errors, checked both before staging and reconfirmed the staged set introduces none.
+- Full staged diff reviewed: yes — every one of the eighteen files' complete diff was read and classified individually before `git add`, and `git diff --cached --stat` was confirmed to match the reviewed allowlist exactly before commit.
+- Commit created: yes.
+- Commit hash: 8221fc9
+- Commit subject: fix(desktop): verify Hermes API Server connection
+- Git staging performed: yes — via one explicit `git add <allowlist>` call listing exactly the eighteen reviewed files; no `git add .`/`-A`/`-p` was used.
+- Git commit performed: yes — one commit, no `--amend`.
+- Git remote changed: no — none existed before or after.
+- Git push/fetch/pull performed: no.
+- Unrelated working-tree changes preserved: yes — confirmed via post-commit `git status --short` showing every pre-existing unrelated modified/deleted/untracked path unchanged.
+- Tokens/secrets exposed: none — no real credential, endpoint, or secret was read, entered, or committed; the one secret-scan hit is a confirmed false positive on ordinary English prose, not a secret.
+- Electron/native dialog launched by coding agent: no.
+- User-owned acceptance required: yes — as stated in the prior VYRON_CODE_V02_D10_API_SERVER_REMEDIATION_REPORT.md, the user must independently exercise the "Verify local Hermes connection" button against their own real, locally running Hermes API Server instance to confirm end-to-end runtime behavior before this capability is considered production-accepted; no live run was performed or is claimed here.
+- Exact next action requiring explicit approval: none required for this checkpoint itself — the commit is complete and local-only. Any future push, remote configuration, or additional feature work on top of this checkpoint requires its own separate explicit authorization.

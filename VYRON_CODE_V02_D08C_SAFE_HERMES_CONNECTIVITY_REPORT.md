@@ -1,0 +1,60 @@
+# VYRON_CODE_V02_D08C_SAFE_HERMES_CONNECTIVITY_REPORT
+
+**Outcome: SUCCESS, with a disclosed and reported policy blocker.** The full D-08C connectivity state machine, IPC surface, and UI were implemented exactly as scoped, but the "live network connection" half of the capability was deliberately **not** implemented, because this authorization's own trusted-endpoint precondition cannot currently be satisfied. Per this authorization's own explicit instruction for exactly this situation ("do not implement live network connection. Instead implement only a static safe unavailable state and report the blocker"), `connect()` always resolves to the safe `"unavailable"` state — no socket, TCP probe, or WebSocket handshake is ever attempted anywhere in this codebase as a result of this task. All required validation passed. Part B was left entirely unstaged, per Section 12.
+
+## The trusted-endpoint-policy blocker (why no live connection was implemented)
+
+This authorization requires D-08C's endpoint to be either a main-process-owned, compile-time/project-local **fixed** value, or — if none can be safely defined — a static `"unavailable"` state with the blocker reported, and explicitly forbids reading endpoint/token configuration from an environment variable in this stage.
+
+Read-only inspection of the existing codebase found: the **only** source of Hermes's host/port anywhere in this repository is `.env.local`'s `HERMES_HOST`/`HERMES_PORT`, read via `process.env` in `lib/hermesClient.ts` (`getHermesClient()`) and `app/api/hermes/health/route.ts`. No compile-time constant exists anywhere for these values. This is not a new discovery — this exact gap was already identified, before this authorization, in this repository's own `VYRON_CODE_V02_DESKTOP_MIGRATION_ARCHITECTURE_AUDIT.md` (risk-table row 11) as an "Open, unresolved design gap ... blocking for D-08," explicitly deferred pending "its own separate, explicit product decision." Separately, the pre-existing, already-accepted D-08A IPC/UX spec's own original design for D-08C ("a raw TCP connect-and-close, mirroring the web app's own `GET /api/hermes/health`") would have needed the exact same environment-sourced host/port to target — so the blocker holds under either D-08C definition, not just this authorization's own fuller connect/disconnect surface.
+
+Given both: (a) this authorization's own explicit prohibition on reading environment variables for D-08C, and (b) the absence of any other host/port source in the codebase, I did not hardcode a specific IP/port as a new "compile-time fixed" constant — doing so would itself be exactly the kind of "broader network policy" decision this authorization tells me to stop and report rather than assume, since it would permanently commit shipped source code to one specific local value with no user-facing way to correct it if wrong (this authorization also forbids a user-editable endpoint setting). I followed the authorization's own designed off-ramp instead.
+
+## What was built
+
+- **`electron/hermesConnection.ts`** (new) — the main-process connectivity service. Imports only a type-only import from `shared-ipc-contract.ts` and a value import from `hermesAuthorization.ts` (to gate `connect()`/`getConnectionState()` on current D-08B authorization, per this authorization's own explicit precondition) — no `electron`, no `ws`, no `node:net`/`node:http`/`node:https`, no `process.env`. Three exports: `getConnectionState` (ambient `not_authorized`/`ready_to_connect`/`unavailable`), `connect` (the single explicit attempt — bounded to one in-flight call, gated on authorization, always resolves to `unavailable` after one explicit yield point), `disconnect` (idempotent reset to `ready_to_connect`). A monotonic `generation` counter — the same T-17-style pattern as `hermesAuthorization.ts` — prevents a stale in-flight `connect()` from resolving to anything but `disconnected` after a `disconnect()` supersedes it.
+- **`electron/shared-ipc-contract.ts`** — added `HermesConnectionAmbientState` (the 8-value enum from this authorization's own Section 6), `HermesConnectionState`/`HermesConnectionResult` wrapper types, 3 new `HERMES_IPC_CHANNELS` entries, and extended `DesktopHermesApi` to 7 methods total.
+- **`electron/main.ts`** — added 3 new `ipcMain.handle` registrations, each a thin delegate; `connect`/`disconnect` handlers take no arguments.
+- **`electron/preload.ts`** — added the locally-duplicated connection types and 3 bridge methods, each forwarding zero arguments (`getConnectionState`, `connect`, `disconnect`).
+- **`electron/renderer.ts`** — added a self-contained connection sub-panel: `HermesConnectionViewState` (7 states), its own independent `hermesConnectionRequestGeneration` counter (mirroring the authorization panel's own T-17 guard, kept separate), `renderHermesConnection`, `handleConnectHermes`/`handleDisconnectHermes`, and wiring. The connection section is shown only while the outer authorization panel is `"authorized"`. `handleClearHermesAuthorization` now also supersedes any in-flight connect and calls `disconnect()` so clearing authorization always leaves connectivity inactive too. `initHermesState` restores the real connection state from the main process on startup rather than assuming `ready_to_connect`.
+- **`electron/renderer.html`** — added `#hermes-connection-section` (starts hidden): a status paragraph, a `Connect`/`Disconnect` button pair (disconnect starts hidden), and a generic error paragraph. No endpoint/host/port/URL/session/prompt/chat/context/provider/model control of any kind.
+- **`tests/electronHermesConnection.test.ts`** (new) — 17 tests covering the service module's full behavior, including a genuine (not merely theoretical) in-flight-`connect()`-vs-`disconnect()` race using an unawaited promise, bounded-concurrent-`connect()` rejection, and full authorization-gating coverage.
+- **`tests/electronSecurityScaffold.test.ts`** — extended with: updated `HERMES_IPC_CHANNELS` count (4→7); new preload-API assertions (exactly 7 Hermes methods; `connect`/`disconnect` forward zero arguments); a dedicated `hermesConnection.ts` module-boundary scan (exactly 2 imports — one type-only, one from `hermesAuthorization.ts`; no `electron`/`ws`/`node:*` value import; no console/network/persistence/env pattern outside doc-comment prose; exactly 3 exported functions; generation-counter and in-flight-bound guards present; a structural assertion that `ambientState` is never set to `"connected"`); an updated `main.ts` registration test (7 channels, zero-argument connect/disconnect handlers); a new `renderer.ts` D-08C wiring block (bridge calls, independent generation counter, clear-authorization-also-disconnects, no endpoint/host/port/socket rendering, no logging); an updated scaffold file-count assertion (twelve→thirteen); an updated button-id list (+2); and a new `renderer.html` connection-panel structure block (no endpoint-editing control of any kind, input count unchanged at 2).
+
+## Required D-08C connection policy — status of each item
+
+Renderer endpoint authority: **none, confirmed** — `connect()`/`disconnect()` take zero arguments in every layer (contract, preload, main), tested explicitly. Environment-based endpoint/token discovery: **none** — `hermesConnection.ts` never reads `process.env`. Automatic connect/reconnect: **none** — `connect()` is only ever invoked from an explicit button click; no timer, no retry loop, no startup call exists anywhere. Session/prompt/context/provider/multimodel capability: **none** — confirmed by scan, zero matches. Connection bounds (Section 5): **not applicable in this build** — since no real socket is ever opened, there is no handshake to timeout, no inbound message stream to bound, and no socket to clean up on process exit; this is stated explicitly in the module's own header rather than left implicit, and becomes relevant only once a trusted-endpoint policy is separately authorized.
+
+## Required validation (all passed)
+
+`npm run lint` (clean) · `npx tsc --noEmit` (clean) · `npx tsc -p tsconfig.electron.json --noEmit` (clean) · `npm run build` (21 routes) · full test suite (**385/385**, 20/20 files — 41 more than the post-Part-A baseline of 344) · `npm run build:electron` (succeeded) · changed-file secret scan (clean) · full candidate source secret scan (clean) · credential-leak scan (clean) · credential-persistence absence scan (clean, doc-comment-only matches) · safeStorage/keychain/environment-token absence scan (clean — only doc-comment prose plus the pre-existing unrelated `VYRON_LIFECYCLE_DEBUG` flag) · endpoint renderer-supply absence scan (clean — `connect`/`disconnect` take zero arguments everywhere) · endpoint exposure scan (clean — no endpoint field in any type/return value) · network/WebSocket scope scan (clean — confirmed no real network API imported or called anywhere in the D-08C diff; renderer has no network authority; no automatic connect/reconnect; no session/prompt/event/context/provider/multimodel capability) · generic-IPC/raw-`ipcRenderer`/`EventEmitter` absence scan (clean) · raw transport/protocol exposure scan (clean — the entire preload `hermes` namespace was read directly and contains only `ipcRenderer.invoke(<fixed channel>[, request])` calls) · session/prompt/context/provider/multimodel absence scan (clean, zero matches) · Electron security/preload regression scan (clean — all 385 tests pass) · renderer privileged-API exposure scan (clean) · absolute-path/parent-path leak scan (clean) · workspace-persistence absence scan (`electron/workspace-grant.ts` diff still empty) · shell/terminal/`child_process`/Git-write absence scan (clean) · `git diff --check` (clean, only routine LF→CRLF advisories).
+
+## Commit policy — followed exactly
+
+Part B was **not** staged or committed. `git diff --cached --name-only` is empty. HEAD remains at `70e326b` (the Part A checkpoint). No second commit was created; the Part A commit was not amended; no report was staged; no remote was changed; nothing was pushed.
+
+## User-owned acceptance — not yet performed, by design
+
+No Electron process, native dialog, or server was launched or opened by me at any point in this task. The user's own acceptance run:
+
+```powershell
+cd "D:\Vyron Code"
+npm run build:electron
+.\scripts\start-desktop.ps1
+```
+
+Expected honest result at step 8 of the acceptance flow (Section 11): clicking **Connect** will show a brief "Connecting…" state and then settle on **"Hermes connectivity is unavailable in this build."** — this is the correct, disclosed outcome given the blocker above, not a defect. No endpoint, host, port, token, session ID, or raw error will appear anywhere in that flow.
+
+---
+
+**VYRON_CODE_V02_D08C_SAFE_HERMES_CONNECTIVITY_REPORT**
+- D-08C trusted endpoint policy: **not satisfiable under current constraints** — reported, not implemented around
+- D-08C fixed endpoint source: none exists; only source in the repo (`.env.local` via `process.env`) is explicitly forbidden for this stage
+- Renderer endpoint authority: none — `connect`/`disconnect` take zero arguments
+- D-08C network activity implemented: **none** — no socket/TCP/WebSocket is ever opened
+- D-08C connection state model: 8-value enum (`not_authorized`/`ready_to_connect`/`connecting`/`connected`/`disconnecting`/`disconnected`/`unavailable`/`safe_failure`) fully implemented; `"connected"` is unreachable in this build by design
+- Automatic connect/reconnect: none
+- Session/prompt/context/provider/multimodel capability: none
+- Full validation: lint, both `tsc`, build, 385/385 tests, `build:electron`, every required scan, `git diff --check` — all passed
+- Git staging/commit performed for Part B: no, per Section 12
+- Exact next action requiring explicit approval: the user's own D-08C acceptance run (expected to show "unavailable," honestly); separately, a future authorization to resolve the trusted-endpoint-policy gap (e.g. a first-run setup flow, a packaged-app config file, or another explicitly chosen mechanism) before D-08C can ever reach a real "connected" state

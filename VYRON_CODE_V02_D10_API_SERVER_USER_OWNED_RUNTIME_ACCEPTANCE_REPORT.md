@@ -1,0 +1,44 @@
+VYRON_CODE_V02_D10_API_SERVER_USER_OWNED_RUNTIME_ACCEPTANCE_REPORT
+- Authorization scope: VYRON_CODE_V02_D10_API_SERVER_RUNTIME_ACCEPTANCE_FINALIZATION — documentation and read-only Git verification only, finalizing the already-completed user-owned D-10 Hermes API Server runtime acceptance test.
+- Repository root: D:\Vyron Code
+- Branch before user acceptance: master
+- Branch after user acceptance: master
+- HEAD before user acceptance: 090f062 "fix(desktop): unblock Hermes authorization and endpoint configuration"
+- HEAD after user acceptance: 090f062 (unchanged)
+- Remotes before user acceptance: none
+- Remotes after user acceptance: none
+- Working-tree status before user acceptance: only pre-existing, unrelated modified/deleted files and untracked reports.
+- Working-tree status after user acceptance: identical — confirmed via `git status --short`; nothing changed by this finalization task.
+- Agent-launched Electron/application/server/browser/network: none in this task — this task performed only the three permitted read-only Git checks.
+- Agent application/UI/DevTools/automation interaction: none.
+- Token/API key/endpoint/port/raw HTTP/log/workspace inspection by agent: none.
+- Agent source/test/config/script/report edits before result: none — the acceptance result was already reported by the user before this finalization task began.
+- Agent Git staging/commit/remote operations: none — only `git status --short`, `git log -1 --oneline`, `git remote -v` were run.
+- User-owned local Hermes API Server status: running and reachable, confirmed by the user's own real desktop UI flow.
+- User-owned Vyron Code application launch: yes.
+- User-owned explicit authorization: yes — observed "Hermes: Authorized for this app session only."
+- User-owned explicit endpoint configuration: yes — observed "Local companion endpoint configured for this app session only."
+- User-owned explicit verification request: yes.
+- User-reported acceptance outcome: D10_API_SERVER_RUNTIME_ACCEPTANCE_SUCCESS
+- User-reported safe UI sequence: Ready to verify local Hermes API Server. → Local Hermes API Server reachable. (also observed: "Task sending is not available in this build.", confirming no send capability exists.)
+- Official GET /health reachability demonstrated: Yes.
+- Safe reachable UI demonstrated: Yes.
+- API key displayed to user/agent: no — never shown in chat at any point in this process.
+- Endpoint/port displayed to agent: no — not disclosed by the user in any report.
+- Prompt/task submission performed: No.
+- Session lifecycle performed: No.
+- Context/file/search/Git transfer performed: No.
+- Provider/model/multimodel operation performed: No.
+- Event-stream/interrupt operation performed: No.
+- Terminal/shell/child_process operation performed: No.
+- File write/Git write operation performed: No.
+- Runtime cleanup paths not exercised: clear-authorization, clear-endpoint-configuration, and app-restart cleanup were not exercised by this acceptance test (happy path only) — these remain covered by the existing automated test suite, not by manual acceptance.
+- Runtime acceptance limitations: authenticated-beyond-health-check behavior, error-state testing, timeout testing, redirect testing, API key rotation, app restart behavior, and endpoint/authorization-clear cleanup were not exercised by this test.
+- Runtime diagnostics performed: none in this task.
+- Code/test/config changes made: none.
+- Report created: yes — this file.
+- Report staged/committed: no.
+- Tokens/secrets exposed: none.
+- Electron/native dialog launched by coding agent: no.
+- D-10 runtime acceptance conclusion: PASS — real user-owned desktop UI acceptance completed successfully.
+- Exact next action requiring explicit approval: none required to treat this milestone as UAT-accepted. Any future Git staging/commit, remote configuration, or new feature work still requires its own separate, explicit authorization.
