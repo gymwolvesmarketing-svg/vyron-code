@@ -405,3 +405,23 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible), textarea:focu
 .quick-skills { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--selected); color: var(--text-2); font-size: 11px; line-height: 16px; text-align: center; }
 .quick-add { border-style: dashed; color: var(--muted); }
 .form-text { min-height: 90px; resize: vertical; font: inherit; }
+
+/* CTO progress strip: the stages of a CTO project, derived from the task's turns. */
+.cto-stages { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; margin: 0 0 16px; padding: 0; }
+.cto-stage { display: flex; flex-direction: column; gap: 2px; min-width: 120px; padding: 8px 12px; border: 1px solid var(--line, rgba(255, 255, 255, 0.12)); border-radius: 10px; opacity: 0.55; }
+.cto-stage-name { font-weight: 600; font-size: 13px; }
+.cto-stage-detail { font-size: 12px; opacity: 0.8; }
+.cto-stage.cto-done { opacity: 1; border-color: rgba(80, 200, 120, 0.6); }
+.cto-stage.cto-running { opacity: 1; border-color: rgba(99, 102, 241, 0.9); }
+.cto-stage.cto-waiting { opacity: 1; border-color: rgba(240, 180, 60, 0.9); }
+.cto-stage.cto-error { opacity: 1; border-color: rgba(230, 80, 80, 0.9); }
+
+/* CTO task list: one row per Coder task, the next one has a start button. */
+.cto-plan { margin: 0 0 16px; padding: 12px; border: 1px solid var(--line, rgba(255, 255, 255, 0.12)); border-radius: 10px; }
+.cto-tasks { list-style: decimal inside; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.cto-task { display: flex; align-items: center; gap: 10px; }
+.cto-task-title { flex: 1; }
+.cto-task-state { font-size: 12px; opacity: 0.8; }
+.cto-task.cto-done .cto-task-state { color: rgb(80, 200, 120); }
+.cto-task.cto-running .cto-task-state { color: rgb(129, 140, 248); }
+.cto-task.cto-error .cto-task-state { color: rgb(230, 80, 80); }

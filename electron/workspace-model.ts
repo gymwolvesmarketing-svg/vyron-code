@@ -926,6 +926,176 @@ const VyronModel = (() => {
     return prompt.startsWith(EVAL_PREFIX);
   }
 
+  // ---- CTO task plan: the approved decision is split into at most MAX_CTO_TASKS tasks; the user starts each one (a click = the approval) ----
+  const TASKLIST_PREFIX = "[CTO görev listesi]";
+  const TASKS_OPEN = "[[GÖREV-LİSTESİ]]";
+  const TASKS_CLOSE = "[[/GÖREV-LİSTESİ]]";
+  const MAX_CTO_TASKS = 8;
+  const MAX_TASK_TITLE_CHARS = 300;
+  const TASK_RESULT_CHARS = 1_200;
+
+  /** The CTO's request after the user approved the decision: split it into ordered tasks, start none. */
+  function composeTaskListRequest(decision: string): string {
+    const head =
+      TASKLIST_PREFIX + "\nKullanıcı Konsey kararını onayladı. Kararı, Coder'a sırayla tek tek verilebilecek en fazla " + String(MAX_CTO_TASKS) +
+      " somut göreve böl; her görev tek başına yapılabilir ve doğrulanabilir olsun. Numaralı listeyi YALNIZCA " + TASKS_OPEN + " ve " + TASKS_CLOSE +
+      " işaretlerinin arasına yaz, sonra sırayı bir-iki cümleyle açıkla. Hiçbir görevi başlatma: her görevi kullanıcı kendi tıklamasıyla başlatır.\n\nKonsey kararı:\n";
+    return head + clipTo(decision, MAX_DRAFT_LENGTH - head.length);
+  }
+
+  /** The numbered tasks between the markers (markdown emphasis stripped), at most MAX_CTO_TASKS; empty when there is no list. */
+  function extractTasks(text: string): string[] {
+    const start = text.indexOf(TASKS_OPEN);
+    if (start < 0) return [];
+    const end = text.indexOf(TASKS_CLOSE, start + TASKS_OPEN.length);
+    const body = end < 0 ? text.slice(start + TASKS_OPEN.length) : text.slice(start + TASKS_OPEN.length, end);
+    const tasks: string[] = [];
+    for (const line of body.split(/\r?\n/)) {
+      const m = line.match(/^\s*\d+[.)]\s+(.+)$/);
+      if (!m) continue;
+      const title = (m[1] ?? "").replace(/[*_`]/g, "").trim();
+      if (title.length > 0) tasks.push(title.length > MAX_TASK_TITLE_CHARS ? title.slice(0, MAX_TASK_TITLE_CHARS - 1) + "…" : title);
+      if (tasks.length >= MAX_CTO_TASKS) break;
+    }
+    return tasks;
+  }
+
+  const TASK_PROMPT_PATTERN = /^\[Görev (\d+)\/(\d+)\]/;
+
+  /** The Coder's task for item `index` (1-based): only that item, with the whole list and the decision as context. */
+  function composeTaskPrompt(index: number, titles: readonly string[], decision: string): string {
+    const list = titles.map((title, i) => String(i + 1) + ". " + title).join("\n");
+    const head =
+      "[Görev " + String(index) + "/" + String(titles.length) + "] " + (titles[index - 1] ?? "") +
+      "\n\nSen Coder'sın. Aşağıdaki listenin YALNIZCA bu görevini yap, sonraki görevlere geçme. Değiştireceğin dosyayı yazmadan hemen önce yalnızca o dosyayı oku. " +
+      "Bitirince ne yaptığını ve nasıl doğruladığını kısaca yaz.\n\nTüm görev listesi:\n" + list + "\n\nKonsey kararı (bağlam):\n";
+    return head + clipTo(decision, Math.max(0, MAX_DRAFT_LENGTH - head.length));
+  }
+
+  /** The Reviewer's task: look at what the Coder reported for every task. */
+  function composeReviewPrompt(titles: readonly string[], results: ReadonlyArray<string | null>): string {
+    const parts = titles.map((title, i) => String(i + 1) + ". " + title + "\nCoder'ın bildirdiği sonuç: " + clipTo(results[i] ?? "(sonuç yok)", TASK_RESULT_CHARS));
+    const head = "Coder aşağıdaki görevleri yaptı. Sonuçları incele: hatalar, eksikler ve riskler neler? Gerekirse çalışma klasöründeki dosyaları oku. Düzeltilmesi gerekenleri madde madde yaz.\n\n";
+    return head + clipTo(parts.join("\n\n"), MAX_DRAFT_LENGTH - head.length);
+  }
+
+  type CtoTaskState = "pending" | "running" | "done" | "error";
+  interface CtoPlan {
+    readonly planAt: number;
+    readonly tasks: ReadonlyArray<{ readonly index: number; readonly title: string; readonly state: CtoTaskState }>;
+    readonly review: "none" | CtoTaskState;
+  }
+
+  /** The newest finished CTO task list and where each of its tasks stands, derived from the turns after it; null without a list. */
+  function ctoTaskPlan(turns: readonly CtoStageTurn[]): CtoPlan | null {
+    let planAt = -1;
+    let titles: string[] = [];
+    for (let i = turns.length - 1; i >= 0; i -= 1) {
+      const t = turns[i]!;
+      if (t.prompt.startsWith(TASKLIST_PREFIX) && t.status === "done" && t.text !== null) {
+        const found = extractTasks(t.text);
+        if (found.length > 0) {
+          planAt = i;
+          titles = found;
+          break;
+        }
+      }
+    }
+    if (planAt < 0) return null;
+    const tasks = titles.map((title, k) => {
+      let state: CtoTaskState = "pending";
+      for (let i = turns.length - 1; i > planAt; i -= 1) {
+        const t = turns[i]!;
+        const m = t.prompt.match(TASK_PROMPT_PATTERN);
+        if (m && Number(m[1]) === k + 1 && Number(m[2]) === titles.length) {
+          state = t.status === "running" ? "running" : t.status === "error" ? "error" : "done";
+          break;
+        }
+      }
+      return { index: k + 1, title, state };
+    });
+    let review: "none" | CtoTaskState = "none";
+    for (let i = turns.length - 1; i > planAt; i -= 1) {
+      const t = turns[i]!;
+      if (t.labels.indexOf("SubAgent: Reviewer") >= 0) {
+        review = t.status === "running" ? "running" : t.status === "error" ? "error" : "done";
+        break;
+      }
+    }
+    return { planAt, tasks, review };
+  }
+
+  type CtoStageState = "pending" | "waiting" | "running" | "done" | "error";
+  interface CtoStage {
+    readonly id: string;
+    readonly label: string;
+    readonly state: CtoStageState;
+    readonly detail: string;
+  }
+  interface CtoStageTurn {
+    readonly prompt: string;
+    readonly agent: string | null;
+    readonly labels: readonly string[];
+    readonly status: "running" | "done" | "error";
+    readonly text: string | null;
+  }
+
+  /**
+   * Where a CTO project stands, derived only from the task's turns (nothing extra is stored): null when the task has no CTO turn.
+   * Stages: brief -> Konsey -> CTO evaluation -> the user's approval -> Coder -> Reviewer.
+   */
+  function ctoStages(turns: readonly CtoStageTurn[]): CtoStage[] | null {
+    const hasLabel = (t: CtoStageTurn, name: string) => t.labels.indexOf("SubAgent: " + name) >= 0;
+    if (!turns.some((t) => hasLabel(t, CTO_NAME))) return null;
+    const lastIndex = (test: (t: CtoStageTurn) => boolean, from: number): number => {
+      for (let i = turns.length - 1; i >= from; i -= 1) if (test(turns[i]!)) return i;
+      return -1;
+    };
+    const fromStatus = (t: CtoStageTurn | undefined, doing: string, done: string): { state: CtoStageState; detail: string } => {
+      if (!t) return { state: "pending", detail: "Sırada" };
+      if (t.status === "running") return { state: "running", detail: doing };
+      if (t.status === "error") return { state: "error", detail: "Hata, tekrar denenebilir" };
+      return { state: "done", detail: done };
+    };
+    const briefAt = lastIndex((t) => hasLabel(t, CTO_NAME) && !isEvaluationPrompt(t.prompt) && t.status === "done" && t.text !== null && extractBrief(t.text) !== null, 0);
+    const ctoRunning = turns.some((t) => hasLabel(t, CTO_NAME) && !isEvaluationPrompt(t.prompt) && t.status === "running");
+    const brief: { state: CtoStageState; detail: string } =
+      briefAt >= 0 ? { state: "done", detail: "Özet hazır" } : ctoRunning ? { state: "running", detail: "CTO yazıyor" } : { state: "waiting", detail: "Seninle netleştiriyor" };
+    const councilAt = briefAt >= 0 ? lastIndex((t) => t.agent === "council", briefAt + 1) : -1;
+    const council = fromStatus(councilAt >= 0 ? turns[councilAt] : undefined, "4 model tartışıyor, hakem karar yazıyor", "Karar verildi");
+    const evalAt = councilAt >= 0 ? lastIndex((t) => isEvaluationPrompt(t.prompt), councilAt + 1) : -1;
+    const evaluation = fromStatus(evalAt >= 0 ? turns[evalAt] : undefined, "CTO kararı değerlendiriyor", "Değerlendirme hazır");
+    const coderAt = evalAt >= 0 ? lastIndex((t) => hasLabel(t, "Coder"), evalAt + 1) : -1;
+    const approval: { state: CtoStageState; detail: string } =
+      evalAt < 0 || evaluation.state !== "done" ? { state: "pending", detail: "Sırada" } : coderAt >= 0 ? { state: "done", detail: "Onaylandı, Coder'a verildi" } : { state: "waiting", detail: "Onayını bekliyor" };
+    let coder = fromStatus(coderAt >= 0 ? turns[coderAt] : undefined, "Coder çalışıyor", "Coder bitirdi");
+    const plan = evalAt >= 0 ? ctoTaskPlan(turns) : null;
+    if (plan && plan.planAt > evalAt) {
+      const total = plan.tasks.length;
+      const done = plan.tasks.filter((x) => x.state === "done").length;
+      const running = plan.tasks.find((x) => x.state === "running");
+      coder = running
+        ? { state: "running", detail: "Görev " + String(running.index) + "/" + String(total) + " çalışıyor" }
+        : plan.tasks.some((x) => x.state === "error")
+          ? { state: "error", detail: "Bir görev hata verdi, tekrar denenebilir" }
+          : done === total
+            ? { state: "done", detail: String(total) + "/" + String(total) + " görev bitti" }
+            : done > 0
+              ? { state: "waiting", detail: String(done) + "/" + String(total) + " bitti, sıradaki seni bekliyor" }
+              : { state: "waiting", detail: "Görevler hazır, başlatmanı bekliyor" };
+    }
+    const reviewAt = coderAt >= 0 ? lastIndex((t) => hasLabel(t, "Reviewer"), coderAt + 1) : -1;
+    const review = fromStatus(reviewAt >= 0 ? turns[reviewAt] : undefined, "Reviewer inceliyor", "İnceleme bitti");
+    return [
+      { id: "brief", label: "Proje özeti", ...brief },
+      { id: "council", label: "Konsey", ...council },
+      { id: "evaluation", label: "CTO değerlendirmesi", ...evaluation },
+      { id: "approval", label: "Senin onayın", ...approval },
+      { id: "coder", label: "Coder", ...coder },
+      { id: "review", label: "İnceleme", ...review },
+    ];
+  }
+
   function draftProblem(text: string): WsDraftProblem {
     if (text.trim().length === 0) return "empty";
     if (text.length > MAX_DRAFT_LENGTH) return "too_long";
@@ -1083,6 +1253,12 @@ const VyronModel = (() => {
     composeEvaluation,
     extractBrief,
     isEvaluationPrompt,
+    ctoStages,
+    ctoTaskPlan,
+    composeTaskListRequest,
+    extractTasks,
+    composeTaskPrompt,
+    composeReviewPrompt,
     CTO_NAME,
     composePrompt,
     formatFileSize,

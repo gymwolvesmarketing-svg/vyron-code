@@ -1890,6 +1890,10 @@ function renderTaskView(): void {
   const turnsBox = must("turns");
   clearNode(turnsBox);
   const turns = currentTurns();
+  const stages = VyronModel.ctoStages(turns);
+  if (stages) turnsBox.appendChild(renderCtoStages(stages));
+  const plan = stages ? VyronModel.ctoTaskPlan(turns) : null;
+  if (plan && task) turnsBox.appendChild(renderCtoPlan(task.id, plan));
   if (turns.length === 0) {
     turnsBox.appendChild(make("p", "turn-note", NO_ANSWER_TEXT));
   }
@@ -1959,6 +1963,20 @@ function renderTurn(turn: Turn): HTMLElement {
 // CTO Manager: brief -> Konsey -> CTO evaluation -> user approval -> Coder. Every step that decides is a button the user presses.
 // ---------------------------------------------------------------------------------------------
 
+/** The CTO progress strip: one chip per stage with its live state, derived from the task's turns. */
+function renderCtoStages(stages: ReadonlyArray<{ id: string; label: string; state: string; detail: string }>): HTMLElement {
+  const strip = make("ol", "cto-stages");
+  strip.setAttribute("aria-label", "CTO süreci");
+  for (const stage of stages) {
+    const item = make("li", "cto-stage cto-" + stage.state);
+    item.dataset.stage = stage.id;
+    item.appendChild(make("span", "cto-stage-name", stage.label));
+    item.appendChild(make("span", "cto-stage-detail", stage.detail));
+    strip.appendChild(item);
+  }
+  return strip;
+}
+
 function renderCtoActions(turn: Turn): HTMLElement | null {
   const taskId = ws.activeTaskId;
   if (!taskId || turn.text === null || turn.agent !== null) return null;
@@ -1969,9 +1987,73 @@ function renderCtoActions(turn: Turn): HTMLElement | null {
     const decision = lastCouncilDecision(taskId, turn);
     const coder = ws.managers.find((m) => m.agent === "coder" && !m.custom);
     if (decision !== null && coder) actions.appendChild(makeButton("btn small", "Onayla ve Coder'a devret", () => handOffToCoder(coder.id, decision)));
+    if (decision !== null) actions.appendChild(makeButton("btn small", "Görev listesi çıkar", () => void requestTaskList(taskId, turn, decision)));
     actions.appendChild(makeButton("btn small", "Düzeltme iste", askCtoForCorrection));
   }
   return actions.childElementCount > 0 ? actions : null;
+}
+
+/** "Görev listesi çıkar": the CTO splits the approved decision into ordered tasks; none starts until the user clicks it. */
+async function requestTaskList(taskId: string, source: Turn, decision: string): Promise<void> {
+  if (sendInFlight) return;
+  const prompt = VyronModel.composeTaskListRequest(decision);
+  const composed = VyronModel.composePrompt({ draft: prompt, workMode: "local", planMode: "standard", terminalMode: "off", managerName: VyronModel.CTO_NAME, skillNames: [], skillInstructions: [], connectorNames: [] });
+  await runTurn(taskId, pushChainTurn(taskId, source, prompt, composed, null, VyronModel.CTO_NAME));
+}
+
+/** One Coder task of the list; the click is the approval (the file-write and command approvals still come from the native dialogs). */
+async function startCtoTask(taskId: string, index: number): Promise<void> {
+  if (sendInFlight) return;
+  const turns = turnsByTask.get(taskId) ?? [];
+  const plan = VyronModel.ctoTaskPlan(turns);
+  const source = plan ? turns[plan.planAt] : undefined;
+  if (!plan || !source || plan.tasks.some((t) => t.state === "running")) return;
+  const prompt = VyronModel.composeTaskPrompt(index, plan.tasks.map((t) => t.title), lastCouncilDecision(taskId, source) ?? "");
+  await runTurn(taskId, pushChainTurn(taskId, source, prompt, prompt, "coder", "Coder", toolsActive()));
+}
+
+/** The Reviewer looks at what the Coder reported for every task of the list. */
+async function startCtoReview(taskId: string): Promise<void> {
+  if (sendInFlight) return;
+  const turns = turnsByTask.get(taskId) ?? [];
+  const plan = VyronModel.ctoTaskPlan(turns);
+  const source = plan ? turns[plan.planAt] : undefined;
+  if (!plan || !source) return;
+  const results = plan.tasks.map((task) => {
+    for (let i = turns.length - 1; i > plan.planAt; i -= 1) {
+      const t = turns[i]!;
+      const m = t.prompt.match(/^\[Görev (\d+)\/(\d+)\]/);
+      if (m && Number(m[1]) === task.index && t.status === "done" && t.text !== null) return t.text;
+    }
+    return null;
+  });
+  const prompt = VyronModel.composeReviewPrompt(plan.tasks.map((t) => t.title), results);
+  await runTurn(taskId, pushChainTurn(taskId, source, prompt, prompt, "reviewer", "Reviewer", toolsActive()));
+}
+
+const TASK_STATE_TEXT: Readonly<Record<string, string>> = { pending: "Sırada", running: "Çalışıyor…", done: "Bitti", error: "Hata" };
+
+/** The task list under the stage strip: the next task has a start button; once all are done the Reviewer can be asked. */
+function renderCtoPlan(taskId: string, plan: NonNullable<ReturnType<typeof VyronModel.ctoTaskPlan>>): HTMLElement {
+  const box = make("section", "cto-plan");
+  box.setAttribute("aria-label", "CTO görev listesi");
+  box.appendChild(make("div", "block-label", "Görev listesi"));
+  const list = make("ol", "cto-tasks");
+  const busy = plan.tasks.some((t) => t.state === "running");
+  const next = plan.tasks.find((t) => t.state === "pending" || t.state === "error");
+  for (const task of plan.tasks) {
+    const row = make("li", "cto-task cto-" + task.state);
+    row.dataset.task = String(task.index);
+    row.appendChild(make("span", "cto-task-title", task.title));
+    row.appendChild(make("span", "cto-task-state", TASK_STATE_TEXT[task.state] ?? task.state));
+    if (!busy && next === task) row.appendChild(makeButton("btn small", task.state === "error" ? "Tekrar dene" : "Başlat", () => void startCtoTask(taskId, task.index)));
+    list.appendChild(row);
+  }
+  box.appendChild(list);
+  if (plan.tasks.every((t) => t.state === "done") && plan.review !== "running") {
+    box.appendChild(makeButton("btn small", plan.review === "none" ? "Reviewer'a incelet" : "Reviewer'a yeniden incelet", () => void startCtoReview(taskId)));
+  }
+  return box;
 }
 
 /** The newest finished Konsey answer that comes before the given turn. */
@@ -1993,8 +2075,8 @@ function askCtoForCorrection(): void {
   focusSoon(input);
 }
 
-function pushChainTurn(taskId: string, source: Turn, prompt: string, composed: string, agent: string | null, label: string): Turn {
-  const turn: Turn = { id: newTurnId(), prompt, composed, labels: ["SubAgent: " + label], agent, project: source.project, tools: false, status: "running", text: null, truncated: false, errorText: null, cleared: false };
+function pushChainTurn(taskId: string, source: Turn, prompt: string, composed: string, agent: string | null, label: string, tools: boolean = false): Turn {
+  const turn: Turn = { id: newTurnId(), prompt, composed, labels: ["SubAgent: " + label], agent, project: source.project, tools, status: "running", text: null, truncated: false, errorText: null, cleared: false };
   const turns = turnsByTask.get(taskId) ?? [];
   turns.push(turn);
   turnsByTask.set(taskId, turns);

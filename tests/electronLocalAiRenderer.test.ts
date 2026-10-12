@@ -1505,6 +1505,17 @@ describe("logo-only startup and welcome screens, single menu", () => {
     expect(h.visibleViews()).toEqual(["settings"]);
   });
 
+  it("main forces the page's localStorage to disk on an interval, when a window closes and on before-quit (a deleted project must not come back)", () => {
+    const main = fs.readFileSync(path.join(__dirname, "..", "electron", "main.ts"), "utf8");
+    const flush = fs.readFileSync(path.join(__dirname, "..", "electron", "storageFlush.ts"), "utf8");
+    expect(flush).toContain("flushStorageData()");
+    expect(flush).toContain("setInterval(flush, STORAGE_FLUSH_INTERVAL_MS)");
+    expect(main).toContain("createStorageFlusher(() => session.defaultSession)");
+    expect(main).toContain("storageFlusher.start()");
+    expect(main).toContain('created.on("close", flushPageStorage)');
+    expect(main).toMatch(/before-quit", \(event\) => \{\s*logLifecycle\("before-quit"\);\s*flushPageStorage\(\);/);
+  });
+
   it("main removes the native menu bar and keeps only reload and developer-tools shortcuts", () => {
     const main = fs.readFileSync(path.join(__dirname, "..", "electron", "main.ts"), "utf8");
     expect(main).toContain("Menu.setApplicationMenu(null)");
@@ -1594,6 +1605,8 @@ describe("managers run through Ruflo roles", () => {
     expect(h.calls.send[2]!.draft).toContain("[Konsey kararının CTO değerlendirmesi]");
     expect(h.calls.send[2]!.draft).toContain("KONSEY KARARI: Next.js + Postgres");
 
+    expect(h.doc.querySelector(".cto-stage[data-stage=council]")?.className).toContain("cto-done");
+    expect(h.doc.querySelector(".cto-stage[data-stage=approval]")?.className).toContain("cto-waiting");
     const approve = [...h.doc.querySelectorAll<HTMLElement>(".turn-actions button")].find((b) => b.textContent === "Onayla ve Coder'a devret");
     expect(approve).toBeTruthy();
     expect([...h.doc.querySelectorAll<HTMLElement>(".turn-actions button")].some((b) => b.textContent === "Düzeltme iste")).toBe(true);
@@ -1602,6 +1615,60 @@ describe("managers run through Ruflo roles", () => {
     expect(input.value).toContain("KONSEY KARARI: Next.js + Postgres");
     expect(h.el("chips").textContent).toContain("Coder");
     expect(h.calls.send).toHaveLength(3);
+  });
+
+  it("CTO: task list -> the user starts each Coder task (one at a time) -> Reviewer, with the progress visible", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "CTO"));
+    h.behavior.sendQueue = [
+      { state: "completed", text: "[[PROJE-ÖZETİ]]Hedef[[/PROJE-ÖZETİ]]", truncated: false },
+      { state: "completed", text: "KONSEY KARARI", truncated: false },
+      { state: "completed", text: "Değerlendirme. Onaylıyor musun?", truncated: false },
+      { state: "completed", text: "[[GÖREV-LİSTESİ]]\n1. Şemayı kur\n2. API yaz\n[[/GÖREV-LİSTESİ]]", truncated: false },
+    ];
+    await sendTask(h, "Proje");
+    const btn = (label: string) => [...h.doc.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === label);
+    h.click(btn("Konseye ver")!);
+    await h.flush();
+    await h.flush();
+    expect(h.calls.send).toHaveLength(3);
+    expect(h.doc.querySelector(".cto-plan")).toBeNull();
+    h.click(btn("Görev listesi çıkar")!);
+    await h.flush();
+    expect(h.calls.send).toHaveLength(4);
+    expect(h.calls.send[3]!.draft).toContain("[CTO görev listesi]");
+    expect(h.doc.querySelectorAll(".cto-task")).toHaveLength(2);
+    expect(h.doc.querySelector(".cto-stage[data-stage=coder]")?.className).toContain("cto-waiting");
+    // Nothing has started on its own, and only the first task has a start button.
+    expect(h.calls.send).toHaveLength(4);
+    expect(h.doc.querySelectorAll(".cto-task button")).toHaveLength(1);
+    expect(btn("Reviewer'a incelet")).toBeUndefined();
+
+    h.behavior.sendQueue = [{ state: "completed", text: "Şema kuruldu", truncated: false }];
+    h.click(h.doc.querySelector<HTMLElement>(".cto-task button")!);
+    await h.flush();
+    expect(h.calls.send).toHaveLength(5);
+    expect(h.calls.send[4]!.agent).toBe("coder");
+    expect(h.calls.send[4]!.draft).toContain("[Görev 1/2] Şemayı kur");
+    expect(h.calls.send[4]!.draft).toContain("KONSEY KARARI");
+    expect(h.doc.querySelector(".cto-task[data-task='1']")?.className).toContain("cto-done");
+    expect(h.doc.querySelector(".cto-task[data-task='2'] button")).toBeTruthy();
+
+    h.behavior.sendQueue = [{ state: "completed", text: "API yazıldı", truncated: false }];
+    h.click(h.doc.querySelector<HTMLElement>(".cto-task[data-task='2'] button")!);
+    await h.flush();
+    expect(h.calls.send[5]!.draft).toContain("[Görev 2/2] API yaz");
+    expect(h.doc.querySelector(".cto-stage[data-stage=coder]")?.className).toContain("cto-done");
+
+    h.behavior.sendQueue = [{ state: "completed", text: "İnceleme: eksik yok", truncated: false }];
+    h.click(btn("Reviewer'a incelet")!);
+    await h.flush();
+    expect(h.calls.send[6]!.agent).toBe("reviewer");
+    expect(h.calls.send[6]!.draft).toContain("Şema kuruldu");
+    expect(h.calls.send[6]!.draft).toContain("API yazıldı");
+    expect(h.doc.querySelector(".cto-stage[data-stage=review]")?.className).toContain("cto-done");
   });
 
   it("CTO: an answer without a brief has no 'Konseye ver'; a failed Konsey stops the chain", async () => {

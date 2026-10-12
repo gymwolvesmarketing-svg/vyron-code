@@ -527,3 +527,76 @@ describe("CTO Manager text helpers", () => {
     expect(m.composePrompt({ ...base, managerName: "Genel" })).not.toContain("CTO");
   });
 });
+
+describe("CTO progress stages", () => {
+  const m = model as any;
+  const t = (over: any) => ({ prompt: "p", agent: null, labels: ["SubAgent: CTO"], status: "done", text: "x", ...over });
+  const states = (turns: any[]) => (m.ctoStages(turns) as any[]).map((s) => s.id + ":" + s.state);
+  it("is null without any CTO turn", () => {
+    expect(m.ctoStages([])).toBeNull();
+    expect(m.ctoStages([t({ labels: ["SubAgent: Genel"] })])).toBeNull();
+  });
+  it("walks brief -> Konsey -> evaluation -> approval -> Coder -> Reviewer", () => {
+    const brief = t({ text: "[[PROJE-ÖZETİ]]Hedef[[/PROJE-ÖZETİ]]" });
+    expect(states([t({ text: "soru?" })])[0]).toBe("brief:waiting");
+    expect(states([t({ status: "running", text: null })])[0]).toBe("brief:running");
+    expect(states([brief])).toEqual(["brief:done", "council:pending", "evaluation:pending", "approval:pending", "coder:pending", "review:pending"]);
+    const council = t({ agent: "council", labels: ["SubAgent: Konsey"], status: "running", text: null });
+    expect(states([brief, council])[1]).toBe("council:running");
+    const doneCouncil = { ...council, status: "done", text: "karar" };
+    const evalTurn = t({ prompt: m.composeEvaluation("karar") });
+    expect(states([brief, doneCouncil, evalTurn])).toEqual(["brief:done", "council:done", "evaluation:done", "approval:waiting", "coder:pending", "review:pending"]);
+    const coder = t({ labels: ["SubAgent: Coder"], status: "running", text: null });
+    expect(states([brief, doneCouncil, evalTurn, coder])).toEqual(["brief:done", "council:done", "evaluation:done", "approval:done", "coder:running", "review:pending"]);
+    const review = t({ labels: ["SubAgent: Reviewer"] });
+    expect(states([brief, doneCouncil, evalTurn, { ...coder, status: "done", text: "bitti" }, review]).slice(4)).toEqual(["coder:done", "review:done"]);
+  });
+  it("a failed Konsey shows as an error and nothing after it moves", () => {
+    const brief = t({ text: "[[PROJE-ÖZETİ]]Hedef[[/PROJE-ÖZETİ]]" });
+    const council = t({ agent: "council", labels: ["SubAgent: Konsey"], status: "error", text: null });
+    expect(states([brief, council])).toEqual(["brief:done", "council:error", "evaluation:pending", "approval:pending", "coder:pending", "review:pending"]);
+  });
+});
+
+describe("CTO task plan", () => {
+  const m = model as any;
+  const t = (over: any) => ({ prompt: "p", agent: null, labels: ["SubAgent: CTO"], status: "done", text: "x", ...over });
+  const LIST = "Önce:\n[[GÖREV-LİSTESİ]]\n1. **Veritabanı** şemasını kur\n2) API yaz\nnot bir görev değil\n3. Arayüzü yap\n[[/GÖREV-LİSTESİ]]\nSıra böyle.";
+  it("extractTasks reads the numbered list between the markers, strips emphasis, caps the count", () => {
+    expect(m.extractTasks(LIST)).toEqual(["Veritabanı şemasını kur", "API yaz", "Arayüzü yap"]);
+    expect(m.extractTasks("liste yok")).toEqual([]);
+    const many = "[[GÖREV-LİSTESİ]]\n" + Array.from({ length: 20 }, (_, i) => String(i + 1) + ". iş " + String(i)).join("\n") + "\n[[/GÖREV-LİSTESİ]]";
+    expect(m.extractTasks(many)).toHaveLength(8);
+  });
+  it("composeTaskPrompt names the task, lists all, carries the decision and stays within the draft limit", () => {
+    const text = m.composeTaskPrompt(2, ["A", "B", "C"], "KARAR");
+    expect(text.startsWith("[Görev 2/3] B")).toBe(true);
+    expect(text).toContain("YALNIZCA bu görevini");
+    expect(text).toContain("3. C");
+    expect(text).toContain("KARAR");
+    expect(m.composeTaskPrompt(1, ["A"], "x".repeat(m.MAX_DRAFT_LENGTH * 2)).length).toBeLessThanOrEqual(m.MAX_DRAFT_LENGTH);
+  });
+  it("ctoTaskPlan follows each task by its prompt, and the stages show the Coder progress", () => {
+    const brief = t({ text: "[[PROJE-ÖZETİ]]H[[/PROJE-ÖZETİ]]" });
+    const council = t({ agent: "council", labels: ["SubAgent: Konsey"], text: "karar" });
+    const evalTurn = t({ prompt: m.composeEvaluation("karar") });
+    const listTurn = t({ prompt: m.composeTaskListRequest("karar"), text: LIST });
+    const base = [brief, council, evalTurn, listTurn];
+    expect(m.ctoTaskPlan([brief])).toBeNull();
+    const plan0 = m.ctoTaskPlan(base);
+    expect(plan0.tasks.map((x: any) => x.state)).toEqual(["pending", "pending", "pending"]);
+    expect((m.ctoStages(base) as any[]).find((s) => s.id === "coder").detail).toBe("Görevler hazır, başlatmanı bekliyor");
+    const first = t({ prompt: "[Görev 1/3] Veritabanı", labels: ["SubAgent: Coder"], status: "running", text: null });
+    expect(m.ctoTaskPlan([...base, first]).tasks.map((x: any) => x.state)).toEqual(["running", "pending", "pending"]);
+    expect((m.ctoStages([...base, first]) as any[]).find((s) => s.id === "coder").detail).toBe("Görev 1/3 çalışıyor");
+    const firstDone = { ...first, status: "done", text: "yapıldı" };
+    expect((m.ctoStages([...base, firstDone]) as any[]).find((s) => s.id === "coder").detail).toBe("1/3 bitti, sıradaki seni bekliyor");
+    const all = [1, 2, 3].map((k) => t({ prompt: "[Görev " + k + "/3] x", labels: ["SubAgent: Coder"] }));
+    const plan = m.ctoTaskPlan([...base, ...all]);
+    expect(plan.tasks.every((x: any) => x.state === "done")).toBe(true);
+    expect(plan.review).toBe("none");
+    expect(m.ctoTaskPlan([...base, ...all, t({ labels: ["SubAgent: Reviewer"] })]).review).toBe("done");
+    const failed = t({ prompt: "[Görev 2/3] x", labels: ["SubAgent: Coder"], status: "error", text: null });
+    expect(m.ctoTaskPlan([...base, failed]).tasks[1].state).toBe("error");
+  });
+});

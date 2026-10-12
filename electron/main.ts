@@ -37,13 +37,14 @@
  * main-process-only local AI lifecycle manager, and on every quit path stops only the services the
  * app itself started. Credentials and endpoints never leave the main process.
  */
-import { app, BrowserWindow, ipcMain, Menu, powerMonitor } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, powerMonitor, session } from "electron";
 import path from "node:path";
 import { HARDENED_WEB_PREFERENCES, isNavigationAllowed, isNewWindowAllowed } from "./security-policy";
 import { APP_IPC_CHANNELS, HERMES_IPC_CHANNELS, LOCAL_AI_IPC_CHANNELS, TOOLS_IPC_CHANNELS } from "./shared-ipc-contract";
 import { getTaskSubmissionState, sendTask, clearTaskSubmission, setTaskAgentExecutor, setToolRunner, setAgentAsk } from "./hermesTaskSubmission";
 import { createProductionLocalAiManager } from "./localAiAdapters";
 import { createProductionRufloBridge } from "./rufloAdapters";
+import { createStorageFlusher } from "./storageFlush";
 import { isDeepResearchRole, researchKindOfRole } from "./rufloBridge";
 import { archiveKindForRole, archiveNote } from "./resultArchive";
 import { createProductionToolRunner } from "./toolAdapters";
@@ -374,8 +375,17 @@ function quitAfterLocalAiShutdown(): void {
   });
 }
 
+// The page's localStorage (the workspace) is forced to disk every few seconds, when a window closes and on before-quit (electron/storageFlush.ts).
+const storageFlusher = createStorageFlusher(() => session.defaultSession);
+const flushPageStorage = (): void => storageFlusher.flush();
+app.whenReady().then(() => {
+  storageFlusher.start();
+});
+app.on("browser-window-created", (_event, created) => created.on("close", flushPageStorage));
+
 app.on("before-quit", (event) => {
   logLifecycle("before-quit");
+  flushPageStorage();
   // Clears any locally-tracked task submission state (reviewed draft, in-flight send, completed
   // answer) before the process exits, rather than leaving it dangling.
   clearTaskSubmission();
