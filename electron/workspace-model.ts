@@ -902,7 +902,8 @@ const VyronModel = (() => {
     "Kullanıcı yalnızca bir numara ya da 'onay' yazarsa o seçeneği uygula. Dosya silme, commit, push, kurulum ve ayar değişikliği gibi sonucu büyük işleri kendin başlatma; önce seçenek olarak sun. " +
     "Uzun bir işte bir aşama bitince dur, raporla ve yön iste; sessizce bir sonraki aşamaya geçme. " +
     "Sen projeyi baştan sona yöneten ajansın: bir faz bittiğinde kullanıcının sana görev vermesini bekleme, yol haritasındaki sıradaki fazı kendin öner (ilk seçenek). " +
-    "Kullanıcı bir fazın başlamasını onaylarsa (ör. 'Seçenek 1: sıradaki faza geç'), o fazın görev listesini hemen '[[GÖREV-LİSTESİ]]' ve '[[/GÖREV-LİSTESİ]]' işaretlerinin arasında numaralı olarak ver (en fazla 8 görev) ve açıklamayı kısa tut.";
+    "Kullanıcı bir fazın başlamasını onaylarsa (ör. 'Seçenek 1: sıradaki faza geç'), o fazın görev listesini hemen '[[GÖREV-LİSTESİ]]' ve '[[/GÖREV-LİSTESİ]]' işaretlerinin arasında numaralı olarak ver (en fazla 8 görev) ve açıklamayı kısa tut. " +
+    "Görev listesi verdiğin yanıtta ilk seçenek her zaman 'Listeyi onayla ve yürüt' olsun: Vyron listeyi Coder, Reviewer ve faz raporu ile kendisi yürütür, sen o görevleri kendin yapmaya çalışma.";
 
   const CTO_RULES =
     "Sen kullanıcının teknik direktörüsün (CTO) ve ona bağlı çalışırsın. Önce projeyi anla: eksik bilgi varsa en fazla üç net soru sor, sonra ilerle. " +
@@ -940,7 +941,8 @@ const VyronModel = (() => {
       }
       const m = line.match(/^\s*(\d+)[.)]\s+(.+)$/);
       if (!m) break;
-      const option = (m[2] ?? "").replace(/[*_`]/g, "").trim();
+      // Only bold markers and backticks go: underscores are part of names (0002_raw_snapshot.sql, evidence_class) and must stay.
+      const option = (m[2] ?? "").replace(/\*\*/g, "").replace(/`/g, "").trim();
       if (option.length > 0) options.push(option.length > 300 ? option.slice(0, 299) + "…" : option);
     }
     return options;
@@ -1012,7 +1014,8 @@ const VyronModel = (() => {
     for (const line of body.split(/\r?\n/)) {
       const m = line.match(/^\s*\d+[.)]\s+(.+)$/);
       if (!m) continue;
-      const title = (m[1] ?? "").replace(/[*_`]/g, "").trim();
+      // Only bold markers and backticks go: underscores are part of names (0002_raw_snapshot.sql, evidence_class) and must stay.
+      const title = (m[1] ?? "").replace(/\*\*/g, "").replace(/`/g, "").trim();
       if (title.length > 0) tasks.push(title.length > MAX_TASK_TITLE_CHARS ? title.slice(0, MAX_TASK_TITLE_CHARS - 1) + "…" : title);
       if (tasks.length >= MAX_CTO_TASKS) break;
     }
@@ -1020,6 +1023,11 @@ const VyronModel = (() => {
   }
 
   const TASK_PROMPT_PATTERN = /^\[Görev (\d+)\/(\d+)\]/;
+
+  /** True when the prompt is the Coder's request for task `index` of `total` with exactly this title (its first line is "[Görev k/N] title"). */
+  function isTaskAttempt(prompt: string, index: number, total: number, title: string): boolean {
+    return (prompt.split("\n")[0] ?? "").trim() === "[Görev " + String(index) + "/" + String(total) + "] " + title.trim();
+  }
 
   /** The Coder's task for item `index` (1-based): only that item, with the whole list and the decision as context. */
   function composeTaskPrompt(index: number, titles: readonly string[], decision: string): string {
@@ -1103,9 +1111,10 @@ const VyronModel = (() => {
       let state: CtoTaskState = "pending";
       for (let i = turns.length - 1; i > planAt; i -= 1) {
         const t = turns[i]!;
-        const m = t.prompt.match(TASK_PROMPT_PATTERN);
-        if (m && Number(m[1]) === k + 1 && Number(m[2]) === titles.length) {
-          state = t.status === "running" ? "running" : t.status === "error" ? "error" : "done";
+        // Only an attempt at THIS task counts: same number, same total AND the same title (an earlier run with other titles must not
+        // make a task look finished). A task the Coder left half done ("iş yarım kaldı") is not finished either: it is retried.
+        if (isTaskAttempt(t.prompt, k + 1, titles.length, title)) {
+          state = t.status === "running" ? "running" : t.status === "error" || (t.text ?? "").indexOf("iş yarım kaldı") >= 0 ? "error" : "done";
           break;
         }
       }
@@ -1171,11 +1180,13 @@ const VyronModel = (() => {
     const evalAt = councilAt >= 0 ? lastIndex((t) => isEvaluationPrompt(t.prompt), councilAt + 1) : -1;
     const evaluation = fromStatus(evalAt >= 0 ? turns[evalAt] : undefined, "CTO kararı değerlendiriyor", "Değerlendirme hazır");
     const coderAt = evalAt >= 0 ? lastIndex((t) => hasLabel(t, "Coder"), evalAt + 1) : -1;
-    const approval: { state: CtoStageState; detail: string } =
+    let approval: { state: CtoStageState; detail: string } =
       evalAt < 0 || evaluation.state !== "done" ? { state: "pending", detail: "Sırada" } : coderAt >= 0 ? { state: "done", detail: "Onaylandı, Coder'a verildi" } : { state: "waiting", detail: "Onayını bekliyor" };
     let coder = fromStatus(coderAt >= 0 ? turns[coderAt] : undefined, "Coder çalışıyor", "Coder bitirdi");
-    const plan = evalAt >= 0 ? ctoTaskPlan(turns) : null;
-    if (plan && plan.planAt > evalAt) {
+    // A task list drives the strip whichever way it came (after the Konsey round, or given directly by the CTO / for the next phase).
+    const plan = ctoTaskPlan(turns);
+    if (plan) {
+      approval = plan.tasks.some((x) => x.state !== "pending") ? { state: "done", detail: "Onaylandı, Coder'a verildi" } : { state: "waiting", detail: "Onayını bekliyor" };
       const total = plan.tasks.length;
       const done = plan.tasks.filter((x) => x.state === "done").length;
       const running = plan.tasks.find((x) => x.state === "running");
@@ -1190,14 +1201,42 @@ const VyronModel = (() => {
               : { state: "waiting", detail: "Görevler hazır, başlatmanı bekliyor" };
     }
     const reviewAt = coderAt >= 0 ? lastIndex((t) => hasLabel(t, "Reviewer"), coderAt + 1) : -1;
-    const review = fromStatus(reviewAt >= 0 ? turns[reviewAt] : undefined, "Reviewer inceliyor", "İnceleme bitti");
+    let review = fromStatus(reviewAt >= 0 ? turns[reviewAt] : undefined, "Reviewer inceliyor", "İnceleme bitti");
+    let report: { state: CtoStageState; detail: string } = { state: "pending", detail: "Sırada" };
+    // Stages the flow did not go through (no brief / no Konsey round: the CTO gave the plan directly) are shown as skipped, not as "pending".
+    const skipped: { state: CtoStageState; detail: string } = { state: "done", detail: "Atlandı: doğrudan plan" };
+    let briefShown = brief;
+    let councilShown = council;
+    let evaluationShown = evaluation;
+    if (plan) {
+      review =
+        plan.review === "none" || plan.review === "pending"
+          ? { state: "pending", detail: "Sırada" }
+          : plan.review === "running"
+            ? { state: "running", detail: "Reviewer inceliyor" }
+            : plan.review === "error"
+              ? { state: "error", detail: "Hata, tekrar denenebilir" }
+              : { state: "done", detail: "İnceleme bitti" };
+      report =
+        plan.report === "none"
+          ? { state: "pending", detail: "Sırada" }
+          : plan.report === "running"
+            ? { state: "running", detail: "CTO faz raporunu yazıyor" }
+            : plan.report === "error"
+              ? { state: "error", detail: "Hata, tekrar denenebilir" }
+              : { state: "waiting", detail: "Rapor hazır: sıradaki faz senin onayını bekliyor" };
+      if (briefShown.state === "waiting") briefShown = skipped;
+      if (councilShown.state === "pending") councilShown = skipped;
+      if (evaluationShown.state === "pending") evaluationShown = skipped;
+    }
     return [
-      { id: "brief", label: "Proje özeti", ...brief },
-      { id: "council", label: "Konsey", ...council },
-      { id: "evaluation", label: "CTO değerlendirmesi", ...evaluation },
+      { id: "brief", label: "Proje özeti", ...briefShown },
+      { id: "council", label: "Konsey", ...councilShown },
+      { id: "evaluation", label: "CTO değerlendirmesi", ...evaluationShown },
       { id: "approval", label: "Senin onayın", ...approval },
       { id: "coder", label: "Coder", ...coder },
       { id: "review", label: "İnceleme", ...review },
+      { id: "report", label: "Faz raporu", ...report },
     ];
   }
 
@@ -1364,6 +1403,7 @@ const VyronModel = (() => {
     ctoStages,
     ctoTaskPlan,
     chainPromptTitle,
+    isTaskAttempt,
     composeTaskListRequest,
     composePhaseReport,
     extractTasks,

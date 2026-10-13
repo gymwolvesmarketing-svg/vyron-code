@@ -1899,14 +1899,16 @@ function renderTaskView(): void {
   const turnsBox = must("turns");
   clearNode(turnsBox);
   const turns = currentTurns();
-  const stages = VyronModel.ctoStages(turns);
-  if (stages) turnsBox.appendChild(renderCtoStages(stages));
-  const plan = stages ? VyronModel.ctoTaskPlan(turns) : null;
-  if (plan && task) turnsBox.appendChild(renderCtoPlan(task.id, plan));
   if (turns.length === 0) {
     turnsBox.appendChild(make("p", "turn-note", NO_ANSWER_TEXT));
   }
   for (const turn of turns) turnsBox.appendChild(renderTurn(turn));
+  // The CTO's project status (stage strip + task list with its buttons) sits at the END of the conversation, where the user is looking:
+  // at the top it was scrolled far out of sight in a long conversation and the "Hepsini sırayla yürüt" button went unnoticed.
+  const stages = VyronModel.ctoStages(turns);
+  if (stages) turnsBox.appendChild(renderCtoStages(stages));
+  const plan = stages ? VyronModel.ctoTaskPlan(turns) : null;
+  if (plan && task) turnsBox.appendChild(renderCtoPlan(task.id, plan));
   const last = turns[turns.length - 1];
   const canClear = last !== undefined && last.status === "done" && !last.cleared;
   must("clear-response-btn").hidden = !canClear;
@@ -2052,7 +2054,7 @@ async function startCtoReview(taskId: string): Promise<void> {
   const plan = VyronModel.ctoTaskPlan(turns);
   const source = plan ? turns[plan.planAt] : undefined;
   if (!plan || !source) return;
-  const results = plan.tasks.map((task) => taskResultText(turns, plan.planAt, task.index));
+  const results = plan.tasks.map((task) => taskResultText(turns, plan.planAt, task, plan.tasks.length));
   const prompt = VyronModel.composeReviewPrompt(plan.tasks.map((t) => t.title), results);
   await runTurn(taskId, pushChainTurn(taskId, source, prompt, prompt, "reviewer", "Reviewer", toolsActive()));
 }
@@ -2108,8 +2110,17 @@ function startAutopilot(taskId: string): void {
   void runPlanAuto(taskId);
 }
 
+/** Set by "Durdur" while a step runs, so that the cut-off step is shown as stopped by the user (not as a failure). */
+let stopRequested = false;
+const STOPPED_TEXT = "Durduruldu. Yapılanlar diskte duruyor; bu adımı 'Tekrar dene' ile yeniden çalıştırabilirsin.";
+
+/** "Durdur": the driver stops AND the step that is running is cut off (the model request is aborted, the loop ends at once). */
 function stopAutopilot(taskId: string): void {
   autopilot.delete(taskId);
+  if (sendInFlight) {
+    stopRequested = true;
+    void window.vyronDesktop?.hermes.clearTaskSubmission();
+  }
   refreshIfActive(taskId);
 }
 
@@ -2154,7 +2165,7 @@ async function startPhaseReport(taskId: string): Promise<void> {
   const plan = VyronModel.ctoTaskPlan(turns);
   const source = plan ? turns[plan.planAt] : undefined;
   if (!plan || !source) return;
-  const results = plan.tasks.map((task) => taskResultText(turns, plan.planAt, task.index));
+  const results = plan.tasks.map((task) => taskResultText(turns, plan.planAt, task, plan.tasks.length));
   let review: string | null = null;
   for (let i = turns.length - 1; i > plan.planAt; i -= 1) {
     const t = turns[i]!;
@@ -2169,11 +2180,10 @@ async function startPhaseReport(taskId: string): Promise<void> {
 }
 
 /** What the Coder reported for task `index` of the list that starts at turn `planAt` (the newest finished attempt), or null. */
-function taskResultText(turns: readonly Turn[], planAt: number, index: number): string | null {
+function taskResultText(turns: readonly Turn[], planAt: number, task: { index: number; title: string }, total: number): string | null {
   for (let i = turns.length - 1; i > planAt; i -= 1) {
     const t = turns[i]!;
-    const m = t.prompt.match(/^\[Görev (\d+)\/(\d+)\]/);
-    if (m && Number(m[1]) === index && t.status === "done" && t.text !== null) return t.text;
+    if (VyronModel.isTaskAttempt(t.prompt, task.index, total, task.title) && t.status === "done" && t.text !== null) return t.text;
   }
   return null;
 }
@@ -2194,6 +2204,16 @@ function chooseCtoOption(number: number, option: string, source: Turn): void {
   // The first choice of a phase report ("Sıradaki faza geç") is the user's approval of the next phase: when the CTO answers with
   // that phase's task list, it runs on its own (the autopilot is armed here and disarmed when it ends).
   const taskId = ws.activeTaskId;
+  // The first choice of an answer that carries the task list ("Listeyi onayla ve yürüt") starts the driver: Vyron runs the list through the
+  // Coder, the Reviewer and the CTO report. It is NOT sent to the CTO, who would otherwise try to write the files itself.
+  if (taskId && number === 1) {
+    const turns = turnsByTask.get(taskId) ?? [];
+    const plan = VyronModel.ctoTaskPlan(turns);
+    if (plan && turns[plan.planAt] === source && plan.report === "none" && plan.tasks.some((t) => t.state === "pending")) {
+      startAutopilot(taskId);
+      return;
+    }
+  }
   if (taskId && number === 1 && VyronModel.isPhaseReportPrompt(source.prompt)) autopilot.add(taskId);
   setManager("cto");
   must<HTMLTextAreaElement>("task-input").value = "Seçenek " + String(number) + ": " + option + "\nBu seçeneği uygula.";
@@ -2369,9 +2389,10 @@ async function runTurn(taskId: string, turn: Turn): Promise<void> {
   } else {
     turn.status = "error";
     const notReady = result !== null && (result.state === "unauthorized" || result.state === "unavailable");
-    turn.errorText = notReady ? NOT_READY_TEXT : FAILURE_TEXT;
-    if (notReady || result === null) startPolling();
+    turn.errorText = stopRequested ? STOPPED_TEXT : notReady ? NOT_READY_TEXT : FAILURE_TEXT;
+    if (!stopRequested && (notReady || result === null)) startPolling();
   }
+  stopRequested = false;
   saveTurns();
   refreshIfActive(taskId);
   // A driven phase: an answer that arrives while the autopilot is armed (e.g. the new phase's task list) lets it carry on.

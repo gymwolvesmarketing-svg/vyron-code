@@ -121,7 +121,12 @@ function currentPreconditionState(): "unauthorized" | "unavailable" | null {
   return null;
 }
 
+/** The model request of the tool-loop step that is running right now: a clear / "Durdur" aborts it instead of waiting minutes for the answer. */
+const stepControllers = new Set<AbortController>();
+
 function resetToIdle(): void {
+  for (const running of stepControllers) running.abort();
+  stepControllers.clear();
   generation++;
   sendInFlight = false;
   lastCompletedText = null;
@@ -223,8 +228,11 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
     if (hasTools && toolRunner !== null) {
       responseLimit = MAX_TOOL_RESPONSE_CHARS;
       const ask = async (messages: readonly ChatMessage[]): Promise<string | null> => {
+        // The task was stopped (cleared) meanwhile: the loop gets "no answer" and ends at once.
+        if (generation !== generationAtStart) return null;
         if (hasAgent && agentAsk !== null) return agentAsk(agent as string, flattenTranscript(messages), routedModels);
         const stepController = new AbortController();
+        stepControllers.add(stepController);
         const stepTimer = setTimeout(() => stepController.abort(), SEND_TIMEOUT_MS);
         try {
           const stepResponse = await fetch(`${endpoint.url.origin}/v1/chat/completions`, {
@@ -240,6 +248,7 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
           return null;
         } finally {
           clearTimeout(stepTimer);
+          stepControllers.delete(stepController);
         }
       };
       progressLines = [];

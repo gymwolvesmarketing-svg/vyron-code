@@ -540,21 +540,21 @@ describe("CTO progress stages", () => {
     const brief = t({ text: "[[PROJE-ÖZETİ]]Hedef[[/PROJE-ÖZETİ]]" });
     expect(states([t({ text: "soru?" })])[0]).toBe("brief:waiting");
     expect(states([t({ status: "running", text: null })])[0]).toBe("brief:running");
-    expect(states([brief])).toEqual(["brief:done", "council:pending", "evaluation:pending", "approval:pending", "coder:pending", "review:pending"]);
+    expect(states([brief])).toEqual(["brief:done", "council:pending", "evaluation:pending", "approval:pending", "coder:pending", "review:pending", "report:pending"]);
     const council = t({ agent: "council", labels: ["SubAgent: Konsey"], status: "running", text: null });
     expect(states([brief, council])[1]).toBe("council:running");
     const doneCouncil = { ...council, status: "done", text: "karar" };
     const evalTurn = t({ prompt: m.composeEvaluation("karar") });
-    expect(states([brief, doneCouncil, evalTurn])).toEqual(["brief:done", "council:done", "evaluation:done", "approval:waiting", "coder:pending", "review:pending"]);
+    expect(states([brief, doneCouncil, evalTurn])).toEqual(["brief:done", "council:done", "evaluation:done", "approval:waiting", "coder:pending", "review:pending", "report:pending"]);
     const coder = t({ labels: ["SubAgent: Coder"], status: "running", text: null });
-    expect(states([brief, doneCouncil, evalTurn, coder])).toEqual(["brief:done", "council:done", "evaluation:done", "approval:done", "coder:running", "review:pending"]);
+    expect(states([brief, doneCouncil, evalTurn, coder])).toEqual(["brief:done", "council:done", "evaluation:done", "approval:done", "coder:running", "review:pending", "report:pending"]);
     const review = t({ labels: ["SubAgent: Reviewer"] });
-    expect(states([brief, doneCouncil, evalTurn, { ...coder, status: "done", text: "bitti" }, review]).slice(4)).toEqual(["coder:done", "review:done"]);
+    expect(states([brief, doneCouncil, evalTurn, { ...coder, status: "done", text: "bitti" }, review]).slice(4)).toEqual(["coder:done", "review:done", "report:pending"]);
   });
   it("a failed Konsey shows as an error and nothing after it moves", () => {
     const brief = t({ text: "[[PROJE-ÖZETİ]]Hedef[[/PROJE-ÖZETİ]]" });
     const council = t({ agent: "council", labels: ["SubAgent: Konsey"], status: "error", text: null });
-    expect(states([brief, council])).toEqual(["brief:done", "council:error", "evaluation:pending", "approval:pending", "coder:pending", "review:pending"]);
+    expect(states([brief, council])).toEqual(["brief:done", "council:error", "evaluation:pending", "approval:pending", "coder:pending", "review:pending", "report:pending"]);
   });
 });
 
@@ -587,6 +587,48 @@ describe("displayText", () => {
   });
 });
 
+describe("a task counts as finished only for the right attempt", () => {
+  const m = model as any;
+  const t = (over: any) => ({ prompt: "p", agent: null, labels: ["SubAgent: CTO"], status: "done", text: "x", ...over });
+  const list = t({ text: "[[GÖREV-LİSTESİ]]\n1. 0001_source.sql yaz\n2. migration runner yaz\n[[/GÖREV-LİSTESİ]]" });
+  const coder = (prompt: string, over: any = {}) => t({ prompt, labels: ["SubAgent: Coder"], ...over });
+  const states = (turns: any[]) => m.ctoTaskPlan(turns).tasks.map((x: any) => x.state);
+  it("isTaskAttempt needs the same number, the same total and the same title", () => {
+    expect(m.isTaskAttempt("[Görev 1/2] a_b.sql\n\nSen Coder'sın", 1, 2, "a_b.sql")).toBe(true);
+    expect(m.isTaskAttempt("[Görev 1/2] ab.sql", 1, 2, "a_b.sql")).toBe(false);
+    expect(m.isTaskAttempt("[Görev 1/3] a_b.sql", 1, 2, "a_b.sql")).toBe(false);
+    expect(m.isTaskAttempt("[Görev 2/2] a_b.sql", 1, 2, "a_b.sql")).toBe(false);
+  });
+  it("an earlier run with other (e.g. corrupted) titles does not make the task look finished", () => {
+    const old = coder("[Görev 1/2] 0001source.sql yaz");
+    expect(states([list, old])).toEqual(["pending", "pending"]);
+    const right = coder("[Görev 1/2] 0001_source.sql yaz");
+    expect(states([list, old, right])).toEqual(["done", "pending"]);
+  });
+  it("a task the Coder left half done is retried, not finished", () => {
+    const half = coder("[Görev 1/2] 0001_source.sql yaz", { text: "Adım sınırına ulaşıldı; iş yarım kaldı. Yapılanlar aşağıda." });
+    expect(states([list, half])).toEqual(["error", "pending"]);
+    const retry = coder("[Görev 1/2] 0001_source.sql yaz", { text: "Tamamlandı." });
+    expect(states([list, half, retry])).toEqual(["done", "pending"]);
+  });
+});
+
+describe("names with underscores survive", () => {
+  const m = model as any;
+  it("task titles and choices keep underscores, dots and slashes (only **bold** and backticks are stripped)", () => {
+    const list = "[[GÖREV-LİSTESİ]]\n1. 0002_raw_snapshot.sql: evidence_class, `source_id` alanları\n2. **Migration runner** schema_migrations tablosu\n3. raw/{source}/{yyyy}/{request_id}.json.gz anahtarı\n[[/GÖREV-LİSTESİ]]";
+    expect(m.extractTasks(list)).toEqual([
+      "0002_raw_snapshot.sql: evidence_class, source_id alanları",
+      "Migration runner schema_migrations tablosu",
+      "raw/{source}/{yyyy}/{request_id}.json.gz anahtarı",
+    ]);
+    expect(m.extractOptions("Seçenekler:\n1. **Önerim**: docker_compose up çalıştır\n2. `forbidden_terms.sh` bekçisini çalıştır")).toEqual([
+      "Önerim: docker_compose up çalıştır",
+      "forbidden_terms.sh bekçisini çalıştır",
+    ]);
+  });
+});
+
 describe("CTO phase driver (model)", () => {
   const m = model as any;
   const t = (over: any) => ({ prompt: "p", agent: null, labels: ["SubAgent: CTO"], status: "done", text: "x", ...over });
@@ -601,7 +643,7 @@ describe("CTO phase driver (model)", () => {
   });
   it("any finished CTO answer with a task list is the plan (the next phase's list too), and the report state follows the report turn", () => {
     const first = t({ prompt: m.composeTaskListRequest("karar"), text: LIST });
-    const done = [1, 2].map((k) => t({ prompt: "[Görev " + k + "/2] x", labels: ["SubAgent: Coder"] }));
+    const done = [1, 2].map((k) => t({ prompt: "[Görev " + k + "/2] " + ["A", "B"][k - 1], labels: ["SubAgent: Coder"] }));
     const review = t({ labels: ["SubAgent: Reviewer"] });
     const report = t({ prompt: m.composePhaseReport(["A", "B"], ["a", "b"], "ok"), text: "Seçenekler:\n1. Sıradaki faza geç: P2" });
     const planned = m.ctoTaskPlan([first, ...done, review, report]);
@@ -613,6 +655,17 @@ describe("CTO phase driver (model)", () => {
     expect(second.tasks.map((x: any) => x.title + ":" + x.state)).toEqual(["X:pending", "Y:pending"]);
     expect(second.review).toBe("none");
     expect(second.report).toBe("none");
+  });
+  it("a plan given directly by the CTO (no brief, no Konsey) drives the strip: skipped stages are 'done', the Coder, the Reviewer and the report follow the plan", () => {
+    const states = (turns: any[]) => (m.ctoStages(turns) as any[]).map((s) => s.id + ":" + s.state);
+    const plan = t({ prompt: "P1 listesi ver", text: "[[GÖREV-LİSTESİ]]\n1. A\n2. B\n[[/GÖREV-LİSTESİ]]" });
+    expect(states([plan])).toEqual(["brief:done", "council:done", "evaluation:done", "approval:waiting", "coder:waiting", "review:pending", "report:pending"]);
+    const first = t({ prompt: "[Görev 1/2] A", labels: ["SubAgent: Coder"], status: "running", text: null });
+    expect(states([plan, first])).toEqual(["brief:done", "council:done", "evaluation:done", "approval:done", "coder:running", "review:pending", "report:pending"]);
+    const all = [1, 2].map((k) => t({ prompt: "[Görev " + k + "/2] " + ["A", "B"][k - 1], labels: ["SubAgent: Coder"] }));
+    const review = t({ labels: ["SubAgent: Reviewer"] });
+    const report = t({ prompt: m.composePhaseReport(["A", "B"], ["a", "b"], "ok"), text: "Seçenekler:\n1. Sıradaki faza geç: P2" });
+    expect(states([plan, ...all, review, report])).toEqual(["brief:done", "council:done", "evaluation:done", "approval:done", "coder:done", "review:done", "report:waiting"]);
   });
   it("the CTO rules make the CTO propose the next phase itself and answer an approved phase with its task list", () => {
     const rules = m.composePrompt({ draft: "x", workMode: "local", planMode: "standard", terminalMode: "off", managerName: "CTO", skillNames: [], skillInstructions: [], connectorNames: [] });
@@ -662,17 +715,17 @@ describe("CTO task plan", () => {
     const plan0 = m.ctoTaskPlan(base);
     expect(plan0.tasks.map((x: any) => x.state)).toEqual(["pending", "pending", "pending"]);
     expect((m.ctoStages(base) as any[]).find((s) => s.id === "coder").detail).toBe("Görevler hazır, başlatmanı bekliyor");
-    const first = t({ prompt: "[Görev 1/3] Veritabanı", labels: ["SubAgent: Coder"], status: "running", text: null });
+    const first = t({ prompt: "[Görev 1/3] Veritabanı şemasını kur", labels: ["SubAgent: Coder"], status: "running", text: null });
     expect(m.ctoTaskPlan([...base, first]).tasks.map((x: any) => x.state)).toEqual(["running", "pending", "pending"]);
     expect((m.ctoStages([...base, first]) as any[]).find((s) => s.id === "coder").detail).toBe("Görev 1/3 çalışıyor");
     const firstDone = { ...first, status: "done", text: "yapıldı" };
     expect((m.ctoStages([...base, firstDone]) as any[]).find((s) => s.id === "coder").detail).toBe("1/3 bitti, sıradaki seni bekliyor");
-    const all = [1, 2, 3].map((k) => t({ prompt: "[Görev " + k + "/3] x", labels: ["SubAgent: Coder"] }));
+    const all = [1, 2, 3].map((k) => t({ prompt: "[Görev " + k + "/3] " + ["Veritabanı şemasını kur", "API yaz", "Arayüzü yap"][k - 1], labels: ["SubAgent: Coder"] }));
     const plan = m.ctoTaskPlan([...base, ...all]);
     expect(plan.tasks.every((x: any) => x.state === "done")).toBe(true);
     expect(plan.review).toBe("none");
     expect(m.ctoTaskPlan([...base, ...all, t({ labels: ["SubAgent: Reviewer"] })]).review).toBe("done");
-    const failed = t({ prompt: "[Görev 2/3] x", labels: ["SubAgent: Coder"], status: "error", text: null });
+    const failed = t({ prompt: "[Görev 2/3] API yaz", labels: ["SubAgent: Coder"], status: "error", text: null });
     expect(m.ctoTaskPlan([...base, failed]).tasks[1].state).toBe("error");
   });
 });

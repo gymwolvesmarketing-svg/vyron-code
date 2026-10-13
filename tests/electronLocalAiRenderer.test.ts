@@ -1790,6 +1790,67 @@ describe("managers run through Ruflo roles", () => {
     expect(h.calls.send).toHaveLength(13);
   }, 60_000);
 
+  it("CTO driver: the first choice of an answer that carries the task list starts the driver (Coder, Reviewer, report) instead of being sent to the CTO", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "CTO"));
+    const ok = (text: string) => ({ state: "completed", text, truncated: false });
+    h.behavior.sendQueue = [
+      ok("Durum: liste hazır.\n[[GÖREV-LİSTESİ]]\n1. A\n2. B\n[[/GÖREV-LİSTESİ]]\n\nSeçenekler:\n1. Listeyi onayla ve yürüt\n2. Listeyi revize et"),
+      ok("A bitti"),
+      ok("B bitti"),
+      ok("İnceleme temiz"),
+      ok("Durum: faz bitti.\n\nSeçenekler:\n1. Sıradaki faza geç: P2"),
+    ];
+    await sendTask(h, "P1 görev listesi");
+    expect(h.calls.send).toHaveLength(1);
+    // The project status sits at the END of the conversation (not scrolled out of sight at the top): stage strip, then the task list.
+    const kids = [...h.el("turns").children].map((n) => n.className);
+    expect(kids[kids.length - 1]).toContain("cto-plan");
+    expect(kids[kids.length - 2]).toContain("cto-stages");
+    expect(kids.findIndex((c) => c.indexOf("turn") === 0 && c.indexOf("turns") < 0)).toBeLessThan(kids.length - 2);
+    const first = [...h.doc.querySelectorAll<HTMLElement>(".option-btn")].find((b) => b.textContent === "1. Listeyi onayla ve yürüt");
+    expect(first).toBeTruthy();
+    h.click(first!);
+    for (let i = 0; i < 12; i += 1) await h.flush();
+    expect(h.calls.send.slice(1).map(driverStep)).toEqual(["coder:[Görev 1/2] A", "coder:[Görev 2/2] B", "reviewer:inceleme", "cto:rapor"]);
+    expect(h.calls.send.some((c) => c.draft.indexOf("Seçenek 1: Listeyi onayla") >= 0)).toBe(false);
+  }, 60_000);
+
+  it("CTO driver: 'Durdur' cuts off the step that is running (clears the submission), shows it as stopped, and starts nothing more", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "CTO"));
+    const ok = (text: string) => ({ state: "completed", text, truncated: false });
+    h.behavior.sendQueue = [ok("[[PROJE-ÖZETİ]]H[[/PROJE-ÖZETİ]]"), ok("KARAR"), ok("Değ."), ok("[[GÖREV-LİSTESİ]]\n1. A\n2. B\n[[/GÖREV-LİSTESİ]]")];
+    const btn = (label: string) => [...h.doc.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === label);
+    const settle = async () => {
+      for (let i = 0; i < 12; i += 1) await h.flush();
+    };
+    await sendTask(h, "P");
+    h.click(btn("Konseye ver")!);
+    await settle();
+    h.click(btn("Görev listesi çıkar")!);
+    await settle();
+    let release: () => void = () => undefined;
+    h.behavior.sendGate = new Promise<void>((resolve) => { release = resolve; });
+    h.click(btn("Hepsini sırayla yürüt")!);
+    await h.flush();
+    expect(btn("Durdur")).toBeTruthy();
+    const before = h.calls.clear;
+    h.click(btn("Durdur")!);
+    expect(h.calls.clear).toBeGreaterThan(before);
+    // The main process answers the cut-off request with "idle" (not completed).
+    h.behavior.sendResult = { state: "idle", text: null, truncated: false };
+    release();
+    await settle();
+    expect(h.doc.querySelector(".turn-error")?.textContent).toContain("Durduruldu");
+    expect(btn("Durdur")).toBeUndefined();
+    expect(h.calls.send).toHaveLength(5);
+  }, 60_000);
+
   it("CTO driver: a failed task stops the run (nothing after it starts) and offers 'Tekrar dene'", async () => {
     const h = await start();
     h.click(h.el("plus-btn"));

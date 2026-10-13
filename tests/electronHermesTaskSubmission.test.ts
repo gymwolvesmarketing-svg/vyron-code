@@ -542,6 +542,36 @@ describe("sendTask - approved tools (tools: true)", () => {
     expect(getTaskSubmissionState()).toEqual({ state: "completed", text: "bitti", truncated: false });
   });
 
+  it("clearing a running tool task aborts the model request of the current step and ends the loop at once (the 'Durdur' button)", async () => {
+    await authorizeAndConfigure();
+    let aborted = false;
+    fetchMock.mockImplementationOnce(
+      (_url: string, options: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          options.signal?.addEventListener("abort", () => {
+            aborted = true;
+            reject(new Error("aborted"));
+          });
+        }),
+    );
+    const seen: Array<string | null> = [];
+    setToolRunner(async (task, ask) => {
+      seen.push(await ask([{ role: "user", content: task }]));
+      // A second step after the stop gets "no answer" without any new request.
+      seen.push(await ask([{ role: "user", content: "devam" }]));
+      return { ok: false as const };
+    });
+    const pending = sendTask({ draft: VALID_DRAFT, tools: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(getTaskSubmissionState().state).toBe("sending");
+    clearTaskSubmission();
+    const result = await pending;
+    expect(aborted).toBe(true);
+    expect(seen).toEqual([null, null]);
+    expect(result.state).toBe("idle");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("a failed model step is reported to the loop as null, never as an exception", async () => {
     await authorizeAndConfigure();
     setToolRunner(async (_task, ask) => {
