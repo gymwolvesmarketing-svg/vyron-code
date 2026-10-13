@@ -514,6 +514,8 @@ describe("sendTask - approved tools (tools: true)", () => {
         { role: "user", content: VALID_DRAFT },
       ],
       stream: false,
+      // A tool step asks for short thinking (Kimi K3 at "medium" spent its whole output budget thinking and answered empty).
+      model_options: { reasoning_effort: "low" },
     });
     expect((options.headers as Record<string, string>).Authorization).toBe("Bearer " + PLACEHOLDER_CREDENTIAL);
   });

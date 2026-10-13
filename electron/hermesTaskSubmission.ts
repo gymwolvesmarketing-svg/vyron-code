@@ -83,6 +83,10 @@ const CONTROL_CHARACTER_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F
  * own limit; it is still finite. */
 const SEND_TIMEOUT_MS = 600_000;
 
+/** A tool step is a short JSON request, not a deep analysis: at Hermes' default "medium" Kimi K3 spent its whole 4096-token output on thinking
+ * and returned an empty answer. Hermes honours this per request (model_options), so it does not depend on the user's config.yaml. */
+const TOOL_STEP_MODEL_OPTIONS = { reasoning_effort: "low" } as const;
+
 /** Bounded renderer-facing response size — independent of whatever token/usage accounting the
  * server itself reports, which this module never forwards. */
 const MAX_RESPONSE_CHARS = 200_000;
@@ -227,7 +231,7 @@ export async function sendTask(request: unknown): Promise<HermesTaskSubmissionSt
             method: "POST",
             redirect: "error",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}` },
-            body: JSON.stringify({ messages: messages.map((m) => ({ role: m.role, content: m.content })), stream: false, ...(directModel ? { model: directModel } : {}) }),
+            body: JSON.stringify({ messages: messages.map((m) => ({ role: m.role, content: m.content })), stream: false, model_options: TOOL_STEP_MODEL_OPTIONS, ...(directModel ? { model: directModel } : {}) }),
             signal: stepController.signal,
           });
           if (!stepResponse.ok) return null;

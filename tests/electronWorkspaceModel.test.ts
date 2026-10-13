@@ -558,6 +558,26 @@ describe("CTO progress stages", () => {
   });
 });
 
+describe("CTO communication protocol", () => {
+  const m = model as any;
+  const base = { draft: "Merhaba", workMode: "local", planMode: "standard", terminalMode: "off", skillNames: [], skillInstructions: [], connectorNames: [] };
+  it("the CTO rules ask for a status report with one clear recommendation and numbered choices, and for the user's word before anything consequential", () => {
+    const rules = m.composePrompt({ ...base, managerName: "CTO" });
+    for (const part of ["'Durum'", "'Yapılanlar'", "'Önerim'", "'Seçenekler'", "'Senden beklediğim'", "devam edelim mi?' diye sorma", "commit, push, kurulum", "dur, raporla ve yön iste"]) {
+      expect(rules, part).toContain(part);
+    }
+    expect(m.composePrompt({ ...base, managerName: "Genel" })).not.toContain("Seçenekler");
+  });
+  it("extractOptions reads the numbered list under the Seçenekler heading (any markdown style), at most 5, and stops at the next section", () => {
+    const text = "Durum: iyi.\n\n**Seçenekler:**\n1. **Git deposu kur** (önerim)\n2) Önce P1 bağımlılıklarını seç\n3. Bekle\n\nSenden beklediğim: bir numara.\n4. bu madde listenin dışında";
+    expect(m.extractOptions(text)).toEqual(["Git deposu kur (önerim)", "Önce P1 bağımlılıklarını seç", "Bekle"]);
+    expect(m.extractOptions("## Seçenekler\n1. a\n2. b\n3. c\n4. d\n5. e\n6. f")).toHaveLength(5);
+    expect(m.extractOptions("Seçenekler yok burada")).toEqual([]);
+    expect(m.extractOptions("Seçenekler\nbir şey yaz")).toEqual([]);
+    expect(m.extractOptions("1. a\n2. b")).toEqual([]);
+  });
+});
+
 describe("chain prompt titles", () => {
   const m = model as any;
   it("gives every CTO chain prompt a short title and leaves user-typed prompts alone", () => {

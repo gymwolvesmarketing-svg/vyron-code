@@ -1687,6 +1687,26 @@ describe("managers run through Ruflo roles", () => {
     expect(h.doc.querySelector(".cto-stage[data-stage=review]")?.className).toContain("cto-done");
   });
 
+  it("CTO: the numbered choices of an answer become buttons; a click sends that choice to the CTO as the user's answer", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "CTO"));
+    h.behavior.sendQueue = [
+      { state: "completed", text: "Durum: P0 bitti.\n\nSeçenekler:\n1. Git deposunu kur (önerim)\n2. P1 bağımlılıklarını seç\n\nSenden beklediğim: bir numara.", truncated: false },
+      { state: "completed", text: "Git deposu kuruluyor.", truncated: false },
+    ];
+    await sendTask(h, "Durum ne?");
+    const buttons = [...h.doc.querySelectorAll<HTMLElement>(".option-btn")];
+    expect(buttons.map((b) => b.textContent)).toEqual(["1. Git deposunu kur (önerim)", "2. P1 bağımlılıklarını seç"]);
+    h.click(buttons[1]!);
+    await h.flush();
+    expect(h.calls.send).toHaveLength(2);
+    expect(h.calls.send[1]!.draft).toContain("Seçenek 2: P1 bağımlılıklarını seç");
+    expect(h.calls.send[1]!.draft).toContain("Bu seçeneği uygula.");
+    expect(h.calls.send[1]!.draft).toContain("Rol: CTO.");
+  });
+
   it("CTO chain turns show a short title with the full text collapsed, and carry no earlier-conversation preamble", async () => {
     const h = await start();
     h.click(h.el("plus-btn"));

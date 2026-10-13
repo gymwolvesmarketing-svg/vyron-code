@@ -2010,6 +2010,15 @@ function renderCtoActions(turn: Turn): HTMLElement | null {
   const actions = make("div", "turn-actions");
   const brief = turn.labels.indexOf("SubAgent: " + VyronModel.CTO_NAME) >= 0 ? VyronModel.extractBrief(turn.text) : null;
   if (brief !== null) actions.appendChild(makeButton("btn small", "Konseye ver", () => void sendBriefToCouncil(taskId, turn, brief)));
+  // The CTO's numbered choices ("Seçenekler") become one-click replies: the click is the user's answer.
+  if (turn.labels.indexOf("SubAgent: " + VyronModel.CTO_NAME) >= 0) {
+    VyronModel.extractOptions(turn.text).forEach((option, i) => {
+      const shown = option.length > 70 ? option.slice(0, 69) + "…" : option;
+      const button = makeButton("btn small option-btn", String(i + 1) + ". " + shown, () => chooseCtoOption(i + 1, option));
+      button.title = option;
+      actions.appendChild(button);
+    });
+  }
   if (VyronModel.isEvaluationPrompt(turn.prompt)) {
     const decision = lastCouncilDecision(taskId, turn);
     const coder = ws.managers.find((m) => m.agent === "coder" && !m.custom);
@@ -2091,6 +2100,15 @@ function lastCouncilDecision(taskId: string, before: Turn): string | null {
     if (t.agent === "council" && t.status === "done" && t.text !== null && !t.cleared) found = t.text;
   }
   return found;
+}
+
+/** A numbered choice of the CTO: sent right away to the CTO as the user's answer (the click is the decision). */
+function chooseCtoOption(number: number, option: string): void {
+  if (sendInFlight) return;
+  setManager("cto");
+  must<HTMLTextAreaElement>("task-input").value = "Seçenek " + String(number) + ": " + option + "\nBu seçeneği uygula.";
+  updateComposer();
+  void sendCurrent();
 }
 
 function askCtoForCorrection(): void {

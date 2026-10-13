@@ -888,11 +888,26 @@ const VyronModel = (() => {
   /** The prompt prefix that marks the CTO's evaluation of a Konsey decision (persisted with the turn, so the buttons survive a restart). */
   const EVAL_PREFIX = "[Konsey kararının CTO değerlendirmesi]";
 
+  /** The heading the CTO puts above its numbered choices; the page turns the list under it into buttons. */
+  const OPTIONS_HEADING = "Seçenekler";
+
+  /**
+   * How the CTO talks to the user: like a colleague who reports and steers, not a text dump. Every answer ends in the same structure,
+   * the choices are numbered (the page shows them as buttons), and nothing consequential starts without the user's word.
+   */
+  const OPTIONS_HEADING_RULES =
+    "İletişim biçimin: kısa ve Türkçe yaz; her yanıtın şu başlıklarla bitsin: 'Durum' (1-2 cümle), 'Yapılanlar' (yalnızca gerçekten doğrulananlar; doğrulanmayanı açıkça belirt), " +
+    "'Açık kararlar ve riskler', 'Önerim' (tek net öneri ve gerekçesi; 'devam edelim mi?' diye sorma, önerini söyle), '" + OPTIONS_HEADING +
+    "' (numaralı 2-4 seçenek: her satır '1. ...' ile başlasın, ilki önerdiğin olsun) ve 'Senden beklediğim' (tek cümle). " +
+    "Kullanıcı yalnızca bir numara ya da 'onay' yazarsa o seçeneği uygula. Dosya silme, commit, push, kurulum ve ayar değişikliği gibi sonucu büyük işleri kendin başlatma; önce seçenek olarak sun. " +
+    "Uzun bir işte bir aşama bitince dur, raporla ve yön iste; sessizce bir sonraki aşamaya geçme.";
+
   const CTO_RULES =
     "Sen kullanıcının teknik direktörüsün (CTO) ve ona bağlı çalışırsın. Önce projeyi anla: eksik bilgi varsa en fazla üç net soru sor, sonra ilerle. " +
     "Proje yeterince netleşince şu iki işaretin arasına bir proje özeti yaz: " + BRIEF_OPEN + " amaç, kapsam, kısıtlar, teknoloji, başarı ölçütleri, açık sorular " + BRIEF_CLOSE + ". " +
     "Özetten sonra kullanıcıya özeti okumasını, gerekirse düzeltmesini ve hazır olunca 'Konseye ver' düğmesine basmasını söyle. " +
-    "Kullanıcının onayı olmadan hiçbir kararı onaylanmış sayma, işi başlatılmış gösterme.";
+    "Kullanıcının onayı olmadan hiçbir kararı onaylanmış sayma, işi başlatılmış gösterme. " +
+    OPTIONS_HEADING_RULES;
 
   /** The brief between the two markers, or null when the answer has none (or an empty one). */
   function extractBrief(text: string): string | null {
@@ -901,6 +916,32 @@ const VyronModel = (() => {
     const end = text.indexOf(BRIEF_CLOSE, start + BRIEF_OPEN.length);
     const body = (end < 0 ? text.slice(start + BRIEF_OPEN.length) : text.slice(start + BRIEF_OPEN.length, end)).trim();
     return body.length > 0 ? body : null;
+  }
+
+  /**
+   * The numbered choices under the "Seçenekler" heading of a CTO answer (at most 5), each as plain text; empty when there is no such list.
+   * Markdown emphasis is stripped. The list ends at the first line that is neither a numbered item nor blank, or at the next heading.
+   */
+  function extractOptions(text: string): string[] {
+    const lines = text.split(/\r?\n/);
+    let start = -1;
+    for (let i = 0; i < lines.length; i += 1) {
+      if (lines[i]!.replace(/[*_#:\s]/g, "").toLowerCase() === OPTIONS_HEADING.toLowerCase()) start = i;
+    }
+    if (start < 0) return [];
+    const options: string[] = [];
+    for (let i = start + 1; i < lines.length && options.length < 5; i += 1) {
+      const line = lines[i]!;
+      if (line.trim().length === 0) {
+        if (options.length > 0) break;
+        continue;
+      }
+      const m = line.match(/^\s*(\d+)[.)]\s+(.+)$/);
+      if (!m) break;
+      const option = (m[2] ?? "").replace(/[*_`]/g, "").trim();
+      if (option.length > 0) options.push(option.length > 300 ? option.slice(0, 299) + "…" : option);
+    }
+    return options;
   }
 
   function clipTo(text: string, max: number): string {
@@ -1269,6 +1310,7 @@ const VyronModel = (() => {
     composeEvaluation,
     extractBrief,
     isEvaluationPrompt,
+    extractOptions,
     ctoStages,
     ctoTaskPlan,
     chainPromptTitle,
