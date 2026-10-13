@@ -37,7 +37,7 @@
  * main-process-only local AI lifecycle manager, and on every quit path stops only the services the
  * app itself started. Credentials and endpoints never leave the main process.
  */
-import { app, BrowserWindow, ipcMain, Menu, powerMonitor, session } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, Notification, powerMonitor, session } from "electron";
 import path from "node:path";
 import { HARDENED_WEB_PREFERENCES, isNavigationAllowed, isNewWindowAllowed } from "./security-policy";
 import { APP_IPC_CHANNELS, HERMES_IPC_CHANNELS, LOCAL_AI_IPC_CHANNELS, TOOLS_IPC_CHANNELS } from "./shared-ipc-contract";
@@ -45,6 +45,7 @@ import { getTaskSubmissionState, sendTask, clearTaskSubmission, setTaskAgentExec
 import { createProductionLocalAiManager } from "./localAiAdapters";
 import { createProductionRufloBridge } from "./rufloAdapters";
 import { createStorageFlusher } from "./storageFlush";
+import { createNotifier } from "./notifications";
 import { isDeepResearchRole, researchKindOfRole } from "./rufloBridge";
 import { archiveKindForRole, archiveNote } from "./resultArchive";
 import { createProductionToolRunner } from "./toolAdapters";
@@ -190,7 +191,24 @@ setTaskAgentExecutor(async (agentType, prompt, project, models) => {
 });
 setAgentAsk((agentType, prompt, models) => ruflo.ask(agentType, prompt, models));
 // Approved tools: workspace folder from a native dialog, native approval dialogs, confined executors.
-const tools = createProductionToolRunner(() => mainWindow);
+// Desktop notifications while the window is not in front: a task finished / stopped half way / failed, a permission is waiting (electron/notifications.ts).
+// Windows shows a toast only for a known app id: the same one electron-builder.yml gives the installed shortcut.
+if (process.platform === "win32") app.setAppUserModelId("com.vyron.code");
+const notifier = createNotifier({
+  isAppInFront: () => mainWindow !== null && mainWindow.isVisible() && !mainWindow.isMinimized() && mainWindow.isFocused(),
+  show: (title, body) => {
+    if (!Notification.isSupported()) return;
+    const note = new Notification({ title, body });
+    note.on("click", () => {
+      if (mainWindow === null) return;
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    });
+    note.show();
+  },
+});
+const tools = createProductionToolRunner(() => mainWindow, undefined, undefined, () => notifier.approvalNeeded());
 setToolRunner((task, ask, onProgress) => tools.run(task, ask, onProgress));
 
 /** Stops only what this app started: the Ruflo runtime and the local AI services. */
@@ -221,7 +239,11 @@ function registerLocalAiIpcHandlers(): void {
  */
 function registerHermesIpcHandlers(): void {
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_GET_TASK_SUBMISSION_STATE, () => getTaskSubmissionState());
-  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_SEND_TASK, (_event, request: unknown) => sendTask(request));
+  ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_SEND_TASK, async (_event, request: unknown) => {
+    const result = await sendTask(request);
+    notifier.taskFinished(result.state, result.text);
+    return result;
+  });
   ipcMain.handle(HERMES_IPC_CHANNELS.HERMES_CLEAR_TASK_SUBMISSION, () => clearTaskSubmission());
 }
 

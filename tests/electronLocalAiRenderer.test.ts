@@ -1524,6 +1524,13 @@ describe("logo-only startup and welcome screens, single menu", () => {
   });
 });
 
+/** A short label of what a sent request was, for the driver tests: which Manager and which step of the CTO flow. */
+function driverStep(c: { agent?: string; draft: string }): string {
+  const task = c.draft.match(/^\[Görev \d+\/\d+\] \w+/);
+  const what = task ? task[0] : c.draft.indexOf("[CTO faz raporu]") >= 0 ? "rapor" : c.draft.startsWith("Coder aşağıdaki") ? "inceleme" : "?";
+  return (c.agent ?? "cto") + ":" + what;
+}
+
 describe("managers run through Ruflo roles", () => {
   it("Genel sends a direct task with a role line and no agent; Ruflo-backed managers send their role and no role line", async () => {
     const h = await start();
@@ -1731,6 +1738,82 @@ describe("managers run through Ruflo roles", () => {
     expect(h.calls.send[1]!.draft).not.toContain("Önceki konuşma");
     expect(h.calls.send[2]!.draft).not.toContain("Önceki konuşma");
   });
+
+  it("CTO driver: 'Hepsini sırayla yürüt' runs the tasks, the Reviewer and the CTO report on its own; approving the next phase runs that phase too, with no further clicks", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "CTO"));
+    const ok = (text: string) => ({ state: "completed", text, truncated: false });
+    h.behavior.sendQueue = [
+      ok("[[PROJE-ÖZETİ]]Hedef[[/PROJE-ÖZETİ]]"),
+      ok("KONSEY KARARI"),
+      ok("Değerlendirme"),
+      ok("[[GÖREV-LİSTESİ]]\n1. A\n2. B\n[[/GÖREV-LİSTESİ]]"),
+    ];
+    const btn = (label: string) => [...h.doc.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === label);
+    const settle = async () => {
+      for (let i = 0; i < 12; i += 1) await h.flush();
+    };
+    await sendTask(h, "Proje");
+    h.click(btn("Konseye ver")!);
+    await settle();
+    h.click(btn("Görev listesi çıkar")!);
+    await settle();
+    expect(h.calls.send).toHaveLength(4);
+    expect(btn("Hepsini sırayla yürüt")).toBeTruthy();
+
+    // One click: both tasks, the Reviewer and the CTO's phase report.
+    h.behavior.sendQueue = [ok("A bitti"), ok("B bitti"), ok("İnceleme temiz"), ok("Durum: faz 1 bitti.\n\nSeçenekler:\n1. Sıradaki faza geç: P2\n2. Önce düzeltmeleri yap\n\nSenden beklediğim: bir numara.")];
+    h.click(btn("Hepsini sırayla yürüt")!);
+    await settle();
+    expect(h.calls.send.slice(4).map(driverStep)).toEqual(["coder:[Görev 1/2] A", "coder:[Görev 2/2] B", "reviewer:inceleme", "cto:rapor"]);
+    expect(h.calls.send[7]!.draft).toContain("A bitti");
+    expect(h.calls.send[7]!.draft).toContain("İnceleme temiz");
+    expect(h.calls.send[7]!.draft).toContain("SIRADAKİ FAZ");
+    expect(btn("Durdur")).toBeUndefined();
+    expect(h.calls.send).toHaveLength(8);
+
+    // The user approves the next phase with one click on the first choice: the new phase's list runs by itself.
+    h.behavior.sendQueue = [
+      ok("[[GÖREV-LİSTESİ]]\n1. X\n2. Y\n[[/GÖREV-LİSTESİ]]"),
+      ok("X tamam"),
+      ok("Y tamam"),
+      ok("Faz 2 incelemesi temiz"),
+      ok("Durum: faz 2 bitti.\n\nSeçenekler:\n1. Yol haritası bitti, kapanış raporu"),
+    ];
+    h.click([...h.doc.querySelectorAll<HTMLElement>(".option-btn")].find((b) => b.textContent === "1. Sıradaki faza geç: P2")!);
+    await settle();
+    expect(h.calls.send[8]!.draft).toContain("Seçenek 1: Sıradaki faza geç: P2");
+    expect(h.calls.send.slice(9).map(driverStep)).toEqual(["coder:[Görev 1/2] X", "coder:[Görev 2/2] Y", "reviewer:inceleme", "cto:rapor"]);
+    expect(btn("Durdur")).toBeUndefined();
+    expect(h.calls.send).toHaveLength(13);
+  }, 60_000);
+
+  it("CTO driver: a failed task stops the run (nothing after it starts) and offers 'Tekrar dene'", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "CTO"));
+    const ok = (text: string) => ({ state: "completed", text, truncated: false });
+    h.behavior.sendQueue = [ok("[[PROJE-ÖZETİ]]H[[/PROJE-ÖZETİ]]"), ok("KARAR"), ok("Değ."), ok("[[GÖREV-LİSTESİ]]\n1. A\n2. B\n[[/GÖREV-LİSTESİ]]")];
+    const btn = (label: string) => [...h.doc.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === label);
+    const settle = async () => {
+      for (let i = 0; i < 12; i += 1) await h.flush();
+    };
+    await sendTask(h, "P");
+    h.click(btn("Konseye ver")!);
+    await settle();
+    h.click(btn("Görev listesi çıkar")!);
+    await settle();
+    h.behavior.sendQueue = [{ state: "safe_failure", text: null, truncated: false }];
+    h.click(btn("Hepsini sırayla yürüt")!);
+    await settle();
+    expect(h.calls.send).toHaveLength(5);
+    expect(h.doc.querySelector(".cto-task[data-task='1']")?.className).toContain("cto-error");
+    expect(btn("Tekrar dene")).toBeTruthy();
+    expect(btn("Durdur")).toBeUndefined();
+  }, 60_000);
 
   it("CTO: an answer without a brief has no 'Konseye ver'; a failed Konsey stops the chain", async () => {
     const h = await start();

@@ -171,6 +171,8 @@ export function createProductionToolRunner(
   // The browser window is only created when a task first opens a page, so building the driver costs nothing.
   browser: BrowserDriver = createBrowserDriver(() => createElectronBrowserPage()),
   research: DeepResearch = createProductionDeepResearch(),
+  /** Called just before a permission dialog is shown (so a notification can bring the user back). */
+  onApprovalNeeded?: () => void,
 ): ToolRunner {
   const store = createPermissionStore(path.join(app.getPath("userData"), PERMISSIONS_FILE));
   const folders = createProjectFolderStore(path.join(app.getPath("userData"), PROJECT_FOLDERS_FILE));
@@ -184,6 +186,7 @@ export function createProductionToolRunner(
 
   async function approve(request: ApprovalRequest): Promise<ApprovalChoice> {
     if (store.has(request.key)) return "always";
+    onApprovalNeeded?.();
     const window = getWindow();
     // File writes and commands also offer "for the rest of this task"; every other kind keeps the three buttons.
     const buttons = request.offerTask ? ["Bir kez izin ver", "Bu görevde hepsine izin ver", "Bu klasörde her zaman izin ver", "Reddet"] : ["Bir kez izin ver", "Her zaman izin ver", "Reddet"];

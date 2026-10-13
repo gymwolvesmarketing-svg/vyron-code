@@ -900,7 +900,9 @@ const VyronModel = (() => {
     "'Açık kararlar ve riskler', 'Önerim' (tek net öneri ve gerekçesi; 'devam edelim mi?' diye sorma, önerini söyle), '" + OPTIONS_HEADING +
     "' (numaralı 2-4 seçenek: her satır '1. ...' ile başlasın, ilki önerdiğin olsun) ve 'Senden beklediğim' (tek cümle). " +
     "Kullanıcı yalnızca bir numara ya da 'onay' yazarsa o seçeneği uygula. Dosya silme, commit, push, kurulum ve ayar değişikliği gibi sonucu büyük işleri kendin başlatma; önce seçenek olarak sun. " +
-    "Uzun bir işte bir aşama bitince dur, raporla ve yön iste; sessizce bir sonraki aşamaya geçme.";
+    "Uzun bir işte bir aşama bitince dur, raporla ve yön iste; sessizce bir sonraki aşamaya geçme. " +
+    "Sen projeyi baştan sona yöneten ajansın: bir faz bittiğinde kullanıcının sana görev vermesini bekleme, yol haritasındaki sıradaki fazı kendin öner (ilk seçenek). " +
+    "Kullanıcı bir fazın başlamasını onaylarsa (ör. 'Seçenek 1: sıradaki faza geç'), o fazın görev listesini hemen '[[GÖREV-LİSTESİ]]' ve '[[/GÖREV-LİSTESİ]]' işaretlerinin arasında numaralı olarak ver (en fazla 8 görev) ve açıklamayı kısa tut.";
 
   const CTO_RULES =
     "Sen kullanıcının teknik direktörüsün (CTO) ve ona bağlı çalışırsın. Önce projeyi anla: eksik bilgi varsa en fazla üç net soru sor, sonra ilerle. " +
@@ -944,6 +946,15 @@ const VyronModel = (() => {
     return options;
   }
 
+  /** The text as shown in the chat: the CTO's machine markers (needed by the buttons) become plain headings; nothing else changes. */
+  function displayText(text: string): string {
+    return text
+      .split("[[PROJE-ÖZETİ]]").join("— Proje özeti —")
+      .split("[[/PROJE-ÖZETİ]]").join("— Özet sonu —")
+      .split("[[GÖREV-LİSTESİ]]").join("— Görev listesi —")
+      .split("[[/GÖREV-LİSTESİ]]").join("— Liste sonu —");
+  }
+
   function clipTo(text: string, max: number): string {
     const body = text.trim();
     return body.length > max ? body.slice(0, max - 1) + "…" : body;
@@ -968,6 +979,10 @@ const VyronModel = (() => {
 
   function isEvaluationPrompt(prompt: string): boolean {
     return prompt.startsWith(EVAL_PREFIX);
+  }
+
+  function isPhaseReportPrompt(prompt: string): boolean {
+    return prompt.startsWith(PHASE_REPORT_PREFIX);
   }
 
   // ---- CTO task plan: the approved decision is split into at most MAX_CTO_TASKS tasks; the user starts each one (a click = the approval) ----
@@ -1016,6 +1031,25 @@ const VyronModel = (() => {
     return head + clipTo(decision, Math.max(0, MAX_DRAFT_LENGTH - head.length));
   }
 
+  /** The prompt prefix of the CTO's phase report (persisted with the turn, so the plan state survives a restart). */
+  const PHASE_REPORT_PREFIX = "[CTO faz raporu]";
+
+  /**
+   * The CTO's report once a phase's tasks are done and reviewed: what is really verified, what the Reviewer found, and the NEXT phase of the
+   * roadmap as the first choice. Choosing it is the user's approval: the CTO then answers with that phase's task list straight away.
+   */
+  function composePhaseReport(titles: readonly string[], results: ReadonlyArray<string | null>, review: string | null): string {
+    const head =
+      PHASE_REPORT_PREFIX +
+      "\nBu fazın görevlerini Coder yaptı, Reviewer inceledi. CTO olarak faz raporunu yaz (iletişim biçimine uy): yalnızca gerçekten doğrulanan sonuçları (çalıştırılmış testler gibi) yaz, " +
+      "Reviewer'ın bulduğu eksikleri ve risklerini belirt. Yol haritasında SIRADAKİ FAZ'ı bulmak için önce çalışma klasöründeki karar belgelerini oku (konsey/ altındaki en son karar, docs/, README, TECHNICAL_ERRATA). " +
+      "'Seçenekler'in ilki 'Sıradaki faza geç: <faz adı>' olsun. Kullanıcı bunu seçerse o fazın görev listesini hemen " + TASKS_OPEN + " ... " + TASKS_CLOSE +
+      " içinde ver (en fazla " + String(MAX_CTO_TASKS) + " görev); kullanıcının seçimi onaydır, yeniden sorma. Yol haritası bittiyse bunu söyle.\n\nBu fazın görevleri ve Coder'ın bildirdiği sonuçlar:\n";
+    const body = titles.map((title, i) => String(i + 1) + ". " + title + "\n   Sonuç: " + clipTo(results[i] ?? "(sonuç yok)", 700)).join("\n");
+    const tail = "\n\nReviewer'ın incelemesi:\n" + clipTo(review ?? "(inceleme yok)", 2_500);
+    return head + clipTo(body, Math.max(0, MAX_DRAFT_LENGTH - head.length - tail.length)) + tail;
+  }
+
   /** The Reviewer's task: look at what the Coder reported for every task. */
   function composeReviewPrompt(titles: readonly string[], results: ReadonlyArray<string | null>): string {
     const parts = titles.map((title, i) => String(i + 1) + ". " + title + "\nCoder'ın bildirdiği sonuç: " + clipTo(results[i] ?? "(sonuç yok)", TASK_RESULT_CHARS));
@@ -1030,6 +1064,7 @@ const VyronModel = (() => {
   function chainPromptTitle(prompt: string): string | null {
     if (prompt.startsWith(EVAL_PREFIX)) return "CTO: Konsey kararını değerlendiriyor";
     if (prompt.startsWith(TASKLIST_PREFIX)) return "CTO: onaylanan kararı görev listesine bölüyor";
+    if (prompt.startsWith(PHASE_REPORT_PREFIX)) return "CTO: faz raporu ve sıradaki faz";
     if (TASK_PROMPT_PATTERN.test(prompt)) return (prompt.split("\n")[0] ?? "").trim();
     if (prompt.startsWith(COUNCIL_TASK_HEAD)) return "Konsey: proje özeti için karar veriyor";
     if (prompt.startsWith(REVIEW_HEAD)) return "Reviewer: Coder'ın sonuçlarını inceliyor";
@@ -1041,15 +1076,20 @@ const VyronModel = (() => {
     readonly planAt: number;
     readonly tasks: ReadonlyArray<{ readonly index: number; readonly title: string; readonly state: CtoTaskState }>;
     readonly review: "none" | CtoTaskState;
+    /** The CTO's report after the Reviewer (the turn that proposes the next phase). */
+    readonly report: "none" | CtoTaskState;
   }
 
-  /** The newest finished CTO task list and where each of its tasks stands, derived from the turns after it; null without a list. */
+  /**
+   * The newest finished CTO answer that contains a task list ("[[GÖREV-LİSTESİ]]", asked for with the button OR given by the CTO when the
+   * user approved the next phase) and where each of its tasks stands, derived from the turns after it; null without a list.
+   */
   function ctoTaskPlan(turns: readonly CtoStageTurn[]): CtoPlan | null {
     let planAt = -1;
     let titles: string[] = [];
     for (let i = turns.length - 1; i >= 0; i -= 1) {
       const t = turns[i]!;
-      if (t.prompt.startsWith(TASKLIST_PREFIX) && t.status === "done" && t.text !== null) {
+      if (t.labels.indexOf("SubAgent: " + CTO_NAME) >= 0 && t.status === "done" && t.text !== null) {
         const found = extractTasks(t.text);
         if (found.length > 0) {
           planAt = i;
@@ -1079,7 +1119,15 @@ const VyronModel = (() => {
         break;
       }
     }
-    return { planAt, tasks, review };
+    let report: "none" | CtoTaskState = "none";
+    for (let i = turns.length - 1; i > planAt; i -= 1) {
+      const t = turns[i]!;
+      if (t.prompt.startsWith(PHASE_REPORT_PREFIX)) {
+        report = t.status === "running" ? "running" : t.status === "error" ? "error" : "done";
+        break;
+      }
+    }
+    return { planAt, tasks, review, report };
   }
 
   type CtoStageState = "pending" | "waiting" | "running" | "done" | "error";
@@ -1310,11 +1358,14 @@ const VyronModel = (() => {
     composeEvaluation,
     extractBrief,
     isEvaluationPrompt,
+    isPhaseReportPrompt,
     extractOptions,
+    displayText,
     ctoStages,
     ctoTaskPlan,
     chainPromptTitle,
     composeTaskListRequest,
+    composePhaseReport,
     extractTasks,
     composeTaskPrompt,
     composeReviewPrompt,

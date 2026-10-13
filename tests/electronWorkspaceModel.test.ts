@@ -578,6 +578,49 @@ describe("CTO communication protocol", () => {
   });
 });
 
+describe("displayText", () => {
+  it("turns the CTO's machine markers into plain headings and leaves every other text untouched", () => {
+    const m = model as any;
+    expect(m.displayText("a [[PROJE-ÖZETİ]]Hedef[[/PROJE-ÖZETİ]] b")).toBe("a — Proje özeti —Hedef— Özet sonu — b");
+    expect(m.displayText("[[GÖREV-LİSTESİ]]\n1. x\n[[/GÖREV-LİSTESİ]]")).toBe("— Görev listesi —\n1. x\n— Liste sonu —");
+    expect(m.displayText("Düz metin [köşeli] ve ** işaretler")).toBe("Düz metin [köşeli] ve ** işaretler");
+  });
+});
+
+describe("CTO phase driver (model)", () => {
+  const m = model as any;
+  const t = (over: any) => ({ prompt: "p", agent: null, labels: ["SubAgent: CTO"], status: "done", text: "x", ...over });
+  const LIST = "[[GÖREV-LİSTESİ]]\n1. A\n2. B\n[[/GÖREV-LİSTESİ]]";
+  it("the phase report prompt carries the results, the review and the next-phase instruction, within the draft limit", () => {
+    const p = m.composePhaseReport(["A", "B"], ["A bitti", null], "Temiz");
+    expect(m.isPhaseReportPrompt(p)).toBe(true);
+    expect(m.chainPromptTitle(p)).toBe("CTO: faz raporu ve sıradaki faz");
+    for (const part of ["1. A", "Sonuç: A bitti", "Sonuç: (sonuç yok)", "Reviewer'ın incelemesi:\nTemiz", "SIRADAKİ FAZ", "Sıradaki faza geç", "[[GÖREV-LİSTESİ]]"]) expect(p, part).toContain(part);
+    const huge = m.composePhaseReport(Array(8).fill("x".repeat(300)), Array(8).fill("y".repeat(5000)), "z".repeat(9000));
+    expect(huge.length).toBeLessThanOrEqual(m.MAX_DRAFT_LENGTH);
+  });
+  it("any finished CTO answer with a task list is the plan (the next phase's list too), and the report state follows the report turn", () => {
+    const first = t({ prompt: m.composeTaskListRequest("karar"), text: LIST });
+    const done = [1, 2].map((k) => t({ prompt: "[Görev " + k + "/2] x", labels: ["SubAgent: Coder"] }));
+    const review = t({ labels: ["SubAgent: Reviewer"] });
+    const report = t({ prompt: m.composePhaseReport(["A", "B"], ["a", "b"], "ok"), text: "Seçenekler:\n1. Sıradaki faza geç: P2" });
+    const planned = m.ctoTaskPlan([first, ...done, review, report]);
+    expect(planned.report).toBe("done");
+    expect(planned.review).toBe("done");
+    // The CTO's next-phase answer has no special prompt: it is still recognised, and the old results do not count for it.
+    const next = t({ prompt: "Seçenek 1: Sıradaki faza geç: P2", text: "[[GÖREV-LİSTESİ]]\n1. X\n2. Y\n[[/GÖREV-LİSTESİ]]" });
+    const second = m.ctoTaskPlan([first, ...done, review, report, next]);
+    expect(second.tasks.map((x: any) => x.title + ":" + x.state)).toEqual(["X:pending", "Y:pending"]);
+    expect(second.review).toBe("none");
+    expect(second.report).toBe("none");
+  });
+  it("the CTO rules make the CTO propose the next phase itself and answer an approved phase with its task list", () => {
+    const rules = m.composePrompt({ draft: "x", workMode: "local", planMode: "standard", terminalMode: "off", managerName: "CTO", skillNames: [], skillInstructions: [], connectorNames: [] });
+    expect(rules).toContain("bekleme, yol haritasındaki sıradaki fazı kendin öner");
+    expect(rules).toContain("[[GÖREV-LİSTESİ]]");
+  });
+});
+
 describe("chain prompt titles", () => {
   const m = model as any;
   it("gives every CTO chain prompt a short title and leaves user-typed prompts alone", () => {

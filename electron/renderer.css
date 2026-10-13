@@ -270,7 +270,10 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible), textarea:focu
 .assistant-block .code-block pre { margin: 0; padding-right: 42px; }
 .code-block .copy-btn { position: absolute; top: 6px; right: 6px; background: var(--surface-2); border-color: var(--border); }
 .truncated-note { margin-top: 8px; color: var(--muted); font-size: 12.5px; }
-.turn-actions { display: flex; gap: 8px; margin-top: 12px; }
+.turn-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.turn-actions .btn { flex: none; white-space: nowrap; }
+/* The CTO's numbered choices: one full-width row each, the whole text visible (the fixed button height would squeeze and cut it). */
+.turn-actions .option-btn { flex: 1 1 100%; justify-content: flex-start; height: auto; min-height: 30px; padding: 6px 12px; text-align: left; white-space: normal; line-height: 1.35; }
 .turn-error { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 11px 14px; background: rgba(240, 112, 122, 0.08); border: 1px solid rgba(240, 112, 122, 0.3); border-radius: 12px; }
 .turn-note { color: var(--muted); font-size: 13px; }
 .conversation-actions { display: flex; gap: 8px; margin-top: 18px; }
@@ -433,3 +436,7 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible), textarea:focu
 /* The CTO chain long prompts: the full text sits in a collapsed block under the short title. */
 .user-full { margin-top: 6px; font-size: 12px; opacity: 0.85; }
 .user-full summary { cursor: pointer; }
+
+/* CTO driver: the note and the primary button of the plan panel. */
+.cto-auto-note { flex: 1 1 auto; align-self: center; font-size: 12px; opacity: 0.85; }
+.btn.primary { border-color: rgba(99, 102, 241, 0.7); }

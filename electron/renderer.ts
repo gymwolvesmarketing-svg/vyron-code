@@ -1964,7 +1964,7 @@ function renderTurn(turn: Turn): HTMLElement {
     head.appendChild(make("div", "block-label", "Yanıt"));
     head.appendChild(makeCopyButton("Yanıtı kopyala", () => turn.text ?? ""));
     block.appendChild(head);
-    appendResponse(block, turn.text);
+    appendResponse(block, VyronModel.displayText(turn.text));
     if (turn.truncated) block.appendChild(make("p", "truncated-note", "Yanıt kısaltıldı."));
     // A finished plan (Planner / Multi-Model Planner) or a Konsey decision can be handed to the Coder with one click.
     const coder = ws.managers.find((m) => m.agent === "coder" && !m.custom);
@@ -2013,10 +2013,7 @@ function renderCtoActions(turn: Turn): HTMLElement | null {
   // The CTO's numbered choices ("Seçenekler") become one-click replies: the click is the user's answer.
   if (turn.labels.indexOf("SubAgent: " + VyronModel.CTO_NAME) >= 0) {
     VyronModel.extractOptions(turn.text).forEach((option, i) => {
-      const shown = option.length > 70 ? option.slice(0, 69) + "…" : option;
-      const button = makeButton("btn small option-btn", String(i + 1) + ". " + shown, () => chooseCtoOption(i + 1, option));
-      button.title = option;
-      actions.appendChild(button);
+      actions.appendChild(makeButton("btn small option-btn", String(i + 1) + ". " + option, () => chooseCtoOption(i + 1, option, turn)));
     });
   }
   if (VyronModel.isEvaluationPrompt(turn.prompt)) {
@@ -2055,14 +2052,7 @@ async function startCtoReview(taskId: string): Promise<void> {
   const plan = VyronModel.ctoTaskPlan(turns);
   const source = plan ? turns[plan.planAt] : undefined;
   if (!plan || !source) return;
-  const results = plan.tasks.map((task) => {
-    for (let i = turns.length - 1; i > plan.planAt; i -= 1) {
-      const t = turns[i]!;
-      const m = t.prompt.match(/^\[Görev (\d+)\/(\d+)\]/);
-      if (m && Number(m[1]) === task.index && t.status === "done" && t.text !== null) return t.text;
-    }
-    return null;
-  });
+  const results = plan.tasks.map((task) => taskResultText(turns, plan.planAt, task.index));
   const prompt = VyronModel.composeReviewPrompt(plan.tasks.map((t) => t.title), results);
   await runTurn(taskId, pushChainTurn(taskId, source, prompt, prompt, "reviewer", "Reviewer", toolsActive()));
 }
@@ -2086,10 +2076,106 @@ function renderCtoPlan(taskId: string, plan: NonNullable<ReturnType<typeof Vyron
     list.appendChild(row);
   }
   box.appendChild(list);
-  if (plan.tasks.every((t) => t.state === "done") && plan.review !== "running") {
-    box.appendChild(makeButton("btn small", plan.review === "none" ? "Reviewer'a incelet" : "Reviewer'a yeniden incelet", () => void startCtoReview(taskId)));
+  const controls = make("div", "turn-actions");
+  const allDone = plan.tasks.every((t) => t.state === "done");
+  if (autopilot.has(taskId)) {
+    controls.appendChild(make("span", "cto-auto-note", "Otomatik yürütülüyor: görevler, inceleme ve faz raporu sırayla çalışır."));
+    controls.appendChild(makeButton("btn small", "Durdur", () => stopAutopilot(taskId)));
+  } else if (!busy && plan.report === "none") {
+    // One click runs the rest of the phase on its own: remaining tasks, then the Reviewer, then the CTO's report with the next phase.
+    const label = plan.tasks.some((t) => t.state === "pending") ? "Hepsini sırayla yürüt" : plan.review === "none" ? "İncelet ve faz raporunu al" : plan.review === "done" ? "Faz raporunu al" : "";
+    if (label !== "" && !plan.tasks.some((t) => t.state === "error")) controls.appendChild(makeButton("btn small primary", label, () => startAutopilot(taskId)));
   }
+  if (allDone && plan.review !== "running" && !autopilot.has(taskId)) {
+    controls.appendChild(makeButton("btn small", plan.review === "none" ? "Reviewer'a incelet" : "Reviewer'a yeniden incelet", () => void startCtoReview(taskId)));
+  }
+  if (controls.childElementCount > 0) box.appendChild(controls);
   return box;
+}
+
+// ---------------------------------------------------------------------------------------------
+// CTO driver: the phase runs on its own (tasks -> Reviewer -> CTO report), and stops for the user only where a decision is needed:
+// an error or a half-done task, a permission dialog (native, always the user's), and the next phase (the user's click on the report).
+// ---------------------------------------------------------------------------------------------
+
+/** Tasks whose plan is being driven (armed by "Hepsini sırayla yürüt" or by approving the next phase). Never kept across a restart. */
+const autopilot = new Set<string>();
+const autoRunning = new Set<string>();
+const MAX_AUTOPILOT_STEPS = 60;
+
+function startAutopilot(taskId: string): void {
+  autopilot.add(taskId);
+  void runPlanAuto(taskId);
+}
+
+function stopAutopilot(taskId: string): void {
+  autopilot.delete(taskId);
+  refreshIfActive(taskId);
+}
+
+function lastTurnOf(taskId: string): Turn | undefined {
+  const turns = turnsByTask.get(taskId) ?? [];
+  return turns[turns.length - 1];
+}
+
+async function runPlanAuto(taskId: string): Promise<void> {
+  if (autoRunning.has(taskId)) return;
+  autoRunning.add(taskId);
+  try {
+    for (let step = 0; step < MAX_AUTOPILOT_STEPS && autopilot.has(taskId); step += 1) {
+      if (sendInFlight) return;
+      const plan = VyronModel.ctoTaskPlan(turnsByTask.get(taskId) ?? []);
+      if (!plan || plan.tasks.some((t) => t.state === "error" || t.state === "running")) break;
+      const next = plan.tasks.find((t) => t.state === "pending");
+      if (next) {
+        await startCtoTask(taskId, next.index);
+      } else if (plan.review === "none") {
+        await startCtoReview(taskId);
+      } else if (plan.review === "done" && plan.report === "none") {
+        await startPhaseReport(taskId);
+        break;
+      } else {
+        break;
+      }
+      const last = lastTurnOf(taskId);
+      if (!last || last.status !== "done" || (last.text ?? "").indexOf("iş yarım kaldı") >= 0) break;
+    }
+  } finally {
+    autoRunning.delete(taskId);
+    autopilot.delete(taskId);
+    refreshIfActive(taskId);
+  }
+}
+
+/** The CTO's report after the Reviewer: verified results, the Reviewer's findings and the next phase as the first choice. */
+async function startPhaseReport(taskId: string): Promise<void> {
+  if (sendInFlight) return;
+  const turns = turnsByTask.get(taskId) ?? [];
+  const plan = VyronModel.ctoTaskPlan(turns);
+  const source = plan ? turns[plan.planAt] : undefined;
+  if (!plan || !source) return;
+  const results = plan.tasks.map((task) => taskResultText(turns, plan.planAt, task.index));
+  let review: string | null = null;
+  for (let i = turns.length - 1; i > plan.planAt; i -= 1) {
+    const t = turns[i]!;
+    if (t.labels.indexOf("SubAgent: Reviewer") >= 0 && t.status === "done" && t.text !== null) {
+      review = t.text;
+      break;
+    }
+  }
+  const prompt = VyronModel.composePhaseReport(plan.tasks.map((t) => t.title), results, review);
+  const composed = VyronModel.composePrompt({ draft: prompt, workMode: "local", planMode: "standard", terminalMode: "off", managerName: VyronModel.CTO_NAME, skillNames: [], skillInstructions: [], connectorNames: [] });
+  await runTurn(taskId, pushChainTurn(taskId, source, prompt, composed, null, VyronModel.CTO_NAME, toolsActive()));
+}
+
+/** What the Coder reported for task `index` of the list that starts at turn `planAt` (the newest finished attempt), or null. */
+function taskResultText(turns: readonly Turn[], planAt: number, index: number): string | null {
+  for (let i = turns.length - 1; i > planAt; i -= 1) {
+    const t = turns[i]!;
+    const m = t.prompt.match(/^\[Görev (\d+)\/(\d+)\]/);
+    if (m && Number(m[1]) === index && t.status === "done" && t.text !== null) return t.text;
+  }
+  return null;
 }
 
 /** The newest finished Konsey answer that comes before the given turn. */
@@ -2103,8 +2189,12 @@ function lastCouncilDecision(taskId: string, before: Turn): string | null {
 }
 
 /** A numbered choice of the CTO: sent right away to the CTO as the user's answer (the click is the decision). */
-function chooseCtoOption(number: number, option: string): void {
+function chooseCtoOption(number: number, option: string, source: Turn): void {
   if (sendInFlight) return;
+  // The first choice of a phase report ("Sıradaki faza geç") is the user's approval of the next phase: when the CTO answers with
+  // that phase's task list, it runs on its own (the autopilot is armed here and disarmed when it ends).
+  const taskId = ws.activeTaskId;
+  if (taskId && number === 1 && VyronModel.isPhaseReportPrompt(source.prompt)) autopilot.add(taskId);
   setManager("cto");
   must<HTMLTextAreaElement>("task-input").value = "Seçenek " + String(number) + ": " + option + "\nBu seçeneği uygula.";
   updateComposer();
@@ -2284,6 +2374,11 @@ async function runTurn(taskId: string, turn: Turn): Promise<void> {
   }
   saveTurns();
   refreshIfActive(taskId);
+  // A driven phase: an answer that arrives while the autopilot is armed (e.g. the new phase's task list) lets it carry on.
+  if (autopilot.has(taskId) && !autoRunning.has(taskId)) {
+    if (turn.status === "done") void runPlanAuto(taskId);
+    else autopilot.delete(taskId);
+  }
 }
 
 /** The slots the user chose a model group for (the default "" is left out: the main process then uses the Hermes default). */

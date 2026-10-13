@@ -117,7 +117,7 @@ describe("Electron scaffold source — no shell/child_process execution capabili
   });
 
   it("confirms exactly the expected scaffold .ts files exist, no more", () => {
-    expect(sourceFiles).toHaveLength(33);
+    expect(sourceFiles).toHaveLength(34);
     expect(sourceFiles.sort()).toEqual(
       [
         "browserTool.ts",
@@ -133,6 +133,7 @@ describe("Electron scaffold source — no shell/child_process execution capabili
         "localAiLifecycle.ts",
         "main.ts",
         "modelRouting.ts",
+        "notifications.ts",
         "rufloAdapters.ts",
         "rufloBridge.ts",
         "resultArchive.ts",
