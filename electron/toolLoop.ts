@@ -26,6 +26,7 @@ import {
   needsApproval,
   parseToolCalls,
   toolLogFooter,
+  stripInventedResults,
   trimTranscript,
   type ApprovalChoice,
   type ApprovalRequest,
@@ -71,8 +72,10 @@ export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<Too
   const session = { allowTask: false };
 
   for (let step = 0; step < MAX_TOOL_STEPS; step += 1) {
-    const reply = await deps.ask(trimTranscript(messages));
-    if (reply === null) return interrupted(log);
+    const asked = await deps.ask(trimTranscript(messages));
+    if (asked === null) return interrupted(log);
+    const reply = stripInventedResults(asked);
+    if (reply !== asked) deps.onProgress?.("↻ model sahte araç sonuçları uydurdu, yalnızca gerçek isteği alındı");
     const requests = parseToolCalls(reply);
     if (requests.length === 0 && cutOffs < MAX_ACTION_NUDGES && looksLikeCutOffToolCall(reply)) {
       // A tool request that was cut off mid-way is not an answer: ask for it again, smaller (never end the task "done" with nothing written).
@@ -133,8 +136,9 @@ export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<Too
 
   // Step budget used up: ask once, without tools, for the final answer.
   messages = messages.concat({ role: "user", content: "Adım sınırına ulaşıldı. Araç kullanmadan, şimdiye kadarki işi özetleyen nihai yanıtı düz metin olarak yaz." });
-  const closing = await deps.ask(trimTranscript(messages));
-  if (closing === null) return interrupted(log);
+  const closingAsked = await deps.ask(trimTranscript(messages));
+  if (closingAsked === null) return interrupted(log);
+  const closing = stripInventedResults(closingAsked);
   const text = parseToolCalls(closing).length === 0 ? closing : "Adım sınırına ulaşıldı; iş yarım kaldı. Yapılanlar aşağıda; 'Devam et' ile kaldığın yerden sürdürebilirsin.";
   return { ok: true, text: text + toolLogFooter(log) };
 }

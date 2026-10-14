@@ -626,6 +626,11 @@ describe("a task counts only when real work was done", () => {
     expect(state("Bitti.\n\n— Araç kullanılmadı: bu yanıt için hiçbir dosya okunmadı ya da yazılmadı")).toBe("error");
     expect(state("Düz cevap, günlük yok")).toBe("done");
   });
+  it("an inspection task that only read files and says no change was needed is finished (otherwise it would be retried forever)", () => {
+    expect(state("Görev 1 tamam — yalnızca inceleme/rapor, kod değişikliği yapılmadı.\n\n— Araç günlüğü:\n✓ okuma a.py\n✓ listeleme .")).toBe("done");
+    expect(state("Görev 1 tamamlandı; kod değişikliği gerekmiyor.\n\n— Araç günlüğü:\n✓ okuma a.py")).toBe("done");
+    expect(state("Görev 1 tamamlandı; kod değişikliği gerekmiyor.\n\n— Araç günlüğü:\n! başarısız: okuma a.py")).toBe("error");
+  });
 });
 
 describe("names with underscores survive", () => {

@@ -151,13 +151,14 @@ const VyronModel = (() => {
     { id: "assistant", label: "Asistan", description: "Genel yanıtlar, planlama ve görev yönetimi" },
     { id: "code", label: "Kod", description: "Kod yazan, inceleyen ve test eden Managers" },
     { id: "research", label: "Araştırma", description: "Araştırmacı Managers" },
-    { id: "tools", label: "Araçlı görevler", description: "Çalışma klasöründe dosya okuyup yazan görevler (araç protokolüne uyan bir grup seç)" },
+    { id: "tools", label: "Araçlı görevler", description: "Çalışma klasöründe dosya okuyup yazan görevler (araç protokolüne uyan bir grup seç). Kimi K3 gibi uzun düşünen modeller büyük görevlerde yavaşlayabilir." },
   ];
   const MODEL_OPTIONS: ReadonlyArray<{ id: WsModelId; label: string }> = [
     { id: "", label: "Varsayılan (Hermes)" },
-    { id: "vyron-assistant", label: "vyron-assistant (ChatGPT Web → Claude Web → Nemotron)" },
-    { id: "vyron-code", label: "vyron-code (Claude Web → Nemotron → ChatGPT Web)" },
-    { id: "vyron-research", label: "vyron-research (Perplexity → ChatGPT Web)" },
+    // The order of each group is defined in OmniRoute; these names mirror it (kept in step by hand: check OmniRoute's combos when they change).
+    { id: "vyron-assistant", label: "vyron-assistant (GPT-5.6 sol → GPT-5.6 luna → GPT-4o → Nemotron)" },
+    { id: "vyron-code", label: "vyron-code (Kimi K3 → Nemotron → Nemotron ücretsiz)" },
+    { id: "vyron-research", label: "vyron-research (Gemini 3.1 Pro → Gemini 3.8 Flash → Nemotron)" },
   ];
   /** Skills a built-in starter chip brings along by default (the user can change them). */
   function defaultQuickStartSkills(): Record<string, string[]> {
@@ -1027,13 +1028,19 @@ const VyronModel = (() => {
   /**
    * Whether a finished Coder task answer shows real work. Every tool answer ends in a log of what was really done: "Araç kullanılmadı" means
    * nothing ran, and a log without a single successful write ("✓ yazma") or command ("✓ komut") means the Coder only looked around (this is
-   * what a cut-off write_file looks like). Such a task is not finished. An answer without any log (not a tool run) is not judged.
+   * what a cut-off write_file looks like). Such a task is not finished, unless it was an inspection task: some successful reads and an answer
+   * that plainly says no change was needed (a review task has nothing to write, and retrying it would loop forever).
+   * An answer without any log (not a tool run) is not judged.
    */
   function taskDidWork(text: string | null): boolean {
     if (text === null) return true;
     if (text.indexOf("Araç kullanılmadı") >= 0) return false;
-    if (text.indexOf("— Araç günlüğü:") >= 0) return text.indexOf("✓ yazma") >= 0 || text.indexOf("✓ komut") >= 0;
-    return true;
+    const at = text.indexOf("— Araç günlüğü:");
+    if (at < 0) return true;
+    const log = text.slice(at);
+    if (log.indexOf("✓ yazma") >= 0 || log.indexOf("✓ komut") >= 0) return true;
+    const readOnlyDone = /değişikli[^\s.]*\s+(gerekmiyor|gerekmedi|yapılmadı|yok)|yalnızca\s+(inceleme|doğrulama|rapor)|inceleme\s*\/\s*rapor/i;
+    return log.indexOf("✓") >= 0 && readOnlyDone.test(text.slice(0, at));
   }
 
   /** True when the prompt is the Coder's request for task `index` of `total` with exactly this title (its first line is "[Görev k/N] title"). */

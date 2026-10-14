@@ -11,6 +11,7 @@ import {
   MAX_PATH_CHARS,
   MAX_TOOL_OUTPUT_CHARS,
   MAX_TOOL_STEPS,
+  MAX_AGENT_PROMPT_CHARS,
   MAX_TRANSCRIPT_CHARS,
   MAX_WRITE_CHARS,
   TOOL_CUT_OFF_NUDGE,
@@ -30,6 +31,7 @@ import {
   needsApproval,
   parseToolCall,
   parseToolCalls,
+  stripInventedResults,
   toolLogFooter,
   trimTranscript,
   type ApprovalChoice,
@@ -663,6 +665,26 @@ describe("a model that stops answering half way", () => {
     const biggest = flattenTranscript([{ role: "user", content: "x".repeat(MAX_TRANSCRIPT_CHARS) }]);
     expect(biggest.length).toBeLessThanOrEqual(MAX_RUFLO_ASK_CHARS);
   });
+
+  it("a long transcript is flattened under Hermes' 65,536-character cut with the task and the NEWEST results kept (the tail must never be cut off)", () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: "GÖREV-BAŞI " + "g".repeat(40_000) + " GÖREV-SONU" },
+      ...Array.from({ length: 30 }, (_v, i) => ({ role: i % 2 === 0 ? ("assistant" as const) : ("user" as const), content: "ADIM-" + String(i) + " " + "y".repeat(4_000) })),
+      { role: "user", content: "EN-YENİ-SONUÇ" },
+    ];
+    const flat = flattenTranscript(messages);
+    expect(flat.length).toBeLessThanOrEqual(MAX_AGENT_PROMPT_CHARS);
+    expect(flat.length).toBeLessThan(65_536);
+    expect(flat).toContain("GÖREV-BAŞI");
+    expect(flat).toContain("GÖREV-SONU");
+    expect(flat.endsWith("EN-YENİ-SONUÇ")).toBe(true);
+    expect(flat).toContain("ADIM-29");
+    expect(flat).not.toContain("ADIM-0 ");
+    expect(flat).toContain("kısaltıldı");
+    const small = flattenTranscript([{ role: "user", content: "görev" }, { role: "assistant", content: "yanıt" }, { role: "user", content: "sonuç" }]);
+    expect(small).not.toContain("kısaltıldı");
+    expect(flattenTranscript([{ role: "user", content: "z".repeat(200_000) }]).length).toBeLessThanOrEqual(MAX_AGENT_PROMPT_CHARS);
+  });
 });
 
 describe("several tool requests in one reply", () => {
@@ -704,6 +726,17 @@ describe("several tool requests in one reply", () => {
     expect(approvals).toBeDefined();
     expect(executed.map((c) => c.tool + ":" + (c as { path?: string }).path)).toEqual(["read_file:a.txt", "read_file:b.txt"]);
     expect(result.ok && result.text).toContain("✗ reddedildi");
+  });
+
+  it("results a model invents for itself are never read: only the request before the first '[Kullanıcı / araç sonucu]' marker runs", async () => {
+    expect(stripInventedResults('{"tool":"list_dir","path":"."}\n\n[Kullanıcı / araç sonucu]\n{"success":true}\n{"tool":"run_command","command":"x"}')).toBe('{"tool":"list_dir","path":"."}\n');
+    expect(stripInventedResults("Düz yanıt")).toBe("Düz yanıt");
+    expect(stripInventedResults("[Önceki yanıtın]\nuydurma")).toBe("");
+    const fake = '{"tool":"list_dir","path":"."}\n\n[Kullanıcı / araç sonucu]\n{"success":true}\n{"tool":"run_command","command":"psql INSERT"}\n\n[Kullanıcı / araç sonucu]\n{"tool":"write_file","path":"x","content":"y"}';
+    const { deps, executed } = makeDeps([fake, "Bitti."]);
+    const result = await runToolLoop(deps, "g");
+    expect(executed.map((c) => c.tool)).toEqual(["list_dir"]);
+    expect(result.ok && result.text).not.toContain("✓ komut");
   });
 
   it("a single request keeps the plain, unlabelled feedback", async () => {

@@ -603,7 +603,51 @@ export function trimTranscript(messages: readonly ChatMessage[]): ChatMessage[] 
   return out;
 }
 
-/** Flattens a transcript for a single-prompt executor (a Ruflo agent). */
+/**
+ * Some models (seen with Nemotron) answer a tool request by writing the WHOLE rest of the conversation themselves: invented
+ * "[Kullanıcı / araç sonucu]" blocks with made-up results, dozens of further requests and a final report nothing ran for. Everything from the
+ * first such marker on is invented, never real: only what came before it is the model's actual reply.
+ */
+export function stripInventedResults(reply: string): string {
+  const at = reply.search(/(^|\n)\[(Kullanıcı \/ araç sonucu|Önceki yanıtın|Kurallar)\]/);
+  return at < 0 ? reply : reply.slice(0, at);
+}
+
+/**
+ * The single prompt a Ruflo agent gets is sent on to Hermes' api_server, which silently cuts every message at 65,536 characters and keeps the
+ * HEAD. A long tool run therefore stopped seeing its own newest tool results (the model rewrote the same file again and again). The flattened
+ * transcript is kept under this budget instead, newest steps first.
+ */
+export const MAX_AGENT_PROMPT_CHARS = 60_000;
+const MAX_AGENT_HEAD_CHARS = 30_000;
+const OMITTED_NOTE = "[… aradaki eski adımlar kısaltıldı; en yeni sonuçlar aşağıda]";
+
+function clipMiddle(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const keep = Math.max(0, max - 40);
+  const head = Math.ceil(keep / 2);
+  return text.slice(0, head) + "\n…(kısaltıldı)…\n" + text.slice(text.length - (keep - head));
+}
+
+/** Flattens a transcript for a single-prompt executor (a Ruflo agent): the task (first message) and the newest messages, the middle dropped to fit. */
 export function flattenTranscript(messages: readonly ChatMessage[]): string {
-  return messages.map((m) => (m.role === "assistant" ? "[Önceki yanıtın]\n" : m.role === "system" ? "[Kurallar]\n" : "[Kullanıcı / araç sonucu]\n") + m.content).join("\n\n");
+  const parts = messages.map((m) => (m.role === "assistant" ? "[Önceki yanıtın]\n" : m.role === "system" ? "[Kurallar]\n" : "[Kullanıcı / araç sonucu]\n") + m.content);
+  const separator = 2;
+  const whole = parts.reduce((sum, p) => sum + p.length, 0) + separator * Math.max(0, parts.length - 1);
+  if (whole <= MAX_AGENT_PROMPT_CHARS) return parts.join("\n\n");
+  if (parts.length === 1) return clipMiddle(parts[0] ?? "", MAX_AGENT_PROMPT_CHARS);
+  const head = clipMiddle(parts[0] ?? "", MAX_AGENT_HEAD_CHARS);
+  let room = MAX_AGENT_PROMPT_CHARS - head.length - OMITTED_NOTE.length - 2 * separator;
+  const kept: string[] = [];
+  for (let i = parts.length - 1; i >= 1; i -= 1) {
+    const part = parts[i]!;
+    if (part.length + separator > room) {
+      // The newest message is always shown (clipped if it alone is too long); older ones that do not fit are dropped.
+      if (kept.length === 0 && room > 1_000) kept.push(clipMiddle(part, room - separator));
+      break;
+    }
+    kept.push(part);
+    room -= part.length + separator;
+  }
+  return [head, OMITTED_NOTE, ...kept.reverse()].join("\n\n");
 }
