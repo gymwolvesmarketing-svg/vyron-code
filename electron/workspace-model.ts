@@ -1024,6 +1024,18 @@ const VyronModel = (() => {
 
   const TASK_PROMPT_PATTERN = /^\[Görev (\d+)\/(\d+)\]/;
 
+  /**
+   * Whether a finished Coder task answer shows real work. Every tool answer ends in a log of what was really done: "Araç kullanılmadı" means
+   * nothing ran, and a log without a single successful write ("✓ yazma") or command ("✓ komut") means the Coder only looked around (this is
+   * what a cut-off write_file looks like). Such a task is not finished. An answer without any log (not a tool run) is not judged.
+   */
+  function taskDidWork(text: string | null): boolean {
+    if (text === null) return true;
+    if (text.indexOf("Araç kullanılmadı") >= 0) return false;
+    if (text.indexOf("— Araç günlüğü:") >= 0) return text.indexOf("✓ yazma") >= 0 || text.indexOf("✓ komut") >= 0;
+    return true;
+  }
+
   /** True when the prompt is the Coder's request for task `index` of `total` with exactly this title (its first line is "[Görev k/N] title"). */
   function isTaskAttempt(prompt: string, index: number, total: number, title: string): boolean {
     return (prompt.split("\n")[0] ?? "").trim() === "[Görev " + String(index) + "/" + String(total) + "] " + title.trim();
@@ -1114,7 +1126,7 @@ const VyronModel = (() => {
         // Only an attempt at THIS task counts: same number, same total AND the same title (an earlier run with other titles must not
         // make a task look finished). A task the Coder left half done ("iş yarım kaldı") is not finished either: it is retried.
         if (isTaskAttempt(t.prompt, k + 1, titles.length, title)) {
-          state = t.status === "running" ? "running" : t.status === "error" || (t.text ?? "").indexOf("iş yarım kaldı") >= 0 ? "error" : "done";
+          state = t.status === "running" ? "running" : t.status === "error" || (t.text ?? "").indexOf("iş yarım kaldı") >= 0 || !taskDidWork(t.text) ? "error" : "done";
           break;
         }
       }

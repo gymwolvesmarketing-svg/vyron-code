@@ -13,6 +13,7 @@ import {
   MAX_TOOL_STEPS,
   MAX_TRANSCRIPT_CHARS,
   MAX_WRITE_CHARS,
+  TOOL_CUT_OFF_NUDGE,
   TOOL_NUDGE,
   TOOL_PROTOCOL,
   TOOL_REMINDER,
@@ -23,6 +24,7 @@ import {
   flattenTranscript,
   isCatastrophicCommand,
   isEmptyOrAnnouncement,
+  looksLikeCutOffToolCall,
   isReadOnlyCommand,
   needsApproval,
   parseToolCall,
@@ -394,6 +396,31 @@ describe("runToolLoop", () => {
     const { deps } = makeDeps(['{"tool":"read_file","path":"x"}', "SON"], { execute: async () => ({ ok: false, text: "yok" }) });
     const result = await runToolLoop(deps, "g");
     expect(result.ok && result.text).toContain("! başarısız: okuma x");
+  });
+});
+
+describe("a tool request that was cut off mid-way", () => {
+  const CUT = '{"tool":"write_file","path":"a.py","content":"def f(x):\\n    return x +';
+  it("looksLikeCutOffToolCall recognises a JSON tool request that starts but cannot be parsed, and nothing else", () => {
+    expect(looksLikeCutOffToolCall(CUT)).toBe(true);
+    expect(looksLikeCutOffToolCall('  {"tool": "list_dir", "path": "." ')).toBe(true);
+    expect(looksLikeCutOffToolCall("Dosyayı yazıyorum.")).toBe(false);
+    expect(looksLikeCutOffToolCall('{"başlık": "bir JSON cevap"}')).toBe(false);
+    expect(looksLikeCutOffToolCall("Sonuç: {\"tool\":\"x\"")).toBe(false);
+  });
+  it("is not taken as the final answer: the model is asked again, smaller, and the next full request runs", async () => {
+    const { deps, seen, executed } = makeDeps([CUT, '{"tool":"write_file","path":"a.py","content":"x"}', "a.py yazıldı."]);
+    const lines: string[] = [];
+    const result = await runToolLoop({ ...deps, onProgress: (l) => lines.push(l) }, "g");
+    expect(seen[1]!.at(-1)!.content).toBe(TOOL_CUT_OFF_NUDGE);
+    expect(executed.map((c) => c.tool)).toEqual(["write_file"]);
+    expect(lines[0]).toContain("yarıda kesildi");
+    expect(result.ok && result.text).toContain("a.py yazıldı.");
+  });
+  it("asks at most MAX_ACTION_NUDGES times, then the reply stands (no endless loop)", async () => {
+    const { deps, seen } = makeDeps(Array(10).fill(CUT) as string[]);
+    await runToolLoop(deps, "g");
+    expect(seen.length).toBeLessThanOrEqual(1 + MAX_ACTION_NUDGES + 2);
   });
 });
 

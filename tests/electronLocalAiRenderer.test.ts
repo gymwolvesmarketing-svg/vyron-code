@@ -1790,6 +1790,45 @@ describe("managers run through Ruflo roles", () => {
     expect(h.calls.send).toHaveLength(13);
   }, 60_000);
 
+  it("CTO driver: the phase report is an ordinary answer at the END of the conversation with its choices under it; choosing adds the next work below it", async () => {
+    const h = await start();
+    h.click(h.el("plus-btn"));
+    h.click(item(h, "SubAgent"));
+    h.click(item(h, "CTO"));
+    const ok = (text: string) => ({ state: "completed", text, truncated: false });
+    h.behavior.sendQueue = [
+      ok("[[GÖREV-LİSTESİ]]\n1. A\n[[/GÖREV-LİSTESİ]]\n\nSeçenekler:\n1. Listeyi onayla ve yürüt"),
+      ok("A bitti"),
+      ok("İnceleme: bir eksik var"),
+      ok("Durum: faz bitmedi, bir eksik.\n\nSeçenekler:\n1. Eksiği tamamla ve yeniden incelet\n2. Eksiği teknik borca ertele"),
+      ok("Eksik için görev listesi:\n[[GÖREV-LİSTESİ]]\n1. Eksik dosya\n[[/GÖREV-LİSTESİ]]"),
+    ];
+    await sendTask(h, "P1 listesi");
+    h.click([...h.doc.querySelectorAll<HTMLElement>(".option-btn")].find((b) => b.textContent === "1. Listeyi onayla ve yürüt")!);
+    for (let i = 0; i < 12; i += 1) await h.flush();
+    // The report is an ordinary answer at the END of the conversation (newest at the bottom), with its choices under it; the pinned bar
+    // stays last. Nothing is repeated in a panel, and no "report" copy hides somewhere else.
+    const kids = [...h.el("turns").children].map((c) => c.className);
+    expect(kids[kids.length - 1]).toContain("cto-dock");
+    expect(kids[kids.length - 2]).toBe("turn");
+    expect(h.doc.querySelector(".cto-report")).toBeNull();
+    const reportTurn = h.el("turns").children[h.el("turns").children.length - 2] as HTMLElement;
+    expect(reportTurn.textContent).toContain("faz bitmedi, bir eksik");
+    const choices = [...reportTurn.querySelectorAll<HTMLElement>(".option-btn")].map((b) => b.textContent);
+    expect(choices).toEqual(["1. Eksiği tamamla ve yeniden incelet", "2. Eksiği teknik borca ertele"]);
+    expect(h.doc.querySelector(".cto-dock")!.textContent).toContain("Faz raporu hazır");
+    // Choosing adds the next work BELOW the report (not above some panel).
+    const turnsBefore = h.doc.querySelectorAll("#turns > .turn").length;
+    const before = h.calls.send.length;
+    h.click(reportTurn.querySelector<HTMLElement>(".option-btn")!);
+    for (let i = 0; i < 12; i += 1) await h.flush();
+    expect(h.calls.send[before]!.draft).toContain("Seçenek 1: Eksiği tamamla ve yeniden incelet");
+    const after = [...h.el("turns").children];
+    expect(h.doc.querySelectorAll("#turns > .turn").length).toBeGreaterThan(turnsBefore);
+    expect(after[after.length - 1]!.className).toContain("cto-dock");
+    expect(after.indexOf(reportTurn)).toBeLessThan(after.length - 2);
+  }, 60_000);
+
   it("CTO driver: the first choice of an answer that carries the task list starts the driver (Coder, Reviewer, report) instead of being sent to the CTO", async () => {
     const h = await start();
     h.click(h.el("plus-btn"));
@@ -1805,11 +1844,13 @@ describe("managers run through Ruflo roles", () => {
     ];
     await sendTask(h, "P1 görev listesi");
     expect(h.calls.send).toHaveLength(1);
-    // The project status sits at the END of the conversation (not scrolled out of sight at the top): stage strip, then the task list.
-    const kids = [...h.el("turns").children].map((n) => n.className);
-    expect(kids[kids.length - 1]).toContain("cto-plan");
-    expect(kids[kids.length - 2]).toContain("cto-stages");
-    expect(kids.findIndex((c) => c.indexOf("turn") === 0 && c.indexOf("turns") < 0)).toBeLessThan(kids.length - 2);
+    // The conversation reads in order: the task list is a card right under the answer that gave it; the stage strip and the buttons that
+    // drive the phase are a bar pinned at the very end (it never sits between the answers).
+    const kids = [...h.el("turns").children].map((c) => c.className);
+    expect(kids[kids.length - 1]).toContain("cto-dock");
+    expect(kids.indexOf("cto-plan")).toBe(kids.indexOf("turn") + 1);
+    expect(h.doc.querySelector(".cto-dock .cto-stages")).toBeTruthy();
+    expect(h.doc.querySelector(".cto-dock")!.textContent).toContain("Hepsini sırayla yürüt");
     const first = [...h.doc.querySelectorAll<HTMLElement>(".option-btn")].find((b) => b.textContent === "1. Listeyi onayla ve yürüt");
     expect(first).toBeTruthy();
     h.click(first!);

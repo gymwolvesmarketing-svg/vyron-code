@@ -1902,13 +1902,15 @@ function renderTaskView(): void {
   if (turns.length === 0) {
     turnsBox.appendChild(make("p", "turn-note", NO_ANSWER_TEXT));
   }
-  for (const turn of turns) turnsBox.appendChild(renderTurn(turn));
-  // The CTO's project status (stage strip + task list with its buttons) sits at the END of the conversation, where the user is looking:
-  // at the top it was scrolled far out of sight in a long conversation and the "Hepsini sırayla yürüt" button went unnoticed.
+  // The CTO's task list is a card in the conversation right under the answer that gave it; the stage strip and the buttons that drive the
+  // phase are a bar pinned to the bottom (see renderCtoDock). The conversation itself reads in order, newest at the bottom.
   const stages = VyronModel.ctoStages(turns);
-  if (stages) turnsBox.appendChild(renderCtoStages(stages));
   const plan = stages ? VyronModel.ctoTaskPlan(turns) : null;
-  if (plan && task) turnsBox.appendChild(renderCtoPlan(task.id, plan));
+  turns.forEach((turn, index) => {
+    turnsBox.appendChild(renderTurn(turn));
+    if (plan && task && index === plan.planAt) turnsBox.appendChild(renderCtoPlan(task.id, plan));
+  });
+  if (stages && task) turnsBox.appendChild(renderCtoDock(task.id, stages, plan));
   const last = turns[turns.length - 1];
   const canClear = last !== undefined && last.status === "done" && !last.cleared;
   must("clear-response-btn").hidden = !canClear;
@@ -2063,6 +2065,8 @@ const TASK_STATE_TEXT: Readonly<Record<string, string>> = { pending: "Sırada", 
 
 /** The task list under the stage strip: the next task has a start button; once all are done the Reviewer can be asked. */
 function renderCtoPlan(taskId: string, plan: NonNullable<ReturnType<typeof VyronModel.ctoTaskPlan>>): HTMLElement {
+  // The task list is a card in the conversation, right under the answer that gave it: it stays where it happened (the conversation reads in
+  // order, newest at the bottom). The buttons that drive it live in the pinned bar at the bottom (renderCtoDock).
   const box = make("section", "cto-plan");
   box.setAttribute("aria-label", "CTO görev listesi");
   box.appendChild(make("div", "block-label", "Görev listesi"));
@@ -2078,7 +2082,20 @@ function renderCtoPlan(taskId: string, plan: NonNullable<ReturnType<typeof Vyron
     list.appendChild(row);
   }
   box.appendChild(list);
-  const controls = make("div", "turn-actions");
+  return box;
+}
+
+/**
+ * The pinned bar at the bottom of the CTO conversation: the stage strip and the buttons that drive the phase (run all, stop, review). It is
+ * not part of the conversation flow, so it never gets in the way of the answers (the report and its choices are an ordinary answer at the end).
+ */
+function renderCtoDock(taskId: string, stages: ReadonlyArray<{ id: string; label: string; state: string; detail: string }>, plan: ReturnType<typeof VyronModel.ctoTaskPlan>): HTMLElement {
+  const dock = make("section", "cto-dock");
+  dock.setAttribute("aria-label", "CTO proje durumu");
+  dock.appendChild(renderCtoStages(stages));
+  if (!plan) return dock;
+  const busy = plan.tasks.some((t) => t.state === "running");
+  const controls = make("div", "cto-dock-controls");
   const allDone = plan.tasks.every((t) => t.state === "done");
   if (autopilot.has(taskId)) {
     controls.appendChild(make("span", "cto-auto-note", "Otomatik yürütülüyor: görevler, inceleme ve faz raporu sırayla çalışır."));
@@ -2091,8 +2108,9 @@ function renderCtoPlan(taskId: string, plan: NonNullable<ReturnType<typeof Vyron
   if (allDone && plan.review !== "running" && !autopilot.has(taskId)) {
     controls.appendChild(makeButton("btn small", plan.review === "none" ? "Reviewer'a incelet" : "Reviewer'a yeniden incelet", () => void startCtoReview(taskId)));
   }
-  if (controls.childElementCount > 0) box.appendChild(controls);
-  return box;
+  if (plan.report === "done" && !autopilot.has(taskId)) controls.appendChild(make("span", "cto-auto-note", "Faz raporu hazır: kararını yukarıdaki son cevabın altındaki seçeneklerden ver."));
+  if (controls.childElementCount > 0) dock.appendChild(controls);
+  return dock;
 }
 
 // ---------------------------------------------------------------------------------------------

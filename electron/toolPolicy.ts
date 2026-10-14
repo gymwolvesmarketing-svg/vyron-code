@@ -235,6 +235,19 @@ export function isEmptyOrAnnouncement(reply: string): boolean {
   const body = reply.trim();
   return body.length === 0 || ANNOUNCES_ACTION.test(body);
 }
+/**
+ * A reply that STARTS like a JSON tool request but cannot be parsed into one: the model's output was cut off (measured: Kimi K3 stops at
+ * 4096 tokens, mid-way through a long write_file). Taken as plain text it would end the task as "done" with nothing written.
+ */
+export function looksLikeCutOffToolCall(reply: string): boolean {
+  const text = reply.trimStart();
+  return text.startsWith("{") && /"tool"\s*:/.test(text.slice(0, 200));
+}
+
+export const TOOL_CUT_OFF_NUDGE =
+  "Son yanıtındaki JSON araç isteği YARIDA KESİLDİ (çıkış sınırı); çalıştırılamadı ve hiçbir şey yazılmadı. Aynı adımı yeniden yaz, ama daha küçük tut: bir write_file içeriği en fazla yaklaşık 150 satır / 6.000 karakter olsun; " +
+  "uzun yorum, docstring ve tekrar yazma, yalnızca gerekli kodu yaz; büyük işi birkaç küçük dosyaya ya da adıma böl. YALNIZCA tek bir tam JSON yaz.";
+
 export const TOOL_NUDGE =
   "Son yanıtın ya boştu ya da bir işi yapacağını söyleyip durdu; ama Vyron Code yalnızca JSON araç isteklerini çalıştırır. Şimdi YALNIZCA sıradaki adımın JSON'unu yaz (kısa düşün, uzun akıl yürütme). " +
   "İş gerçekten tamamen bittiyse, ne yaptığını özetleyen düz metin yaz ve 'yapıyorum' ile bitirme.";

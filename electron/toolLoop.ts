@@ -15,11 +15,13 @@ import {
   approvalRequest,
   boundOutput,
   describeCall,
+  TOOL_CUT_OFF_NUDGE,
   TOOL_NUDGE,
   TOOL_REMINDER,
   TOOL_REMINDER_FINAL,
   firstToolMessage,
   isEmptyOrAnnouncement,
+  looksLikeCutOffToolCall,
   logLine,
   needsApproval,
   parseToolCalls,
@@ -64,6 +66,7 @@ export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<Too
   let reminders = 0;
   let executed = 0;
   let nudges = 0;
+  let cutOffs = 0;
   // "Bu görevde hepsine izin ver": file writes and commands of THIS task run are no longer asked (never kept beyond the task).
   const session = { allowTask: false };
 
@@ -71,6 +74,16 @@ export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<Too
     const reply = await deps.ask(trimTranscript(messages));
     if (reply === null) return interrupted(log);
     const requests = parseToolCalls(reply);
+    if (requests.length === 0 && cutOffs < MAX_ACTION_NUDGES && looksLikeCutOffToolCall(reply)) {
+      // A tool request that was cut off mid-way is not an answer: ask for it again, smaller (never end the task "done" with nothing written).
+      cutOffs += 1;
+      deps.onProgress?.("↻ araç isteği yarıda kesildi, daha küçük yeniden isteniyor");
+      messages = messages.concat([
+        { role: "assistant", content: reply },
+        { role: "user", content: TOOL_CUT_OFF_NUDGE },
+      ]);
+      continue;
+    }
     if (requests.length === 0) {
       // A plain reply before any tool ran is challenged twice (models invent "done" or "no tools"); after that it stands.
       if (reminders < 2 && log.length === 0) {

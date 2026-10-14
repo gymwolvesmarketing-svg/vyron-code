@@ -613,6 +613,21 @@ describe("a task counts as finished only for the right attempt", () => {
   });
 });
 
+describe("a task counts only when real work was done", () => {
+  const m = model as any;
+  const t = (over: any) => ({ prompt: "p", agent: null, labels: ["SubAgent: CTO"], status: "done", text: "x", ...over });
+  const list = t({ text: "[[GÖREV-LİSTESİ]]\n1. a.py yaz\n[[/GÖREV-LİSTESİ]]" });
+  const state = (text: string | null) => m.ctoTaskPlan([list, t({ prompt: "[Görev 1/1] a.py yaz", labels: ["SubAgent: Coder"], text })]).tasks[0].state;
+  it("a log with a successful write or command is finished; reads only, nothing run, or a cut-off write is not", () => {
+    expect(state("Yazıldı.\n\n— Araç günlüğü:\n✓ okuma a.py\n✓ yazma a.py")).toBe("done");
+    expect(state("Test geçti.\n\n— Araç günlüğü:\n✓ komut pytest")).toBe("done");
+    expect(state("{\"tool\":\"write_file\",\"path\":\"a.py\",\"content\":\"def x(\n\n— Araç günlüğü:\n✓ okuma a.py\n✓ listeleme .")).toBe("error");
+    expect(state("Bitti.\n\n— Araç günlüğü:\n! başarısız: yazma a.py")).toBe("error");
+    expect(state("Bitti.\n\n— Araç kullanılmadı: bu yanıt için hiçbir dosya okunmadı ya da yazılmadı")).toBe("error");
+    expect(state("Düz cevap, günlük yok")).toBe("done");
+  });
+});
+
 describe("names with underscores survive", () => {
   const m = model as any;
   it("task titles and choices keep underscores, dots and slashes (only **bold** and backticks are stripped)", () => {

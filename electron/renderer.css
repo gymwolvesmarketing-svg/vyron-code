@@ -440,3 +440,14 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible), textarea:focu
 /* CTO driver: the note and the primary button of the plan panel. */
 .cto-auto-note { flex: 1 1 auto; align-self: center; font-size: 12px; opacity: 0.85; }
 .btn.primary { border-color: rgba(99, 102, 241, 0.7); }
+
+/* The phase report in the status dock: readable on its own, with the choices right under it. */
+.cto-report { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line, rgba(255, 255, 255, 0.12)); }
+.cto-report-text { max-height: 38vh; overflow: auto; font-size: 13.5px; margin: 6px 0 10px; }
+
+/* CTO pinned bar: stage strip + the buttons that drive the phase. Sticks to the bottom of the conversation; not part of the flow. */
+.cto-dock { position: sticky; bottom: 0; z-index: 3; margin-top: 8px; padding: 10px 0 6px; background: var(--bg, #0b0d13); border-top: 1px solid var(--border, rgba(255, 255, 255, 0.12)); }
+.cto-dock .cto-stages { flex-wrap: nowrap; overflow-x: auto; margin: 0 0 8px; padding-bottom: 2px; }
+.cto-dock .cto-stage { flex: none; min-width: 112px; padding: 5px 9px; }
+.cto-dock-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cto-dock-controls .btn { flex: none; white-space: nowrap; }
