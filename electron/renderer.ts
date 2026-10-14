@@ -2108,7 +2108,6 @@ function renderCtoDock(taskId: string, stages: ReadonlyArray<{ id: string; label
   if (allDone && plan.review !== "running" && !autopilot.has(taskId)) {
     controls.appendChild(makeButton("btn small", plan.review === "none" ? "Reviewer'a incelet" : "Reviewer'a yeniden incelet", () => void startCtoReview(taskId)));
   }
-  if (plan.report === "done" && !autopilot.has(taskId)) controls.appendChild(make("span", "cto-auto-note", "Faz raporu hazır: kararını yukarıdaki son cevabın altındaki seçeneklerden ver."));
   if (controls.childElementCount > 0) dock.appendChild(controls);
   return dock;
 }

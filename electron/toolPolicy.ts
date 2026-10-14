@@ -240,13 +240,14 @@ export function isEmptyOrAnnouncement(reply: string): boolean {
  * 4096 tokens, mid-way through a long write_file). Taken as plain text it would end the task as "done" with nothing written.
  */
 export function looksLikeCutOffToolCall(reply: string): boolean {
-  const text = reply.trimStart();
-  return text.startsWith("{") && /"tool"\s*:/.test(text.slice(0, 200));
+  // Anywhere in the reply (prose may come first): a tool request that is there but could not be parsed (the caller checked that).
+  return /\{\s*"tool"\s*:\s*"[a-z_]+"/.test(reply);
 }
 
 export const TOOL_CUT_OFF_NUDGE =
-  "Son yanıtındaki JSON araç isteği YARIDA KESİLDİ (çıkış sınırı); çalıştırılamadı ve hiçbir şey yazılmadı. Aynı adımı yeniden yaz, ama daha küçük tut: bir write_file içeriği en fazla yaklaşık 150 satır / 6.000 karakter olsun; " +
-  "uzun yorum, docstring ve tekrar yazma, yalnızca gerekli kodu yaz; büyük işi birkaç küçük dosyaya ya da adıma böl. YALNIZCA tek bir tam JSON yaz.";
+  "Son yanıtındaki JSON araç isteği ÇALIŞTIRILAMADI ve hiçbir şey yazılmadı: ya çıkış sınırında yarıda kesildi ya da geçersiz JSON'du. " +
+  "Aynı adımı yeniden yaz: dosya içeriği TEK SATIRLIK geçerli bir JSON dizgesi olsun (satır sonları \\n, tırnaklar \\\", ters eğik çizgiler \\\\ olarak kaçırılmış); " +
+  "bir write_file içeriği en fazla yaklaşık 150 satır / 6.000 karakter olsun, uzun yorum ve docstring yazma, büyük işi birkaç küçük dosyaya böl. YALNIZCA tek bir tam JSON yaz, başka metin ekleme.";
 
 export const TOOL_NUDGE =
   "Son yanıtın ya boştu ya da bir işi yapacağını söyleyip durdu; ama Vyron Code yalnızca JSON araç isteklerini çalıştırır. Şimdi YALNIZCA sıradaki adımın JSON'unu yaz (kısa düşün, uzun akıl yürütme). " +
@@ -281,6 +282,49 @@ function balancedEnd(text: string, start: number): number {
   return -1;
 }
 
+/**
+ * Models very often write a file's content into the JSON with REAL line breaks (and tabs) instead of the \n / \t escapes, which is invalid
+ * JSON: the request used to be dropped and the task ended with nothing written. Control characters INSIDE strings are escaped here (nothing
+ * else is touched), so such a request still runs. Anything else that is invalid (an unescaped quote in the content) stays invalid.
+ */
+export function escapeControlCharsInStrings(json: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < json.length; i += 1) {
+    const ch = json[i]!;
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        out += ch;
+      } else if (ch === "\\") {
+        escaped = true;
+        out += ch;
+      } else if (ch === '"') {
+        inString = false;
+        out += ch;
+      } else if (ch === "\n") out += "\\n";
+      else if (ch === "\r") out += "\\r";
+      else if (ch === "\t") out += "\\t";
+      else if (ch.charCodeAt(0) < 32) out += "\\u" + ch.charCodeAt(0).toString(16).padStart(4, "0");
+      else out += ch;
+    } else {
+      if (ch === '"') inString = true;
+      out += ch;
+    }
+  }
+  return out;
+}
+
+/** JSON.parse that also accepts raw control characters inside strings; throws like JSON.parse when the text is still invalid. */
+function parseJsonLenient(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return JSON.parse(escapeControlCharsInStrings(text));
+  }
+}
+
 /** Every JSON object with a "tool" key in a reply, in order (models wrap JSON in prose, code fences or arrays). */
 function allJsonObjects(text: string, limit: number): unknown[] {
   const found: unknown[] = [];
@@ -294,7 +338,7 @@ function allJsonObjects(text: string, limit: number): unknown[] {
       continue;
     }
     try {
-      const parsed: unknown = JSON.parse(text.slice(start, end + 1));
+      const parsed: unknown = parseJsonLenient(text.slice(start, end + 1));
       if (typeof parsed === "object" && parsed !== null && "tool" in parsed) {
         found.push(parsed);
         from = end + 1;
@@ -314,7 +358,7 @@ function firstJsonObject(text: string): unknown {
     const end = balancedEnd(text, start);
     if (end < 0) continue;
     try {
-      const parsed: unknown = JSON.parse(text.slice(start, end + 1));
+      const parsed: unknown = parseJsonLenient(text.slice(start, end + 1));
       if (typeof parsed === "object" && parsed !== null && "tool" in parsed) return parsed;
     } catch {
       // Not valid JSON: try the next candidate.

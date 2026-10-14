@@ -1816,7 +1816,9 @@ describe("managers run through Ruflo roles", () => {
     expect(reportTurn.textContent).toContain("faz bitmedi, bir eksik");
     const choices = [...reportTurn.querySelectorAll<HTMLElement>(".option-btn")].map((b) => b.textContent);
     expect(choices).toEqual(["1. Eksiği tamamla ve yeniden incelet", "2. Eksiği teknik borca ertele"]);
-    expect(h.doc.querySelector(".cto-dock")!.textContent).toContain("Faz raporu hazır");
+    expect(h.doc.querySelector(".cto-dock")!.textContent).toContain("Rapor hazır");
+    // The bar does not point the user anywhere ("choose from above"): the choices are the last thing of the conversation, right above it.
+    expect(h.doc.querySelector(".cto-dock")!.textContent).not.toMatch(/yukarı|aşağı/i);
     // Choosing adds the next work BELOW the report (not above some panel).
     const turnsBefore = h.doc.querySelectorAll("#turns > .turn").length;
     const before = h.calls.send.length;

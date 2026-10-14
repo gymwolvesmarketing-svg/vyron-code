@@ -25,6 +25,7 @@ import {
   isCatastrophicCommand,
   isEmptyOrAnnouncement,
   looksLikeCutOffToolCall,
+  escapeControlCharsInStrings,
   isReadOnlyCommand,
   needsApproval,
   parseToolCall,
@@ -406,7 +407,27 @@ describe("a tool request that was cut off mid-way", () => {
     expect(looksLikeCutOffToolCall('  {"tool": "list_dir", "path": "." ')).toBe(true);
     expect(looksLikeCutOffToolCall("Dosyayı yazıyorum.")).toBe(false);
     expect(looksLikeCutOffToolCall('{"başlık": "bir JSON cevap"}')).toBe(false);
-    expect(looksLikeCutOffToolCall("Sonuç: {\"tool\":\"x\"")).toBe(false);
+    // Prose may come first: the request is still there and still broken.
+    expect(looksLikeCutOffToolCall("Dosyayı yazıyorum:\n{\"tool\":\"write_file\",\"path\":\"a.sql\",\"content\":\"CREATE TABLE x (")).toBe(true);
+  });
+  it("a write_file whose content has REAL line breaks and tabs (invalid JSON, a very common model slip) is repaired and runs", async () => {
+    const raw = '{"tool":"write_file","path":"0001_source.sql","content":"CREATE TABLE source (\n\tsource_id BIGINT,\n\tname TEXT\n);\n"}';
+    expect(() => JSON.parse(raw)).toThrow();
+    const calls = parseToolCalls(raw);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ kind: "call", call: { tool: "write_file", path: "0001_source.sql", content: "CREATE TABLE source (\n\tsource_id BIGINT,\n\tname TEXT\n);\n" } });
+    // Prose around it, and a second request after it, still work.
+    const two = parseToolCalls('Yazıyorum:\n' + raw + '\n{"tool":"read_file","path":"a.py"}');
+    expect(two.map((c) => (c as { call?: { tool: string } }).call?.tool)).toEqual(["write_file", "read_file"]);
+    const { deps, executed } = makeDeps([raw, "0001_source.sql yazıldı."]);
+    const result = await runToolLoop(deps, "g");
+    expect(executed.map((c) => c.tool)).toEqual(["write_file"]);
+    expect(result.ok && result.text).toContain("✓ yazma 0001_source.sql");
+  });
+  it("escapeControlCharsInStrings only touches control characters INSIDE strings (structure and valid escapes stay)", () => {
+    expect(escapeControlCharsInStrings('{\n  "a": "x\ny",\n  "b": "t\tz"\n}')).toBe('{\n  "a": "x\\ny",\n  "b": "t\\tz"\n}');
+    expect(escapeControlCharsInStrings('{"a":"already\\nescaped \\" quote"}')).toBe('{"a":"already\\nescaped \\" quote"}');
+    expect(escapeControlCharsInStrings('{"a":"x"}')).toBe('{"a":"x"}');
   });
   it("is not taken as the final answer: the model is asked again, smaller, and the next full request runs", async () => {
     const { deps, seen, executed } = makeDeps([CUT, '{"tool":"write_file","path":"a.py","content":"x"}', "a.py yazıldı."]);
