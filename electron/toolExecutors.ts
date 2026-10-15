@@ -140,12 +140,19 @@ export function resolveWritable(root: string, relative: string): WritablePath {
   return { ok: false, reason: "geçersiz yol" };
 }
 
-export function writeFile(root: string, relative: string, content: string): ExecResult {
+/** `append` adds the content to the end of the file (created when missing): a big file is written in several small steps, never as one huge request. */
+export function writeFile(root: string, relative: string, content: string, append: boolean = false): ExecResult {
   if (content.length > MAX_WRITE_CHARS) return fail("İçerik çok büyük.");
   const target = resolveWritable(root, relative);
   if (!target.ok) return fail("Bu yola yazılamaz (" + target.reason + ").");
   try {
     fs.mkdirSync(path.dirname(target.absolute), { recursive: true });
+    if (append) {
+      const before = target.existed ? fs.statSync(target.absolute).size : 0;
+      if (before + Buffer.byteLength(content, "utf8") > MAX_WRITE_CHARS) return fail("Dosya çok büyük olur.");
+      fs.appendFileSync(target.absolute, content, "utf8");
+      return { ok: true, text: (target.existed ? "Dosyanın sonuna eklendi: " : "Dosya oluşturuldu: ") + relative + " (+" + String(content.length) + " karakter)" };
+    }
     fs.writeFileSync(target.absolute, content, "utf8");
     return { ok: true, text: (target.existed ? "Dosyanın üzerine yazıldı: " : "Dosya oluşturuldu: ") + relative + " (" + String(content.length) + " karakter)" };
   } catch {

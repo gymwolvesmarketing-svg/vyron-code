@@ -28,6 +28,7 @@ import {
   toolLogFooter,
   stripInventedResults,
   trimTranscript,
+  withLedger,
   type ApprovalChoice,
   type ApprovalRequest,
   type BrowserTarget,
@@ -72,7 +73,7 @@ export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<Too
   const session = { allowTask: false };
 
   for (let step = 0; step < MAX_TOOL_STEPS; step += 1) {
-    const asked = await deps.ask(trimTranscript(messages));
+    const asked = await deps.ask(withLedger(trimTranscript(messages), log));
     if (asked === null) return interrupted(log);
     const reply = stripInventedResults(asked);
     if (reply !== asked) deps.onProgress?.("↻ model sahte araç sonuçları uydurdu, yalnızca gerçek isteği alındı");
@@ -136,7 +137,7 @@ export async function runToolLoop(deps: ToolLoopDeps, task: string): Promise<Too
 
   // Step budget used up: ask once, without tools, for the final answer.
   messages = messages.concat({ role: "user", content: "Adım sınırına ulaşıldı. Araç kullanmadan, şimdiye kadarki işi özetleyen nihai yanıtı düz metin olarak yaz." });
-  const closingAsked = await deps.ask(trimTranscript(messages));
+  const closingAsked = await deps.ask(withLedger(trimTranscript(messages), log));
   if (closingAsked === null) return interrupted(log);
   const closing = stripInventedResults(closingAsked);
   const text = parseToolCalls(closing).length === 0 ? closing : "Adım sınırına ulaşıldı; iş yarım kaldı. Yapılanlar aşağıda; 'Devam et' ile kaldığın yerden sürdürebilirsin.";

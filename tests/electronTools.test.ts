@@ -31,9 +31,11 @@ import {
   needsApproval,
   parseToolCall,
   parseToolCalls,
+  ledgerText,
   stripInventedResults,
   toolLogFooter,
   trimTranscript,
+  withLedger,
   type ApprovalChoice,
   type ApprovalRequest,
   type ChatMessage,
@@ -225,6 +227,21 @@ describe("tool executors (real files, confined to the workspace root)", () => {
     const w = resolveWritable(root, "src/z.txt");
     expect(w).toMatchObject({ ok: true, existed: false });
     expect(resolveWritable(root, "hello.txt")).toMatchObject({ ok: true, existed: true });
+  });
+
+  it("append adds to the end of a file (creating it when missing), in the same protected places only", () => {
+    makeRoot();
+    expect(writeFile(root, "src/parca.py", "bir\n", true)).toMatchObject({ ok: true, text: expect.stringContaining("oluşturuldu") });
+    expect(writeFile(root, "src/parca.py", "iki\n", true)).toMatchObject({ ok: true, text: expect.stringContaining("sonuna eklendi") });
+    expect(writeFile(root, "src/parca.py", "üç\n", true).ok).toBe(true);
+    expect(fs.readFileSync(path.join(root, "src", "parca.py"), "utf8")).toBe("bir\niki\nüç\n");
+    // the same denied names and escapes as a normal write
+    for (const bad of ["../evil.txt", ".env", ".git/config", "id_rsa"]) expect(writeFile(root, bad, "x", true).ok, bad).toBe(false);
+    expect(fs.readFileSync(path.join(root, ".env"), "utf8")).toBe("SECRET=1");
+    // the file as a whole stays under the write ceiling
+    fs.writeFileSync(path.join(root, "dolu.txt"), "x".repeat(MAX_WRITE_CHARS - 5));
+    expect(writeFile(root, "dolu.txt", "123456", true).ok).toBe(false);
+    expect(writeFile(root, "dolu.txt", "12345", true).ok).toBe(true);
   });
 
   it("refuses every escape and denied name when writing", () => {
@@ -465,7 +482,7 @@ describe("a reply that only announces the next action, or is empty, after tools 
       "apps/a.txt oluşturuldu ve doğrulandı.",
     ]);
     const result = await runToolLoop(deps, "P0");
-    expect(seen[2]!.at(-1)!.content).toBe(TOOL_NUDGE);
+    expect(seen[2]!.at(-1)!.content).toMatch(new RegExp("^" + TOOL_NUDGE.slice(0, 40)));
     expect(executed.map((c) => c.tool)).toEqual(["list_dir", "write_file"]);
     expect(result.ok && result.text).toContain("oluşturuldu ve doğrulandı");
     expect(result.ok && result.text).toContain("✓ yazma apps/a.txt");
@@ -474,7 +491,7 @@ describe("a reply that only announces the next action, or is empty, after tools 
   it("nudges an empty reply (the model spent its whole budget thinking)", async () => {
     const { deps, seen } = makeDeps(['{"tool":"list_dir","path":"."}', "", "Klasör boş, rapor: yapılacak bir şey yok."]);
     const result = await runToolLoop(deps, "g");
-    expect(seen[2]!.at(-1)!.content).toBe(TOOL_NUDGE);
+    expect(seen[2]!.at(-1)!.content).toMatch(new RegExp("^" + TOOL_NUDGE.slice(0, 40)));
     expect(seen[2]!.at(-2)!.content).toBe("(boş yanıt)");
     expect(result.ok && result.text).toContain("rapor: yapılacak bir şey yok");
   });
@@ -703,6 +720,21 @@ describe("several tool requests in one reply", () => {
     expect(parseToolCalls(many)).toHaveLength(MAX_CALLS_PER_REPLY);
   });
 
+  it("a big file is written in pieces: write_file with append:true (and the append_file alias) are both appends, a plain write_file is not", () => {
+    const pieces = parseToolCalls('{"tool":"write_file","path":"a.py","content":"1"}\n{"tool":"write_file","path":"a.py","content":"2","append":true}\n{"tool":"append_file","path":"a.py","content":"3"}');
+    expect(pieces.map((c) => (c.kind === "call" && c.call.tool === "write_file" ? c.call.append === true : "?"))).toEqual([false, true, true]);
+    expect(parseToolCalls('{"tool":"append_file","path":"","content":"1"}')[0]).toMatchObject({ kind: "invalid" });
+    expect(parseToolCalls('{"tool":"append_file","path":"a.py"}')[0]).toMatchObject({ kind: "invalid" });
+    const append = parseToolCalls('{"tool":"write_file","path":"a.py","content":"2","append":true}')[0];
+    if (append?.kind !== "call") throw new Error("not a call");
+    expect(needsApproval(append.call)).toBe(true);
+    expect(describeCall(append.call)).toBe("yazma a.py (ek)");
+    expect(approvalRequest(append.call, "ws1", "Proje", true)?.detail).toContain("SONUNA EKLENECEK");
+    expect(TOOL_PROTOCOL).toContain('"append":true');
+    expect(TOOL_CUT_OFF_NUDGE).toContain("append");
+    expect(TOOL_NUDGE).toContain("append");
+  });
+
   it("parseToolCall (single) still returns the first request only", () => {
     expect(parseToolCall('{"tool":"read_file","path":"a"}{"tool":"read_file","path":"b"}')).toEqual({ kind: "call", call: { tool: "read_file", path: "a" } });
   });
@@ -737,6 +769,38 @@ describe("several tool requests in one reply", () => {
     const result = await runToolLoop(deps, "g");
     expect(executed.map((c) => c.tool)).toEqual(["list_dir"]);
     expect(result.ok && result.text).not.toContain("✓ komut");
+  });
+
+  it("the real log of finished work is added to the newest message, merged and bounded, so a trimmed transcript cannot make the model redo (and overwrite) its earlier steps", async () => {
+    expect(ledgerText([])).toBe("");
+    const log = [
+      { outcome: "ok" as const, text: "yazma a.py" },
+      { outcome: "ok" as const, text: "yazma a.py (ek)" },
+      { outcome: "ok" as const, text: "yazma a.py (ek)" },
+      { outcome: "failed" as const, text: "komut pytest" },
+    ];
+    const text = ledgerText(log);
+    expect(text).toContain("- ✓ yazma a.py\n");
+    expect(text).toContain("- ✓ yazma a.py (ek) ×2");
+    expect(text).toContain("- ! başarısız: komut pytest");
+    expect(text).toContain("baştan yazma");
+    const many = Array.from({ length: 80 }, (_v, i) => ({ outcome: "ok" as const, text: "okuma f" + String(i) + ".py" }));
+    const bounded = ledgerText(many);
+    expect(bounded).toContain("okuma f79.py");
+    expect(bounded).not.toContain("okuma f10.py");
+    expect(bounded).toContain("50 eski satır daha");
+    // only the newest message gets it, the originals stay as they were
+    const messages: ChatMessage[] = [{ role: "user", content: "GÖREV" }, { role: "assistant", content: "{}" }, { role: "user", content: "SONUÇ" }];
+    const withIt = withLedger(messages, log);
+    expect(withIt[0]!.content).toBe("GÖREV");
+    expect(withIt[2]!.content.startsWith("SONUÇ\n\n[Vyron Code kesin günlüğü")).toBe(true);
+    expect(messages[2]!.content).toBe("SONUÇ");
+    expect(withLedger(messages, [])).toEqual(messages);
+    // and the loop really sends it: the second request carries what the first step did
+    const { deps, seen } = makeDeps(['{"tool":"write_file","path":"a.py","content":"1"}', "Bitti."]);
+    await runToolLoop(deps, "g");
+    expect(seen[0]!.at(-1)!.content).not.toContain("kesin günlüğü");
+    expect(seen[1]!.at(-1)!.content).toContain("- ✓ yazma a.py");
   });
 
   it("a single request keeps the plain, unlabelled feedback", async () => {

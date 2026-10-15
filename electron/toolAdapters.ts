@@ -223,7 +223,7 @@ export function createProductionToolRunner(
       case "read_file":
         return readFile(root, call.path);
       case "write_file":
-        return writeFile(root, call.path, call.content);
+        return writeFile(root, call.path, call.content, call.append === true);
       case "run_command":
         return runCommand(root, call.command);
       case "deep_research":
